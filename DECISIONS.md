@@ -219,3 +219,82 @@ visible until a student (or staff) starts a new session.
 **Rejected:** A dismiss/acknowledge button. Simpler state machine, but
 breaks the one-Start-one-Stop kiosk rule for a corner case that doesn't
 need a third control.
+
+---
+
+## 2026-08-11 — `_drain_remaining` is one bounded pass, not a loop to empty
+
+**Decided:** `Recorder._drain_remaining()` pulls whatever's currently
+queued from each camera exactly once and encodes a final pair if both are
+present, instead of looping until both queues are simultaneously empty.
+`Recorder.stop()` also now checks `thread.is_alive()` after `join(timeout=
+10.0)` and raises rather than proceeding if the capture thread is still
+running.
+
+**Why:** Found via a real crash: `app.py`'s cameras keep running (for the
+live preview) well past a recording session ending, continuously refilling
+their queues. The old `_drain_remaining` looped until a poll found both
+queues empty at once - a condition that's only reliably reached if encoding
+keeps pace with the camera's frame rate. When it doesn't (observed on a dev
+machine at the full 2560x1080 canvas), the drain loop chases fresh frames
+indefinitely and never returns. `stop()`'s `thread.join(timeout=10.0)`
+would then time out, and - since it never checked whether the join actually
+succeeded - proceed to call `stream.encode(None)` to flush from the calling
+thread while the capture thread was still mid-`encode()` on the same
+stream. Two threads touching one PyAV encoder produced
+`av.error.EOFError: avcodec_send_frame()`.
+
+**Consequence:** A single bounded pass can't silently loop forever, so the
+join can no longer race the flush this way. If the capture thread somehow
+still doesn't finish in 10s, `stop()` now raises instead of quietly
+producing a corrupt or truncated `composite.mkv`.
+
+**Rejected:** Raising the join timeout, or stopping the cameras before
+calling `recorder.stop()`. Both mask the symptom without fixing the actual
+mismatch between "drain until empty" and "cameras never stop."
+
+---
+
+## 2026-08-11 — `compositor.py` canvas fills were the frame-drop bottleneck, not the encoder
+
+**Decided:** `_fit_into_pane` now writes resize output directly into a
+`dst` view of the caller's canvas (via `cv2.resize(..., dst=...)`) instead
+of building a separate array and copying it in, and only calls a new
+`_fast_fill` helper when there's actual letterbox padding to cover.
+`side_by_side`/`picture_in_picture` allocate their canvas with `np.empty`
+instead of `np.full`, since between them the `_fit_into_pane` calls always
+write every pixel.
+
+**Why:** Recordings at the real target resolutions (1600x1200 + 2056x1542
+composited into 2560x1080 @ 30fps) were dropping frames at a rate that
+scaled linearly with duration - a sustained per-tick deficit, not a
+one-time cost. Instrumenting every pipeline stage (`side_by_side` →
+`draw_timer` → `VideoFrame.from_ndarray` → `.reformat(yuv420p)` →
+`stream.encode()` → `container.mux()`) found the cause: `np.full(shape,
+(0,0,0))` - a *tuple* fill value - forces numpy into a slow element-wise
+broadcast loop instead of a memset. Three of these ran per frame (the
+outer canvas plus one per pane), costing ~23ms of a ~36-39ms
+`side_by_side` call, out of a ~50-53ms total tick against a 33.3ms budget
+at 30fps. The encoder itself was cheap (~3ms even at "ultrafast") and was
+never the bottleneck - which is why the earlier `veryfast` → `ultrafast`
+preset swap "reduced but didn't eliminate" drops: it optimized a small
+piece of the problem. The outer canvas fill in `side_by_side` was also
+pure waste on top of being slow: it's unconditionally fully overwritten by
+the two pane writes that follow it, so nothing ever read the color it
+just spent 11.5ms painting.
+
+**Measured effect** (30s recording, real `Recorder`, full production
+settings): dropped frames per camera went from a sustained ~37% of frames
+(336/899 in a matched benchmark run) to **2 out of 901** - not a tuning
+change, a bug fix. `side_by_side` cost dropped from ~36ms to ~13ms mean.
+Pixel output is unchanged (verified byte-identical against the prior
+implementation across several letterbox/background-color cases before
+replacing it).
+
+**Rejected:** Increasing `BaseCamera`'s queue size to buffer more frames.
+That only delays when drops start - it doesn't fix the underlying
+per-tick deficit, so drops would still accumulate linearly, just from a
+later starting point. Shrinking the recording canvas was also rejected -
+it would help the same way (less work per frame) but directly undoes the
+"wide canvas, not a 1080p split" decision above, and wasn't needed once
+the actual bug was fixed.

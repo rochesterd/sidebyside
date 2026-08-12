@@ -6,29 +6,46 @@ import cv2
 import numpy as np
 
 
-def _fit_into_pane(
-    image: np.ndarray, pane_w: int, pane_h: int, background: tuple[int, int, int] = (0, 0, 0)
-) -> np.ndarray:
-    """Resize `image` to fit within pane_w x pane_h preserving aspect ratio,
-    letterboxing with `background` to fill the rest of the pane exactly.
+def _fast_fill(canvas: np.ndarray, color: tuple[int, int, int]) -> None:
+    """Fill `canvas` (uint8, HxWx3) with a solid color in place.
+
+    `np.full(shape, color)` / `canvas[...] = color` broadcast a (3,)-shaped
+    fill value across every pixel through numpy's slow element-wise path -
+    about 10x slower than a real memset at the canvas sizes used here
+    (measured: ~11.5ms vs ~1ms+ for a 2560x1080 frame), and this used to
+    run three times per composited frame. cv2.rectangle's solid fill goes
+    through OpenCV's fill path instead. See DECISIONS.md.
     """
-    pane_w = max(1, pane_w)
-    pane_h = max(1, pane_h)
+    cv2.rectangle(canvas, (0, 0), (canvas.shape[1] - 1, canvas.shape[0] - 1), color, thickness=-1)
+
+
+def _fit_into_pane(
+    image: np.ndarray, dst: np.ndarray, background: tuple[int, int, int] = (0, 0, 0)
+) -> None:
+    """Resize `image` to fit within `dst`'s shape preserving aspect ratio,
+    writing the result directly into `dst` (a view into the caller's
+    canvas) rather than building and copying a separate array. Only pays
+    for a background fill when there's actually letterbox padding to
+    cover - most calls in this module resize to exactly fill their target
+    area and need no fill at all.
+    """
+    pane_h, pane_w = dst.shape[:2]
     h, w = image.shape[:2]
     if w == 0 or h == 0:
-        return np.full((pane_h, pane_w, 3), background, dtype=np.uint8)
+        _fast_fill(dst, background)
+        return
 
     scale = min(pane_w / w, pane_h / h)
     new_w = max(1, round(w * scale))
     new_h = max(1, round(h * scale))
     interp = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-    resized = cv2.resize(image, (new_w, new_h), interpolation=interp)
 
-    canvas = np.full((pane_h, pane_w, 3), background, dtype=np.uint8)
     x_off = (pane_w - new_w) // 2
     y_off = (pane_h - new_h) // 2
-    canvas[y_off : y_off + new_h, x_off : x_off + new_w] = resized
-    return canvas
+    if x_off > 0 or y_off > 0:
+        _fast_fill(dst, background)
+
+    cv2.resize(image, (new_w, new_h), dst=dst[y_off : y_off + new_h, x_off : x_off + new_w], interpolation=interp)
 
 
 def side_by_side(
@@ -49,10 +66,14 @@ def side_by_side(
         out_size = (lw + rw, max(lh, rh))
 
     out_w, out_h = out_size
-    pane_w = out_w // 2
-    canvas = np.full((out_h, out_w, 3), background, dtype=np.uint8)
-    canvas[:, :pane_w] = _fit_into_pane(left, pane_w, out_h, background)
-    canvas[:, pane_w:] = _fit_into_pane(right, out_w - pane_w, out_h, background)
+    pane_w = max(1, out_w // 2)
+    # Uninitialized on purpose: the two _fit_into_pane calls below always
+    # write every pixel between them (each pane is either fully covered by
+    # the resized image or has its own letterbox fill), so pre-filling the
+    # whole canvas here would just be wasted work immediately overwritten.
+    canvas = np.empty((out_h, out_w, 3), dtype=np.uint8)
+    _fit_into_pane(left, canvas[:, :pane_w], background)
+    _fit_into_pane(right, canvas[:, pane_w:], background)
     return canvas
 
 
@@ -76,11 +97,11 @@ def picture_in_picture(
         out_size = (w, h)
 
     out_w, out_h = out_size
-    canvas = _fit_into_pane(main, out_w, out_h, background)
+    canvas = np.empty((out_h, out_w, 3), dtype=np.uint8)
+    _fit_into_pane(main, canvas, background)
 
     pip_w = max(1, round(out_w * pip_scale))
     pip_h = max(1, round(out_h * pip_scale))
-    pip_resized = _fit_into_pane(pip, pip_w, pip_h, background)
 
     if corner == "top-left":
         x0, y0 = margin, margin
@@ -94,7 +115,7 @@ def picture_in_picture(
     x0 = max(0, min(x0, out_w - pip_w))
     y0 = max(0, min(y0, out_h - pip_h))
 
-    canvas[y0 : y0 + pip_h, x0 : x0 + pip_w] = pip_resized
+    _fit_into_pane(pip, canvas[y0 : y0 + pip_h, x0 : x0 + pip_w], background)
     if border_thickness > 0:
         cv2.rectangle(
             canvas,
