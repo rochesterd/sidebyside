@@ -91,7 +91,15 @@ a UI poll loop can stall the display waiting on a queue.
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
 | `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
+| `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
+| `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: one Start button, one Stop button, nothing else clickable. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
 | `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
+| `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
+
+`app.py` is what a student actually runs. `preview.py` is a development
+tool (layout dropdown, skew readout) for eyeballing compositing changes
+without going through a full record/stop cycle — never point a student at
+it, it has no Start/Stop discipline.
 
 ## Recording output
 

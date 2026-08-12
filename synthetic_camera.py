@@ -48,6 +48,25 @@ class SyntheticCamera(BaseCamera):
     def resolution(self) -> tuple[int, int]:
         return (self._width, self._height)
 
+    @property
+    def drop_rate(self) -> float:
+        return self._drop_rate
+
+    @drop_rate.setter
+    def drop_rate(self, value: float) -> None:
+        """Mutable so tests can inject a fault mid-run, e.g. set to 1.0 to
+        simulate a camera going silent partway through a recording.
+        """
+        self._drop_rate = value
+
+    @property
+    def latency(self) -> float:
+        return self._latency
+
+    @latency.setter
+    def latency(self, value: float) -> None:
+        self._latency = value
+
     def _open(self) -> None:
         self._start_time = time.monotonic()
         self._counter = 0

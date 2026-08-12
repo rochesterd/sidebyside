@@ -168,3 +168,54 @@ the expected count.
 **Rejected:** Filtering on `packet.dts is None` — looked like the obvious
 "skip flush packets" check and is the kind of thing a future cleanup could
 reintroduce.
+
+---
+
+## 2026-08-11 — Disk-space preflight: 2x a 10-minute estimate, not a flat number
+
+**Decided:** `app.py`/`kiosk.py` block Start until free space under
+`sessions/` is at least 2x the estimated size of a 10-minute recording at
+Recorder's default canvas (2560x1080, 30fps), using ~0.08 bits/pixel/frame
+as the libx264 crf=23 quality estimate (~498 MB for 10 minutes at those
+settings, so ~1 GB required).
+
+**Why:** A flat "500 MB free" style check doesn't scale if the canvas
+resolution changes later, and undercounts by half in practice: `Recorder`
+keeps both `composite.mkv` and `composite.mp4` after `stop()` (see the
+MKV/MP4 decision above), so a completed session occupies roughly two
+copies of the single-file estimate, not one. The 2x isn't a safety margin
+bolted on top — it's what one real session needs on disk. 10 minutes was
+picked as "a full CSE practice attempt," not a hard limit; recordings can
+run longer or shorter, this is only a preflight tripwire.
+
+**Rejected:** Checking free space only once at launch. Disk fills up over a
+day of back-to-back student sessions; the check re-runs on a timer (same
+poll as the camera-liveness check) so Start disables live if space runs
+low mid-day, not just at boot.
+
+---
+
+## 2026-08-11 — 2-second stall timeout, and ERROR is a transient state
+
+**Decided:** During recording, if a camera's `Frame.index` hasn't advanced
+for 2 seconds, `kiosk.KioskController` stops the recording and enters
+`State.ERROR` immediately. The next `poll_preflight()` call (same timer,
+next tick) re-evaluates conditions and moves `state` on to READY/IDLE —
+`State.ERROR` isn't a stuck state requiring a dismiss action. What
+persists until the next session starts is `error_message` and
+`last_session_info`, which the UI displays in a dedicated banner/summary
+label independent of `state`.
+
+**Why:** 2 seconds is short enough that "loud and early" actually means
+early — at 30fps that's ~60 missed frames, well past normal jitter but
+fast enough that a student doesn't practice for two more minutes against a
+frozen pane before finding out. The transient-ERROR design exists because
+CLAUDE.md's kiosk constraint is strictly two buttons, Start and Stop —
+adding a third "acknowledge error" button to clear a stuck ERROR state
+would violate that. Auto-resolving `state` while keeping the banner text
+sticky gets both: the state machine never wedges, and the failure stays
+visible until a student (or staff) starts a new session.
+
+**Rejected:** A dismiss/acknowledge button. Simpler state machine, but
+breaks the one-Start-one-Stop kiosk rule for a corner case that doesn't
+need a third control.

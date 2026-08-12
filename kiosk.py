@@ -1,0 +1,238 @@
+"""Kiosk state machine: idle -> ready -> recording -> error -> idle.
+
+No Qt dependency, deliberately. app.py is a thin PySide6 shell that polls
+this class on a timer and reflects what it reports; every actual decision
+(when Start may be pressed, when a stall counts as a failure, what the
+post-session summary contains) lives here so it can be unit-tested
+headlessly with SyntheticCamera, the same way test_recorder.py drives
+Recorder headlessly.
+"""
+
+from __future__ import annotations
+
+import enum
+import shutil
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from camera import BaseCamera
+from recorder import Recorder
+
+# --- Disk-space preflight -------------------------------------------------
+#
+# libx264 at crf=23 (Recorder's default) targets quality, not a fixed
+# bitrate, but ~0.08 bits/pixel/frame is a standard rule of thumb for
+# moderate-motion content at that quality. At Recorder's default 2560x1080
+# canvas and 30fps:
+#
+#   bits/sec  = 0.08 * (2560 * 1080) * 30        ~= 6.64 Mbps
+#   bytes/sec = bits/sec / 8                      ~= 830 KB/s
+#   10 minutes = bytes/sec * 600                  ~= 498 MB
+#
+# Recorder.stop() keeps both composite.mkv and composite.mp4 (the remux
+# doesn't delete the source, on purpose - see DECISIONS.md), so a completed
+# 10-minute session actually occupies about *two* copies of that estimate
+# on disk. That's where "2x" comes from below: it isn't a safety margin
+# stacked on top, it's what one session literally needs once both files
+# exist. See DECISIONS.md for the full reasoning and chosen thresholds.
+BITS_PER_PIXEL_ESTIMATE = 0.08
+TARGET_SESSION_MINUTES = 10.0
+REQUIRED_SPACE_MULTIPLIER = 2.0
+
+# How long a camera's frame index may stay unchanged during a recording
+# before it counts as stalled. See DECISIONS.md.
+DEFAULT_STALL_TIMEOUT_S = 2.0
+
+
+def estimate_recording_bytes(
+    width: int,
+    height: int,
+    fps: float,
+    minutes: float = TARGET_SESSION_MINUTES,
+    bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
+) -> float:
+    bytes_per_second = (bits_per_pixel * width * height * fps) / 8.0
+    return bytes_per_second * minutes * 60.0
+
+
+def _existing_ancestor(path: Path) -> Path:
+    """Walk up from `path` to the nearest directory that actually exists,
+    so shutil.disk_usage has something to measure before sessions/ is
+    ever created.
+    """
+    path = path.resolve()
+    while not path.exists():
+        parent = path.parent
+        if parent == path:
+            return Path(path.anchor or ".")
+        path = parent
+    return path
+
+
+class State(enum.Enum):
+    IDLE = "idle"
+    READY = "ready"
+    RECORDING = "recording"
+    ERROR = "error"
+
+
+@dataclass
+class PreflightStatus:
+    cameras_ready: bool
+    disk_ok: bool
+    free_bytes: int
+    required_bytes: float
+
+    @property
+    def ok(self) -> bool:
+        return self.cameras_ready and self.disk_ok
+
+
+class KioskController:
+    def __init__(
+        self,
+        camera_a: BaseCamera,
+        camera_b: BaseCamera,
+        name_a: str = "camera_a",
+        name_b: str = "camera_b",
+        output_root: str | Path = "sessions",
+        width: int = 2560,
+        height: int = 1080,
+        fps: int = 30,
+        stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
+        target_minutes: float = TARGET_SESSION_MINUTES,
+        bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
+        disk_usage_fn: Callable[[str], object] = shutil.disk_usage,
+        recorder_factory: Callable[[], Recorder] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.camera_a = camera_a
+        self.camera_b = camera_b
+        self.output_root = Path(output_root)
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.stall_timeout_s = stall_timeout_s
+
+        self._disk_usage_fn = disk_usage_fn
+        self._clock = clock
+        self._required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
+            width, height, fps, minutes=target_minutes, bits_per_pixel=bits_per_pixel
+        )
+        self._recorder_factory = recorder_factory or (
+            lambda: Recorder(
+                camera_a,
+                camera_b,
+                name_a=name_a,
+                name_b=name_b,
+                output_root=str(self.output_root),
+                width=width,
+                height=height,
+                fps=fps,
+            )
+        )
+
+        self.state = State.IDLE
+        self.error_message: str | None = None
+        self.last_session_info: dict | None = None
+        self.last_session_dir: Path | None = None
+
+        self._recorder: Recorder | None = None
+        self._camera_names = {"camera_a": name_a, "camera_b": name_b}
+        self._last_index: dict[str, int] = {"camera_a": -1, "camera_b": -1}
+        self._last_progress_time: dict[str, float] = {}
+
+    # --- Idle / ready -------------------------------------------------
+
+    def poll_preflight(self) -> PreflightStatus:
+        """Call regularly while not recording. Moves between IDLE and
+        READY based on current camera/disk conditions; also where an ERROR
+        state resolves back to IDLE/READY once conditions look healthy
+        again. error_message / last_session_info are left in place so the
+        UI can keep showing the last failure until the next session starts.
+        """
+        usage = self._disk_usage_fn(str(_existing_ancestor(self.output_root)))
+        status = PreflightStatus(
+            cameras_ready=self._cameras_ready(),
+            disk_ok=usage.free >= self._required_bytes,
+            free_bytes=usage.free,
+            required_bytes=self._required_bytes,
+        )
+        if self.state != State.RECORDING:
+            self.state = State.READY if status.ok else State.IDLE
+        return status
+
+    def _cameras_ready(self) -> bool:
+        return self.camera_a.get_latest() is not None and self.camera_b.get_latest() is not None
+
+    # --- Recording ------------------------------------------------------
+
+    def start_recording(self) -> None:
+        if self.state != State.READY:
+            raise RuntimeError(f"cannot start recording from state {self.state}")
+
+        self._recorder = self._recorder_factory()
+        self._recorder.start()
+        self.error_message = None
+        self.last_session_info = None
+        self.last_session_dir = None
+
+        now = self._clock()
+        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
+            frame = camera.get_latest()
+            self._last_index[key] = frame.index if frame is not None else -1
+            self._last_progress_time[key] = now
+
+        self.state = State.RECORDING
+
+    def poll_recording(self) -> None:
+        """Call regularly while RECORDING. If a camera's frame index hasn't
+        advanced for stall_timeout_s, stops the recording and moves to
+        ERROR immediately - loud and early, per CLAUDE.md, rather than
+        letting a broken recording run to completion.
+        """
+        if self.state != State.RECORDING:
+            return
+
+        now = self._clock()
+        stalled = []
+        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
+            frame = camera.get_latest()
+            index = frame.index if frame is not None else -1
+            if index != self._last_index[key]:
+                self._last_index[key] = index
+                self._last_progress_time[key] = now
+                continue
+            if now - self._last_progress_time[key] >= self.stall_timeout_s:
+                stalled.append(key)
+
+        if stalled:
+            names = ", ".join(self._camera_names[key] for key in stalled)
+            self._fail(
+                f"No new frames from {names} for {self.stall_timeout_s:.1f}s+. "
+                "Recording stopped."
+            )
+
+    def stop_recording(self) -> dict:
+        if self.state != State.RECORDING:
+            raise RuntimeError(f"cannot stop recording from state {self.state}")
+        session_info = self._recorder.stop()
+        self.last_session_dir = self._recorder.session_dir
+        self._recorder = None
+        self.last_session_info = session_info
+        self.error_message = None
+        self.state = State.IDLE
+        return session_info
+
+    def _fail(self, message: str) -> None:
+        self.error_message = message
+        if self._recorder is not None:
+            try:
+                self.last_session_info = self._recorder.stop()
+            except Exception as exc:
+                self.last_session_info = {"error": f"recorder failed to stop cleanly: {exc}"}
+            self.last_session_dir = self._recorder.session_dir
+            self._recorder = None
+        self.state = State.ERROR
