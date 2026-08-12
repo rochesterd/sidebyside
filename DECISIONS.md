@@ -424,3 +424,61 @@ smoke test.
 test before anyone trusts `IdsCamera` against it — the "one class for
 both" decision above is sound on API-surface grounds, but is now
 verified for one of the two cameras, not both.
+
+---
+
+## 2026-08-12 — Slit lamp camera smoke test: one more bug fixed, one real hardware limitation confirmed and accepted
+
+**Decided:** Ran `tools/smoke_test_camera.py` against the real slit lamp
+camera (UI325xCP-C, uEye Transport Layer, serial 4103484089) for the
+first time, closing the "Open" item above. One more bug found and fixed;
+one limitation SETUP.md Section 3 already warned about turned out to be
+real, and is accepted rather than worked around.
+
+**Bug — `DataStream.PayloadSize()` isn't implemented on the uEye
+Transport Layer.** Raises `InternalErrorException` wrapping GenTL error
+`GC_ERR_NOT_IMPLEMENTED` (`STREAM_INFO_PAYLOAD_SIZE is not
+implemented!`) — note the exception class, not `NotImplementedException`
+despite the underlying GenTL code, and this may differ by transport
+layer. Fixed with `_payload_size()`: try `DataStream.PayloadSize()`
+first (still the primary path, unchanged and still verified on the
+Keeler), catch both `NotImplementedException` and
+`InternalErrorException`, and fall back to reading the standard
+`PayloadSize` GenICam node from the remote device's node map instead —
+confirmed on this camera to report the same value
+(1600×1200×1 byte/px = 1920000 for `BayerRG8`) that the DataStream
+method would have.
+
+**Limitation — no `ExposureAuto`/`GainAuto` on this camera.** Confirmed
+via `IsAvailable()`: both `False`, before and after
+`StartAcquisition()`. `_converge_auto_exposure()`'s existing
+`IsAvailable()`/`IsWriteable()` guard (written before any hardware could
+verify it — see the "One IdsCamera class" entry above) skips both
+correctly, so this did not require a code change, only confirms the
+defensive path was right. Captured frames without hand-tuned
+exposure/gain were near-black (raw max ~20/255) — manually maxing
+`ExposureTime` (87.2ms, its ceiling) and `Gain` (4.0, its ceiling — note
+this camera's gain ceiling is far below the Keeler's ~25x) brought raw
+mean from ~10 to ~76/255, confirming the capture/conversion pipeline
+itself is correct for this camera too; the near-black default is purely
+an exposure problem with no software fix available.
+
+**Why accepted rather than worked around:** This camera's real operating
+context is imaging through the slit lamp's own illumination path, not
+ambient room light (same reasoning as the Keeler needing to be worn on
+the BIO headset, see the exposure-convergence entry above) — a bench
+test with no instrument light on isn't representative, and there's no
+GenICam-level auto-exposure to fall back on. A hardcoded exposure/gain
+value would be exactly the kind of measurement-dependent magic constant
+CLAUDE.md's Conventions section warns against, and unlike the Keeler
+there's no way to measure it here without the physical instrument.
+
+**Open:** This camera needs a one-time manual exposure/gain calibration
+via IDS peak Cockpit once mounted on the actual slit lamp with its
+illuminator on, analogous to focusing an optical instrument — not
+something `IdsCamera` can determine on its own. Until that happens,
+whatever `ExposureTime`/`Gain` the device last had persists across
+sessions (GenICam devices retain these across power cycles unless
+explicitly changed) — fine once correctly tuned once, but means a stale
+or accidentally-changed value would silently carry into the next kiosk
+session with no code-level check catching it.

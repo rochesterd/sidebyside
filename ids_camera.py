@@ -15,13 +15,16 @@ keeps working against Frame.image unmodified. Source pixel format is read
 from each captured buffer rather than assumed, since the two camera
 models may use different Bayer patterns.
 
-Hardware-verified against the Keeler (U3-327xCP-C, serial 4110050487) via
-tools/smoke_test_camera.py as of 2026-08-12 — see DECISIONS.md's "Hardware
-smoke test found two real IdsCamera bugs" entry for what that surfaced and
-fixed. The slit lamp camera (UI-3250CP-C-HQ, via the uEye Transport Layer)
-has not been hardware-tested; per SETUP.md Section 3 that transport layer
-exposes a more limited feature set, so _converge_auto_exposure() in
-particular is unverified against it.
+Hardware-verified against both real cameras via tools/smoke_test_camera.py
+as of 2026-08-12 -- Keeler (U3-327xCP-C, serial 4110050487) and slit lamp
+(UI325xCP-C, uEye Transport Layer, serial 4103484089). See DECISIONS.md's
+two "Hardware smoke test" entries for what each surfaced and fixed. Known
+platform difference between them, both handled: the uEye Transport Layer
+doesn't implement DataStream.PayloadSize() (_payload_size() falls back to
+the NodeMap) and has no ExposureAuto/GainAuto
+(_converge_auto_exposure() skips both gracefully) -- the slit lamp camera
+needs a one-time manual exposure/gain calibration via IDS peak Cockpit
+once mounted on the instrument, which this module cannot do on its own.
 """
 
 from __future__ import annotations
@@ -100,7 +103,7 @@ class IdsCamera(BaseCamera):
             self._height = int(self._node_map.FindNode("Height").Value())
 
             data_stream = self._device.DataStreams()[0].OpenDataStream()
-            payload_size = data_stream.PayloadSize()
+            payload_size = self._payload_size(data_stream)
             buffer_count = max(data_stream.NumBuffersAnnouncedMinRequired(), _MIN_BUFFER_COUNT)
             for _ in range(buffer_count):
                 buffer = data_stream.AllocAndAnnounceBuffer(payload_size)
@@ -122,6 +125,25 @@ class IdsCamera(BaseCamera):
             # partial-init state (every step it touches is None-guarded).
             self._close()
             raise
+
+    def _payload_size(self, data_stream: ids_peak.DataStream) -> int:
+        """DataStream.PayloadSize() raises NotImplementedException on the
+        uEye Transport Layer (slit lamp camera) -- STREAM_INFO_PAYLOAD_SIZE
+        isn't implemented there, confirmed via hardware smoke test. The
+        standard GenICam PayloadSize node on the remote device's node map
+        works on both cameras, so use that as the fallback rather than the
+        primary path, to avoid changing already-verified behavior on the
+        Keeler.
+        """
+        try:
+            return data_stream.PayloadSize()
+        except (ids_peak.NotImplementedException, ids_peak.InternalErrorException):
+            # The GenTL error code underneath is GC_ERR_NOT_IMPLEMENTED either
+            # way, but which Python exception class it surfaces as depends on
+            # the transport layer -- confirmed InternalErrorException on the
+            # uEye Transport Layer via hardware smoke test; catching both
+            # rather than trusting a single mapping across producers.
+            return int(self._node_map.FindNode("PayloadSize").Value())
 
     def _converge_auto_exposure(self) -> None:
         """One-time auto-exposure/auto-gain pass against whatever light this

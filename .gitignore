@@ -10,4 +10,4 @@ vendor/
 *.mkv
 *.mp4
 .vscode/
-smoke_test_frame.png
+smoke_test_frame*.png
