@@ -23,6 +23,7 @@ class _CameraTrack:
     camera: BaseCamera
     last_frame: Frame | None = None
     last_index: int | None = None
+    received: int = 0
     dropped: int = 0
     first_timestamp: float | None = None
 
@@ -35,10 +36,15 @@ class _CameraTrack:
             self.dropped += frame.index - self.last_index - 1
         self.last_index = frame.index
         self.last_frame = frame
+        self.received += 1
 
     @property
     def frame_count(self) -> int:
-        return 0 if self.last_index is None else self.last_index + 1
+        # Deliberately `received`, not `last_index + 1`: Frame.index is now
+        # the source's own frame sequence number (see BaseCamera._grab) and
+        # can legitimately have gaps or not start at 0, so it no longer
+        # equals a count of frames actually received. See DECISIONS.md.
+        return self.received
 
 
 class Recorder:

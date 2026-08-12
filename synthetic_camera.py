@@ -74,11 +74,12 @@ class SyntheticCamera(BaseCamera):
     def _close(self) -> None:
         pass
 
-    def _grab(self) -> tuple[np.ndarray, float] | None:
+    def _grab(self) -> tuple[np.ndarray, float, int] | None:
         if self._latency > 0:
             time.sleep(self._latency)
 
-        target_time = self._start_time + self._counter * self._frame_period
+        frame_index = self._counter
+        target_time = self._start_time + frame_index * self._frame_period
         now = time.monotonic()
         if target_time > now:
             time.sleep(target_time - now)
@@ -87,12 +88,17 @@ class SyntheticCamera(BaseCamera):
         self._counter += 1
 
         if self._drop_rate > 0 and random.random() < self._drop_rate:
+            # frame_index is deliberately not returned here: this slot was
+            # "produced" (the counter advanced past it) but never
+            # delivered, the same way a real camera's FrameID can skip a
+            # value it silently dropped on the wire. See camera.py's
+            # BaseCamera._grab docstring.
             return None
 
-        image = self._render(elapsed)
-        return image, time.monotonic()
+        image = self._render(elapsed, frame_index)
+        return image, time.monotonic(), frame_index
 
-    def _render(self, elapsed: float) -> np.ndarray:
+    def _render(self, elapsed: float, frame_index: int) -> np.ndarray:
         w, h = self._width, self._height
         image = np.zeros((h, w, 3), dtype=np.uint8)
         image[:] = (30, 30, 30)
@@ -123,7 +129,7 @@ class SyntheticCamera(BaseCamera):
         )
         cv2.putText(
             image,
-            f"frame {self._counter - 1}",
+            f"frame {frame_index}",
             (20, int(50 * scale) + 20 + int(50 * scale)),
             cv2.FONT_HERSHEY_SIMPLEX,
             scale,

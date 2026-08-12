@@ -18,7 +18,7 @@ import numpy as np
 class Frame:
     image: np.ndarray  # BGR, HxWx3, uint8
     timestamp: float  # time.monotonic() at capture
-    index: int  # sequential, starting at 0
+    index: int  # source's own frame sequence number -- see BaseCamera._grab
 
 
 class BaseCamera(ABC):
@@ -26,14 +26,13 @@ class BaseCamera(ABC):
 
     Subclasses implement _open, _close, _grab, and resolution. _grab is
     called repeatedly on the capture thread and should return a fresh
-    (image, timestamp) pair or None if no frame was available.
+    (image, timestamp, index) triple or None if no frame was available.
     """
 
     def __init__(self, queue_size: int = 2):
         self._queue: queue.Queue[Frame] = queue.Queue(maxsize=queue_size)
         self._latest_lock = threading.Lock()
         self._latest: Frame | None = None
-        self._index = 0
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
@@ -46,8 +45,25 @@ class BaseCamera(ABC):
         """Release resources acquired in _open."""
 
     @abstractmethod
-    def _grab(self) -> tuple[np.ndarray, float] | None:
-        """Produce one (BGR image, monotonic timestamp) pair, or None."""
+    def _grab(self) -> tuple[np.ndarray, float, int] | None:
+        """Produce one (BGR image, monotonic timestamp, index) triple, or
+        None if no frame was available.
+
+        `index` must be the *source's* own frame sequence number (a real
+        camera's own FrameID, or an equivalent counter for a synthetic
+        source) rather than anything this class assigns itself. A consumer
+        draining frames in order via read() detects gaps by comparing
+        consecutive Frame.index values (see recorder.py) -- that only
+        catches real drops if the number reported here reflects frames the
+        source actually produced, including ones the source itself skipped
+        without this class ever seeing them via a None return. Assigning a
+        gapless counter here instead (as earlier versions of this class
+        did) makes every source look drop-free by construction, silently
+        hiding exactly the failure CLAUDE.md's Hardware section warns
+        about: USB3 Vision degrading by dropping frames rather than
+        raising an error. Not required to start at 0 or be gapless --
+        recorder.py's frame counting does not depend on either.
+        """
 
     @property
     @abstractmethod
@@ -75,9 +91,8 @@ class BaseCamera(ABC):
             result = self._grab()
             if result is None:
                 continue
-            image, timestamp = result
-            frame = Frame(image=image, timestamp=timestamp, index=self._index)
-            self._index += 1
+            image, timestamp, index = result
+            frame = Frame(image=image, timestamp=timestamp, index=index)
 
             with self._latest_lock:
                 self._latest = frame

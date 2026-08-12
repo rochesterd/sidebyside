@@ -73,6 +73,41 @@ class TestRecorder(unittest.TestCase):
                 self.assertGreaterEqual(cam_info["frame_count"], 1)
                 self.assertGreaterEqual(cam_info["dropped_frames"], 0)
 
+    def test_dropped_frames_are_detected_from_the_camera_s_own_drops(self):
+        """Regression test: Frame.index must be the source's own frame
+        sequence number, not a gapless counter BaseCamera assigns itself
+        (see camera.py's BaseCamera._grab docstring and DECISIONS.md) --
+        otherwise a camera's own dropped frames are invisible to
+        session.json's dropped_frames count, silently. SyntheticCamera's
+        drop_rate simulates exactly that: frames the source "produced" (its
+        internal counter advanced past them) but never delivered.
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            camera_a = SyntheticCamera(160, 120, name="cam-a", fps=30, drop_rate=0.3)
+            camera_b = SyntheticCamera(160, 120, name="cam-b", fps=30)
+            camera_a.start()
+            camera_b.start()
+            try:
+                recorder = Recorder(
+                    camera_a,
+                    camera_b,
+                    name_a="cam-a",
+                    name_b="cam-b",
+                    output_root=tmp_root,
+                    width=160,
+                    height=120,
+                    fps=30,
+                    preset="ultrafast",
+                )
+                recorder.start()
+                time.sleep(3)
+                session_info = recorder.stop()
+            finally:
+                camera_a.stop()
+                camera_b.stop()
+
+            self.assertGreater(session_info["cameras"]["camera_a"]["dropped_frames"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

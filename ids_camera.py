@@ -15,6 +15,12 @@ keeps working against Frame.image unmodified. Source pixel format is read
 from each captured buffer rather than assumed, since the two camera
 models may use different Bayer patterns.
 
+Frame.index is each buffer's own Buffer.FrameID(), not a locally-assigned
+counter -- required by BaseCamera._grab's contract so a consumer draining
+frames via read() can detect real gaps (including ones the device itself
+introduced) rather than a renumbering that's gapless by construction. See
+DECISIONS.md's "Frame.index was never actually gap-detectable" entry.
+
 Hardware-verified against both real cameras via tools/smoke_test_camera.py
 as of 2026-08-12 -- Keeler (U3-327xCP-C, serial 4110050487) and slit lamp
 (UI325xCP-C, uEye Transport Layer, serial 4103484089). See DECISIONS.md's
@@ -212,13 +218,19 @@ class IdsCamera(BaseCamera):
             self._data_stream = None
             ids_peak.Library.Close()
 
-    def _grab(self) -> tuple[np.ndarray, float] | None:
+    def _grab(self) -> tuple[np.ndarray, float, int] | None:
         try:
             buffer = self._data_stream.WaitForFinishedBuffer(_ACQUISITION_TIMEOUT_MS)
         except ids_peak.TimeoutException:
             return None
 
         timestamp = time.monotonic()
+        # The device's own frame sequence number, read before the buffer is
+        # requeued -- see BaseCamera._grab's docstring for why this must be
+        # the source's own counter rather than one we assign ourselves.
+        # Confirmed via hardware smoke test to start at 0 and increment per
+        # frame on both real cameras.
+        frame_id = buffer.FrameID()
         image = ids_peak_ipl.Image.from_image_view(buffer.ToImageView())
         converted = image.ConvertTo(ids_peak_ipl.PixelFormatName_BGR8)
         # Copy out of the converted Image's own buffer before it goes out
@@ -226,7 +238,7 @@ class IdsCamera(BaseCamera):
         array = converted.get_numpy_3D().copy()
         self._data_stream.QueueBuffer(buffer)
 
-        return array, timestamp
+        return array, timestamp, frame_id
 
     def _open_device(self) -> ids_peak.Device:
         device_manager = ids_peak.DeviceManager.Instance()

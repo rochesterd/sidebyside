@@ -482,3 +482,71 @@ sessions (GenICam devices retain these across power cycles unless
 explicitly changed) — fine once correctly tuned once, but means a stale
 or accidentally-changed value would silently carry into the next kiosk
 session with no code-level check catching it.
+
+---
+
+## 2026-08-12 — Frame.index was never actually gap-detectable; fixed, and a dual-camera bandwidth test confirms no real drops
+
+**Decided:** Ran `tools/dual_camera_smoke_test.py` (new) with both real
+cameras plugged in and streaming simultaneously, to test CLAUDE.md's
+single most emphasized hardware risk directly: "USB3 Vision degrades by
+silently dropping frames rather than raising an error." That test
+surfaced a real, previously-invisible bug in `camera.py` itself —
+unrelated to IDS hardware specifically — which is now fixed.
+
+**Bug — `BaseCamera._run()` assigned `Frame.index` as its own gapless
+counter, incrementing only on delivered frames.** This meant
+`Frame.index` could *never* show a gap from any frame a camera's
+`_grab()` failed to deliver — not `SyntheticCamera`'s injected
+`drop_rate`, not a real camera's `WaitForFinishedBuffer` timeout, not a
+device silently skipping frames on the wire. `recorder.py`'s
+`_CameraTrack.absorb()` already had correct gap-detection logic
+(comparing consecutive `frame.index` values), so it looked like drop
+tracking worked — it just never had a real gap to detect, other than
+this class's own bounded queue evicting a frame a slow *consumer*
+hadn't read yet (which does still create a gap, since eviction happens
+after `Frame.index` is assigned). CLAUDE.md's own module table
+description ("dropped frames ... computed from gaps in Frame.index, not
+estimated") was accurate about the *mechanism* but the mechanism had a
+hole: it only ever caught consumer-side backpressure, never source-side
+loss — exactly the category CLAUDE.md's Hardware section warns about.
+
+**Fix:** `BaseCamera._grab()`'s contract changed from returning
+`(image, timestamp)` to `(image, timestamp, index)` — every camera
+implementation now reports its *own* frame sequence number rather than
+having `BaseCamera` renumber deliveries itself. `SyntheticCamera` uses
+its existing internal counter (which already incremented even for
+`drop_rate`-skipped frames, so this was almost free). `IdsCamera` uses
+`Buffer.FrameID()`, confirmed via hardware smoke test to start at 0 and
+increment per frame on both cameras. `recorder.py`'s
+`_CameraTrack.frame_count` — previously derived as `last_index + 1`,
+which only worked because indices used to be gapless and zero-based —
+now tracks a separate `received` counter instead, since neither
+assumption holds once gaps are real. Added a regression test
+(`test_recorder.py`) proving `SyntheticCamera(drop_rate=0.3)` now
+produces `dropped_frames > 0` in `session.json` — before this fix, that
+exact assertion would have failed regardless of `drop_rate`.
+
+**Bandwidth result, now trustworthy:** with the fix in place,
+`tools/dual_camera_smoke_test.py` showed the Keeler losing ~5% of
+frames (23/425) over a 20s simultaneous run while the slit lamp lost
+none — but a follow-up raw-GenTL check (bypassing `BaseCamera`'s queue
+entirely, reading `DataStream.NumUnderruns()` and `Buffer.FrameID()`
+gaps directly) showed **0 underruns and 0 FrameID gaps on both cameras**
+running simultaneously. So the 23 losses are this process's own
+`BaseCamera` queue (`queue_size=2` default) being evicted by a consumer
+that didn't drain fast enough — not USB bandwidth, not a device-level
+drop. At current settings (Keeler ~20fps native, slit lamp ~11fps
+native/exposure-limited, well under either camera's target), CLAUDE.md's
+core bandwidth concern is not observed.
+
+**Open:** This doesn't yet test the actual worst case CLAUDE.md
+describes (both cameras at full resolution and 30fps) — the slit lamp
+is currently capped well under 30fps by its uncalibrated ~87ms exposure
+(see the entry above), so real target-rate bandwidth testing is blocked
+on that calibration happening first. Separately: whether `queue_size=2`
+needs to grow is still an open question — this test's simple
+read-and-count consumer isn't `Recorder`, which does real per-frame
+encoding work and could behave differently under load. Worth a real
+`Recorder` run against both real cameras once the slit lamp's exposure
+is calibrated, rather than tuning the queue size on guesswork now.
