@@ -9,6 +9,7 @@ what it reports.
 
 from __future__ import annotations
 
+import argparse
 import sys
 
 import cv2
@@ -250,10 +251,34 @@ class KioskWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> BaseCamera:
+    if serial is None:
+        return SyntheticCamera(*resolution, name=name, fps=30)
+    # Imported lazily, not at module level: ids_camera.py pulls in
+    # ids_peak/ids_peak_ipl, which aren't installed (or needed) on a dev
+    # machine running only against SyntheticCamera -- see CLAUDE.md's
+    # Environment section. Importing it unconditionally at the top of this
+    # file would break `python app.py` with no arguments on such a machine.
+    from ids_camera import IdsCamera
+
+    return IdsCamera(serial=serial)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--camera-a-serial",
+        help="IDS camera serial number for camera_a; omit to use SyntheticCamera",
+    )
+    parser.add_argument(
+        "--camera-b-serial",
+        help="IDS camera serial number for camera_b; omit to use SyntheticCamera",
+    )
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
-    camera_a = SyntheticCamera(*CAMERA_A_RESOLUTION, name="cam-a", fps=30)
-    camera_b = SyntheticCamera(*CAMERA_B_RESOLUTION, name="cam-b", fps=30)
+    camera_a = _make_camera(args.camera_a_serial, CAMERA_A_RESOLUTION, "cam-a")
+    camera_b = _make_camera(args.camera_b_serial, CAMERA_B_RESOLUTION, "cam-b")
     window = KioskWindow(camera_a, camera_b, name_a="cam-a", name_b="cam-b")
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()
