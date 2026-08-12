@@ -32,6 +32,7 @@ from synthetic_camera import SyntheticCamera
 
 PREVIEW_FPS = 30
 POLL_MS = 250
+CAMERA_RETRY_MS = 2000
 CAMERA_A_RESOLUTION = (1600, 1200)
 CAMERA_B_RESOLUTION = (2056, 1542)
 PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recording canvas
@@ -60,6 +61,8 @@ class KioskWindow(QMainWindow):
         self.camera_a = camera_a
         self.camera_b = camera_b
         self.controller = KioskController(camera_a, camera_b, name_a=name_a, name_b=name_b)
+        self._camera_names = {"camera_a": name_a, "camera_b": name_b}
+        self._camera_start_errors: dict[str, str] = {}
 
         self.error_banner = QLabel()
         self.error_banner.setWordWrap(True)
@@ -111,8 +114,7 @@ class KioskWindow(QMainWindow):
         central.setLayout(layout)
         self.setCentralWidget(central)
 
-        self.camera_a.start()
-        self.camera_b.start()
+        self._try_start_cameras()
 
         self.preview_timer = QTimer(self)
         self.preview_timer.timeout.connect(self._update_preview)
@@ -122,7 +124,26 @@ class KioskWindow(QMainWindow):
         self.poll_timer.timeout.connect(self._poll_tick)
         self.poll_timer.start(POLL_MS)
 
+        # A real camera's start() can fail for reasons that resolve on
+        # their own (not plugged in yet) as well as ones that don't (wrong
+        # serial, already open elsewhere) -- both look the same from here,
+        # so this just keeps retrying rather than requiring an app restart.
+        # SyntheticCamera's start() never fails, so this is a no-op churn
+        # of a single already-running check for the default synthetic path.
+        self.camera_retry_timer = QTimer(self)
+        self.camera_retry_timer.timeout.connect(self._try_start_cameras)
+        self.camera_retry_timer.start(CAMERA_RETRY_MS)
+
         self._sync_ui(self.controller.poll_preflight())
+
+    def _try_start_cameras(self) -> None:
+        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
+            try:
+                camera.start()
+            except Exception as exc:
+                self._camera_start_errors[key] = str(exc)
+            else:
+                self._camera_start_errors.pop(key, None)
 
     # --- Qt event handlers -------------------------------------------------
 
@@ -179,7 +200,13 @@ class KioskWindow(QMainWindow):
             return "Waiting for cameras..."
         missing = []
         if not preflight.cameras_ready:
-            missing.append("both cameras live")
+            if self._camera_start_errors:
+                errors = "; ".join(
+                    f"{self._camera_names[key]}: {msg}" for key, msg in self._camera_start_errors.items()
+                )
+                missing.append(f"both cameras live ({errors})")
+            else:
+                missing.append("both cameras live")
         if not preflight.disk_ok:
             free_mb = preflight.free_bytes / (1024 * 1024)
             required_mb = preflight.required_bytes / (1024 * 1024)
@@ -212,6 +239,7 @@ class KioskWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.preview_timer.stop()
         self.poll_timer.stop()
+        self.camera_retry_timer.stop()
         if self.controller.state == State.RECORDING:
             try:
                 self.controller.stop_recording()

@@ -91,27 +91,37 @@ class IdsCamera(BaseCamera):
 
     def _open(self) -> None:
         ids_peak.Library.Initialize()
-        self._device = self._open_device()
-        self._remote_device = self._device.RemoteDevice()
-        self._node_map = self._remote_device.NodeMaps()[0]
+        try:
+            self._device = self._open_device()
+            self._remote_device = self._device.RemoteDevice()
+            self._node_map = self._remote_device.NodeMaps()[0]
 
-        self._width = int(self._node_map.FindNode("Width").Value())
-        self._height = int(self._node_map.FindNode("Height").Value())
+            self._width = int(self._node_map.FindNode("Width").Value())
+            self._height = int(self._node_map.FindNode("Height").Value())
 
-        data_stream = self._device.DataStreams()[0].OpenDataStream()
-        payload_size = data_stream.PayloadSize()
-        buffer_count = max(data_stream.NumBuffersAnnouncedMinRequired(), _MIN_BUFFER_COUNT)
-        for _ in range(buffer_count):
-            buffer = data_stream.AllocAndAnnounceBuffer(payload_size)
-            data_stream.QueueBuffer(buffer)
-        self._data_stream = data_stream
+            data_stream = self._device.DataStreams()[0].OpenDataStream()
+            payload_size = data_stream.PayloadSize()
+            buffer_count = max(data_stream.NumBuffersAnnouncedMinRequired(), _MIN_BUFFER_COUNT)
+            for _ in range(buffer_count):
+                buffer = data_stream.AllocAndAnnounceBuffer(payload_size)
+                data_stream.QueueBuffer(buffer)
+            self._data_stream = data_stream
 
-        self._node_map.FindNode("TLParamsLocked").SetValue(1)
-        data_stream.StartAcquisition()
-        self._node_map.FindNode("AcquisitionStart").Execute()
-        self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
+            self._node_map.FindNode("TLParamsLocked").SetValue(1)
+            data_stream.StartAcquisition()
+            self._node_map.FindNode("AcquisitionStart").Execute()
+            self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
-        self._converge_auto_exposure()
+            self._converge_auto_exposure()
+        except Exception:
+            # A failure partway through leaves whatever got opened so far
+            # (device, data stream, a running acquisition) dangling with
+            # nothing to release it -- the next start() attempt would then
+            # fail Control access as "busy" against our own leaked handle,
+            # forever. _close() already tolerates being called from any
+            # partial-init state (every step it touches is None-guarded).
+            self._close()
+            raise
 
     def _converge_auto_exposure(self) -> None:
         """One-time auto-exposure/auto-gain pass against whatever light this
