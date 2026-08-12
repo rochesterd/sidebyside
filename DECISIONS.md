@@ -133,3 +133,38 @@ non-profit educational tool has no reason to object to.
 commercially, the encoder choice (hardware NVENC/QuickSync instead of x264)
 and the Qt binding both need revisiting. Cheaper to change before building
 around them.
+
+---
+
+## 2026-08-11 — recorder.py ships without latency correction
+
+**Decided:** `recorder.py` composites whatever each camera's queue has most
+recently delivered, with no ring buffer or measured offset applied.
+
+**Why:** The "Correct for inter-camera latency" decision above is still
+open — it needs a measurement step and a config slot that don't exist yet.
+Building it speculatively risked guessing the wrong shape. Recorder does
+track per-camera dropped-frame counts (gaps in each `Frame.index` sequence)
+so a real skew will at least be visible in `session.json`, not silent.
+
+**Consequence:** Until the offset correction lands, recordings may show a
+few-frame lag between panes. Do not let students start relying on frame-tight
+sync before this is closed out.
+
+---
+
+## 2026-08-11 — PyAV remux filters on empty packets, not missing dts
+
+**Decided:** When remuxing MKV to MP4, drop only packets where
+`packet.size == 0`, not packets where `packet.dts is None`.
+
+**Why:** The MKV demux stream's leading keyframe sometimes reports
+`dts is None` even though it holds valid frame data. Filtering on that
+condition silently drops the keyframe, and the resulting MP4 has valid
+headers but decodes zero frames — no error, just an empty-looking file.
+Found by decoding the remuxed output and getting 0 frames back instead of
+the expected count.
+
+**Rejected:** Filtering on `packet.dts is None` — looked like the obvious
+"skip flush packets" check and is the kind of thing a future cleanup could
+reintroduce.

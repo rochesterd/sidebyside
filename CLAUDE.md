@@ -67,6 +67,49 @@ Cameras are identified by **serial number**, never by device index. Index
 order changes across reboots and USB port changes and is the most common way
 setups like this silently break.
 
+`BaseCamera` exposes frames two ways, and consumers must pick the one that
+matches what they're doing:
+
+- **`get_latest()`** — peeks the most recent frame without touching the
+  queue. For display: `preview.py` polls this every UI tick and is allowed
+  to skip frames it never asked for.
+- **`read(timeout)`** — pops the next queued frame, so a consumer that
+  drains it in order can detect gaps in `Frame.index` and count them as
+  drops. For recording: `recorder.py` drains both queues this way precisely
+  so `session.json` can report real dropped-frame counts.
+
+Getting these backwards is the likely failure mode if a third consumer gets
+added: `get_latest()` in a recorder undercounts drops silently, `read()` in
+a UI poll loop can stall the display waiting on a queue.
+
+## Modules
+
+| File | Role |
+|---|---|
+| `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). |
+| `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
+| `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
+| `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
+| `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
+| `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
+
+## Recording output
+
+Each recording writes to `sessions/<YYYY-MM-DD_HHMM>/` (minute-collision
+gets a `_2`, `_3`, ... suffix rather than overwriting):
+
+- `composite.mkv` — written live during capture. Interruption-safe.
+- `composite.mp4` — remuxed from the MKV once `stop()` is called. No
+  re-encode, so this step is fast but depends on the MKV having closed
+  cleanly.
+- `session.json` — camera names, resolutions, each camera's first-frame
+  timestamp, per-camera and composite frame counts, and per-camera
+  dropped-frame counts (computed from gaps in `Frame.index`, not estimated).
+
+`sessions/` is gitignored. Nothing in it is a build artifact of source
+control; it's the actual deliverable handed to a student, so treat contents
+under it as data, not something to regenerate.
+
 ## Environment
 
 - Windows, Python 3.13, venv at `.venv` (activate before running anything)
@@ -83,10 +126,20 @@ setups like this silently break.
 ## Conventions
 
 - Values that depend on measurement (frame rate, resolution, inter-camera
-  latency offset) belong in a config file, not in source.
+  latency offset) belong in a config file, not in source. **Not yet true in
+  practice**: no config file exists, so the 2560x1080 canvas and 30fps
+  target currently live as constructor defaults in `recorder.py`. Move them
+  out when the config system lands instead of letting more values pile up
+  in source.
 - Record to MKV during capture, remux to MP4 afterward. An interrupted MKV
-  is still playable; an interrupted MP4 is lost.
+  is still playable; an interrupted MP4 is lost. When remuxing, filter
+  packets on `packet.size == 0`, not `packet.dts is None` — see
+  `DECISIONS.md`.
 - Prefer dropping frames over blocking a capture thread. A blocked capture
   thread stalls the device.
 - When a decision has a non-obvious reason behind it, add an entry to
   `DECISIONS.md` rather than a comment.
+- Tests use stdlib `unittest`, not pytest — pytest isn't a project
+  dependency. Prefer integration-style tests that spin up real
+  `SyntheticCamera` instances and check real decoded output over mocking
+  internals; that's what caught the remux bug above.
