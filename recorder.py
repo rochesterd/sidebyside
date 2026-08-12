@@ -58,7 +58,7 @@ class Recorder:
         fps: int = 30,
         codec: str = "libx264",
         crf: int = 23,
-        preset: str = "veryfast",
+        preset: str = "ultrafast",
     ):
         self.width = width
         self.height = height
@@ -106,6 +106,16 @@ class Recorder:
         if self._thread is not None:
             self._stop_event.set()
             self._thread.join(timeout=10.0)
+            if self._thread.is_alive():
+                # Loud and early (see CLAUDE.md) rather than proceeding to
+                # flush the encoder from this thread while the capture
+                # thread might still be mid-encode - that race is what
+                # produces a corrupt/short composite.mkv with no warning.
+                raise RuntimeError(
+                    "Recorder's capture thread did not stop within 10s; "
+                    "refusing to finalize the encoder while it may still "
+                    "be writing, to avoid a silently corrupt recording."
+                )
             self._thread = None
 
         packets = self._stream.encode(None)
@@ -161,18 +171,25 @@ class Recorder:
         return latest
 
     def _drain_remaining(self) -> None:
-        """After a stop request, keep pulling until both queues are empty
-        so no buffered frame is silently discarded.
+        """After a stop request, flush whatever was already sitting in each
+        camera's queue at that moment, so it isn't silently discarded.
+
+        Deliberately a single bounded pass, not a loop until both queues go
+        empty: cameras may keep running past this session's end (e.g. for a
+        live preview between recordings), continuously refilling their
+        queues. If encoding ever falls behind the camera's frame rate even
+        slightly, "both queues empty" is a moving target that's never
+        actually reached, and this method would never return - which then
+        causes the caller's thread.join() to time out and proceed to flush
+        the encoder from another thread while this one is still encoding.
+        See DECISIONS.md.
         """
-        while True:
-            frame_a = self._drain_latest(self._track_a.camera)
-            frame_b = self._drain_latest(self._track_b.camera)
-            if frame_a is None and frame_b is None:
-                break
-            self._track_a.absorb(frame_a)
-            self._track_b.absorb(frame_b)
-            if self._track_a.last_frame is not None and self._track_b.last_frame is not None:
-                self._encode_pair(self._track_a.last_frame, self._track_b.last_frame)
+        frame_a = self._drain_latest(self._track_a.camera)
+        frame_b = self._drain_latest(self._track_b.camera)
+        self._track_a.absorb(frame_a)
+        self._track_b.absorb(frame_b)
+        if self._track_a.last_frame is not None and self._track_b.last_frame is not None:
+            self._encode_pair(self._track_a.last_frame, self._track_b.last_frame)
 
     def _encode_pair(self, frame_a: Frame, frame_b: Frame) -> None:
         composite = side_by_side(frame_a.image, frame_b.image, out_size=(self.width, self.height))
