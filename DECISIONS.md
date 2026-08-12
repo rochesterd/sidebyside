@@ -298,3 +298,129 @@ later starting point. Shrinking the recording canvas was also rejected -
 it would help the same way (less work per frame) but directly undoes the
 "wide canvas, not a 1080p split" decision above, and wasn't needed once
 the actual bug was fixed.
+
+---
+
+## 2026-08-12 — IDS Python bindings install from PyPI, pinned — supersedes the local-wheel instruction
+
+**Decided:** Install `ids_peak` and `ids_peak_ipl` from PyPI, pinned to
+exact versions in `requirements-ids.txt`, instead of installing wheels out
+of the local IDS peak installation directory. This supersedes the
+local-wheel instructions that previously lived in `SETUP.md`'s IDS peak
+section — a future reader should not reinstate them.
+
+**Why:** As of IDS peak 2.10, IDS stopped bundling the Python wheels in
+the Windows setup and publishes them on PyPI instead. Confirmed on this
+machine running IDS peak 26.06.1-943: `ids_peak\generic_sdk\api` contains
+only `cmake_finder`, `doc`, `include`, `lib` — no `binding` folder — and a
+recursive search of the whole install tree for `*.whl`, `*.pyd`, and
+`ids_peak*.py` returns nothing. The Custom installer's component tree
+offers no Python binding option either. The original "install from the
+local install, not PyPI" reasoning was sound when written against IDS
+peak 2.x, where the wheels genuinely lived there and PyPI had nothing
+IDS-published to install against. It describes a layout that no longer
+exists in 26.06, not a wrong idea at the time.
+
+**What still holds:** The underlying concern — binding version must match
+the installed SDK runtime — is real and unchanged. It's now enforced by
+pinning `ids_peak`/`ids_peak_ipl` versions in `requirements-ids.txt`
+rather than by installing from a runtime-local path. Drivers and
+transport layers (`ids_ueyegentl` for the UI-3250, `ids_u3vgentl` for the
+U3-327x) still come from the IDS peak Windows installer, per machine, same
+as before — only the Python bindings moved. Bindings and runtime must be
+upgraded together: a peak update on a lab machine without a matching
+bindings pin fails at device enumeration, not at import time.
+
+**Rejected:** Leaving the local-wheel instructions in place and noting
+PyPI as an alternative. IDS peak 26.06 doesn't ship a local wheel option
+at all, so "install from local, or PyPI" isn't actually a choice — the
+local path is gone, and presenting it as one path among two would send
+the next reader on the same dead-end search this entry documents.
+
+---
+
+## 2026-08-12 — One IdsCamera class for both real cameras, not one per model
+
+**Decided:** `ids_camera.py` has a single `IdsCamera(BaseCamera)`,
+parameterized by serial number, used for both the Haag-Streit slit lamp
+(UI-3250CP-C-HQ) and the Keeler (U3-327xCP-C).
+
+**Why:** `vendor/ids_peak_api.txt` shows no camera-family-specific
+classes in the bindings — `Device`, `DataStream`, `NodeMap`, `Buffer` are
+all generic GenICam/GenTL types. Once the uEye Transport Layer is
+installed (SETUP.md Section 3), both cameras enumerate through the same
+`DeviceManager` and the same buffer/acquisition lifecycle applies to
+both. The only real difference between them (resolution, Bayer pattern)
+is read from each device's own node map and each captured buffer at
+runtime, not hard-coded per model — so a second class would duplicate the
+entire acquisition path for no behavioral difference.
+
+**Consequence:** Frames are converted from whatever Bayer pattern the
+buffer reports to BGR8 per-frame via `ids_peak_ipl.Image.ConvertTo`,
+rather than assuming a fixed pattern for either camera.
+
+**Rejected:** `ImageConverter` with `PreAllocateConversion` for the BGR8
+conversion, which would avoid a per-frame allocation. Its exact argument
+signature isn't recoverable from `vendor/ids_peak_api.txt` (SWIG strips
+argument info from `inspect`), and this path can't be exercised without
+hardware attached — a wrong guess there fails silently or crashes deep in
+a background thread instead of at an obvious call site. `Image.ConvertTo`
+takes one argument and is unambiguous. Revisit once real hardware is
+available to measure whether the per-frame allocation actually matters at
+30fps, per this project's existing "measured throughput over datasheet
+numbers" stance.
+
+---
+
+## 2026-08-12 — Hardware smoke test found two real IdsCamera bugs; both fixed
+
+**Decided:** Ran `tools/smoke_test_camera.py` against a real Keeler
+(U3-327xCP-C, serial 4110050487) for the first time. Two bugs surfaced
+and were fixed in `ids_camera.py`, both now confirmed working end to end
+(final capture: full 0-255 dynamic range, recognizable image).
+
+**Bug 1 — child GenTL handles invalidated by Python GC.** `_open()` held
+`device` as a local variable; `self._node_map` and the `DataStream` are
+derived from it. The moment `_open()` returned, `device` had no
+remaining Python reference and was garbage collected, which invalidated
+the handles derived from it — the very next `WaitForFinishedBuffer()`
+call from the capture thread raised
+`InvalidInstanceException: dataStreamHandle is invalid!`. Fixed by
+storing `self._device` and `self._remote_device` as instance attributes
+for the camera's whole open lifetime, not just locals in `_open()`.
+
+**Bug 2 — sensor power-on defaults are unusable.** With the SDK/buffer
+path working, captured frames were still near-black (raw Bayer max
+value 3-4 out of 255) even pointed directly at a lamp — confirmed via
+IDS peak Cockpit that this wasn't a physical/mounting issue, and via a
+raw-buffer-before-conversion capture that it wasn't our BGR8 conversion
+either. Root cause: the device's power-on defaults were `ExposureTime
+~15ms, Gain 1.0` — nowhere near enough for the room. Cockpit's live view
+had converged to `ExposureTime ~47.5ms, Gain ~25.4` for the same scene.
+Fixed by adding `_converge_auto_exposure()`: sets `ExposureAuto`/
+`GainAuto` to `Once` right after `StartAcquisition()`, drains buffers
+until both read back `Off` (converged), then leaves them locked for the
+rest of the session. Measured convergence time on this hardware: ~10
+frames, ~0.5s.
+
+**Why `Once` and not `Continuous`, and why converge at all instead of a
+fixed value:** A hardcoded exposure/gain number would be exactly the
+kind of measurement-dependent magic constant CLAUDE.md's Conventions
+section warns against — this session's numbers are already known wrong
+for at least one room. `Continuous` was rejected because it would keep
+adjusting during a recording, and visible exposure "pumping" mid-session
+is a distracting artifact in a video students review for technique.
+Converge once at open, lock for the session.
+
+**Consequence:** `_converge_auto_exposure()` skips whichever axis
+(`ExposureAuto`/`GainAuto`) isn't available rather than failing camera
+open over it — SETUP.md Section 3 already documents that the slit lamp
+camera's uEye Transport Layer only exposes a basic feature set and may
+lack these nodes, untested since only the Keeler was available for this
+smoke test.
+
+**Open:** Only the Keeler has been hardware-tested. The slit lamp camera
+(UI-3250CP-C-HQ via uEye Transport Layer) still needs its own smoke
+test before anyone trusts `IdsCamera` against it — the "one class for
+both" decision above is sound on API-surface grounds, but is now
+verified for one of the two cameras, not both.

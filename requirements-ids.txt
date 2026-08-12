@@ -1,0 +1,9 @@
+# IDS peak Python bindings. Separate from requirements.txt because
+# `import ids_peak` fails without the IDS peak SDK runtime installed
+# per machine (see SETUP.md Section 2) — that runtime isn't present on
+# development machines using SyntheticCamera, and shouldn't be required
+# to install the rest of the project. Keep these pinned exactly and
+# upgrade in lockstep with the installed runtime — see DECISIONS.md's
+# 2026-08-12 entry.
+ids_peak==1.16.0.0.9
+ids_peak_ipl==1.17.2.0.8

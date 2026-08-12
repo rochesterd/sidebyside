@@ -121,15 +121,22 @@ under it as data, not something to regenerate.
 ## Environment
 
 - Windows, Python 3.13, venv at `.venv` (activate before running anything)
-- Dependencies: numpy, opencv-python, av (PyAV), PySide6
-- IDS peak must be installed separately per machine — it includes kernel
-  drivers and cannot be bundled. The `ids_peak` and `ids_peak_ipl` wheels
-  must be installed from the local IDS peak installation, **not** from PyPI,
-  because the binding version must match the installed runtime. See
-  `SETUP.md`.
+- Dependencies: numpy, opencv-python, av (PyAV), PySide6, pinned in
+  `requirements.txt`.
+- IDS peak (drivers and transport layers) must be installed separately per
+  machine — it includes kernel drivers and cannot be bundled. The
+  `ids_peak`/`ids_peak_ipl` Python bindings come from PyPI instead, pinned
+  in a separate `requirements-ids.txt` so they stay matched to the
+  installed runtime without being required on machines that don't have it.
+  See `SETUP.md`.
 - Development happens on a machine without cameras attached; use
   `SyntheticCamera` and don't hard-code anything that must be measured
   against real hardware.
+- The `ids_peak`/`ids_peak_ipl` bindings are compiled, with no readable
+  source. `vendor/ids_peak_api.txt` (gitignored, regenerate locally via
+  `inspect`/`dir()`) is the authoritative reference for what the real API
+  surface actually is. Don't invent IDS method names or signatures — if
+  something isn't in that dump, say so instead of guessing.
 
 ## Conventions
 

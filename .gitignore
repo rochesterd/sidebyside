@@ -6,6 +6,8 @@ dist/
 *.spec
 sessions/
 recordings/
+vendor/
 *.mkv
 *.mp4
 .vscode/
+smoke_test_frame.png

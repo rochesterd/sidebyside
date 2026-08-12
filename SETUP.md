@@ -41,57 +41,58 @@ cameras working.
 
 The Keeler Vantage Plus (`U3-327xCP-C`) is native USB3 Vision / GenICam and
 needs nothing beyond this section. The slit lamp camera needs one more
-section after this (Section 3) — install this section first regardless.
+consideration covered in Section 3 — read it before you install, since it
+affects which installer variant you pick in step 2 below.
 
 1. Create a free myIDS account at ids-imaging.com if you don't have one.
-2. Download the **IDS peak** Windows installer and run it.
-   - If this machine will drive the slit lamp camera, choose **Custom**
-     setup instead of the default, and enable the **uEye Transport Layer**
-     component while you're in there — see Section 3. If you're not sure
-     which machine this is, enable it anyway; it's a no-op for the Keeler.
-3. The Python bindings are **not on PyPI**. Do not `pip install ids_peak` or
-   `pip install ids_peak_ipl` from the internet — the binding version must
-   match the installed SDK runtime exactly, and PyPI won't guarantee that.
-   (See `CLAUDE.md`'s Environment section.)
-4. After installing IDS peak, the correct wheels are sitting locally at:
-   ```
-   ids_peak:      C:\Program Files\IDS\ids_peak\generic_sdk\api\binding\python\wheel\x86_64
-   ids_peak_ipl:  C:\Program Files\IDS\ids_peak\generic_sdk\ipl\binding\python\wheel\x86_64
-   ```
-   List each folder to see the actual filenames — they encode version and
-   platform tags that change between SDK releases, so don't hardcode a
-   version number:
+2. Download the **IDS peak** Windows installer and run it. IDS ships three
+   setup variants — standard, runtime, and extended:
+   - If this machine will drive the slit lamp camera (`UI-3250CP-C-HQ`, a
+     uEye-family model), choose the **extended** setup — it bundles the
+     uEye camera drivers that model needs. Read Section 3 first if this
+     machine already has IDS Software Suite installed.
+   - Otherwise (Keeler only), **standard** is enough.
+   - Whichever variant, choose **Custom** during setup and enable the
+     **uEye Transport Layer** component. If you're not sure which machine
+     this is, enable it anyway; it's a no-op for the Keeler.
+3. Install the Python bindings from PyPI, pinned to exact versions so they
+   stay matched to the installed SDK runtime. This is a separate
+   requirements file from the rest of the project's dependencies (already
+   installed in Section 1) so that machines without the IDS peak runtime
+   can still install everything else — see `CLAUDE.md`'s Environment
+   section and `DECISIONS.md`'s 2026-08-12 entry for why pinning, not a
+   local install, is what enforces the version match now:
    ```powershell
-   dir "C:\Program Files\IDS\ids_peak\generic_sdk\api\binding\python\wheel\x86_64"
-   dir "C:\Program Files\IDS\ids_peak\generic_sdk\ipl\binding\python\wheel\x86_64"
-   ```
-5. With `.venv` still activated, install both wheels using the filenames
-   you just saw (substitute them in below — these are examples, not real
-   filenames):
-   ```powershell
-   python -m pip install "C:\Program Files\IDS\ids_peak\generic_sdk\api\binding\python\wheel\x86_64\ids_peak-<version>-cp313-*.whl"
-   python -m pip install "C:\Program Files\IDS\ids_peak\generic_sdk\ipl\binding\python\wheel\x86_64\ids_peak_ipl-<version>-cp313-*.whl"
+   python -m pip install -r requirements-ids.txt
    ```
 
 ---
 
-## 3. Slit lamp camera only: uEye Transport Layer
+## 3. Slit lamp camera only: uEye camera drivers
 
 The Haag-Streit BI 900's camera (`UI-3250CP-C-HQ Rev. 2`) is a legacy
-uEye-family camera, not native USB3 Vision. It needs two extra things the
-Keeler doesn't. Skip this whole section on a machine that only drives the
-Keeler.
+uEye-family camera, not native USB3 Vision, so it needs uEye camera
+drivers the Keeler doesn't. Skip this whole section on a machine that only
+drives the Keeler. There are two ways to get the drivers — pick one before
+you install Section 2:
 
-1. **IDS Software Suite, version 4.95 or later**, installed *in addition
-   to* IDS peak. uEye camera drivers are not bundled with IDS peak itself —
-   without this, the `UI-` camera never shows up at all, regardless of
-   Section 2.
-2. **The uEye Transport Layer**, enabled as part of the IDS peak install
-   (Section 2, step 2 — Custom setup). This is what makes a `UI-` model
-   camera appear on the same GenICam interface IDS peak otherwise reserves
-   for native USB3 Vision devices like the Keeler. If you already ran the
-   default (non-Custom) installer, re-run the IDS peak installer, choose
-   Modify, and enable the component there.
+- **Extended setup** (Section 2, step 2): bundles the uEye camera drivers
+  directly, so no separate install is needed. If you're choosing this,
+  nothing else in this section applies. **Watch for:** running the
+  extended setup automatically **uninstalls an existing IDS Software
+  Suite** on that machine, if one is present — don't install the Suite
+  first and then switch to extended expecting to keep both.
+- **Standard/runtime setup + IDS Software Suite**: if you installed
+  standard or runtime instead, install **IDS Software Suite, version 4.94
+  or later**, in addition to IDS peak. uEye camera drivers aren't bundled
+  with standard/runtime IDS peak — without the Suite, the `UI-` camera
+  never shows up at all, regardless of Section 2.
+
+Either way, **the uEye Transport Layer** (Section 2, step 2 — Custom
+setup) is what makes a `UI-` model camera appear on the same GenICam
+interface IDS peak otherwise reserves for native USB3 Vision devices like
+the Keeler. If you already ran the default (non-Custom) installer, re-run
+the IDS peak installer, choose Modify, and enable the component there.
 
 **Watch for:** the uEye Transport Layer only exposes a basic feature set —
 freerun/triggered acquisition, exposure, pixel clock. If the camera module
@@ -103,12 +104,12 @@ The Keeler needs none of this section — it's native to IDS peak already.
 
 ---
 
-## 4. Verify both cameras enumerate
+## 4. Verify the install
 
 There's no camera-listing helper in this codebase yet (only `camera.py`'s
 `BaseCamera` interface and `SyntheticCamera` exist so far — no IDS-backed
-implementation). Confirm the SDK sees both devices with a standalone
-script before wiring anything into the app:
+implementation). Use the same standalone script for two different checks,
+depending on the machine:
 
 ```python
 from ids_peak import ids_peak
@@ -126,7 +127,15 @@ finally:
     ids_peak.Library.Close()
 ```
 
-Expect exactly 2 devices: the `UI-3250CP-C-HQ` and the `U3-327xCP-C`, each
+**Check 1 — bindings/runtime match, any machine:** the script should run
+to completion without raising. On a development machine with no cameras
+attached, **0 devices found is the expected, correct result** — it means
+the bindings loaded and matched the installed runtime, not that anything
+is broken. Per `CLAUDE.md`'s Environment section, that's the normal state
+for a dev box working against `SyntheticCamera`.
+
+**Check 2 — camera enumeration, machine with hardware attached only:**
+expect exactly 2 devices, the `UI-3250CP-C-HQ` and the `U3-327xCP-C`, each
 with a serial number printed. (If method names above don't match what's
 installed, check the locally-installed API docs under Start Menu → IDS →
 IDS peak — they're versioned with the SDK, unlike anything on the web.)
