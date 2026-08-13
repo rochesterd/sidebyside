@@ -34,7 +34,7 @@ class SyntheticCamera(BaseCamera):
         drop_rate: probability in [0, 1] that a captured frame is discarded,
             simulating an unreliable camera.
         """
-        super().__init__(queue_size=queue_size)
+        super().__init__(queue_size=queue_size, label=name)
         self._width = width
         self._height = height
         self._name = name

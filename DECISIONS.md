@@ -550,3 +550,119 @@ read-and-count consumer isn't `Recorder`, which does real per-frame
 encoding work and could behave differently under load. Worth a real
 `Recorder` run against both real cameras once the slit lamp's exposure
 is calibrated, rather than tuning the queue size on guesswork now.
+
+---
+
+## 2026-08-12 — Fullscreen by default; closing the window during a
+recording is refused, not confirmed or auto-stopped
+
+**Decided:** `app.py` now launches with `showFullScreen()` (no title bar,
+no border drag-to-resize, no minimize button) unless started with
+`--windowed`, which keeps the old resizable-window behavior for
+development. Separately, `KioskWindow.closeEvent()` now calls
+`event.ignore()` and leaves the session running if `state == RECORDING`,
+rather than either popping a confirm dialog or silently stopping the
+recording and exiting (the previous behavior).
+
+**Why:** CLAUDE.md's "Who uses it" is explicit that nothing besides Start
+and Stop should be clickable during a session, for students with no
+technical background and no instructor present. A plain resizable window
+leaves several such surfaces live — the title bar's X button, Alt+F4,
+drag-to-resize, minimize — none of which are "Stop" but all of which can
+end or disrupt a session. A confirm dialog was considered and rejected:
+it's itself a new clickable thing mid-session, and a student startled by
+an accidental Alt+F4 is exactly who will reflexively click through a
+dialog without reading it. Refusing outright means the only way to end a
+session is the one button that says Stop.
+
+**Consequence:** There is now no way to quit the app from the GUI while
+RECORDING — not even for a developer or proctor — short of killing the
+process. That's intentional for the student-facing build. A stalled
+camera still exits RECORDING on its own via `poll_recording()`'s stall
+detection, which calls `_fail()` (not `closeEvent`) and is unaffected by
+this change.
+
+**Not addressed:** this only closes off what Qt itself can intercept.
+Alt+Tab, the Windows key, and the taskbar remain available to switch away
+from the app — actually locking those down is an OS-level kiosk
+configuration, out of scope for this codebase.
+
+**Rejected:** a confirmation dialog on close ("Stop recording and exit?").
+Rejected for the reason above — it reintroduces a clickable surface
+during the one state where CLAUDE.md says there shouldn't be one.
+
+---
+
+## 2026-08-12 — Reverted fullscreen; close during recording confirms
+instead of refusing outright
+
+**Decided:** Walked back the entry immediately above, per direct
+feedback. `app.py` goes back to launching as a normal resizable window
+(no fullscreen, no `--windowed` flag — there's only one mode again).
+`closeEvent()` no longer refuses to close during `RECORDING`; instead it
+calls `_confirm_stop_and_exit()`, which shows a `QMessageBox` ("A
+recording is in progress. Stop it and exit?", defaulted to **No**). Only
+on explicit confirmation does it call `controller.stop_recording()` — a
+clean stop that finalizes the MP4 remux and writes `session.json`, not an
+abrupt kill — before proceeding to close.
+
+**Why:** the fullscreen window was a worse experience than the plain
+window it replaced, and refusing to close at all left no way to
+force-quit even deliberately (e.g. to abandon a broken session, or for a
+developer testing the app). A defaulted-to-No confirmation keeps a single
+accidental click or Alt+F4 from silently ending a session — the failure
+mode the previous entry was actually trying to prevent — while still
+leaving a deliberate two-click exit available.
+
+**Consequence:** `_confirm_stop_and_exit()` is a separate method
+specifically so tests can monkeypatch it instead of driving a real modal
+dialog headlessly (see `test_app.py`'s `TestCloseLockdown`).
+
+**Rejected (again, different reason than last time):** refusing close
+outright, i.e. keeping the previous entry's behavior. Still true that a
+confirm dialog is a clickable surface CLAUDE.md's "nothing else
+clickable" line argues against, but no escape hatch at all turned out to
+be the worse tradeoff in practice.
+
+---
+
+## 2026-08-12 — Durable logging to `logs/app.log`, configured only in `app.py`
+
+**Decided:** Every module that makes a decision or can fail
+(`camera.py`, `recorder.py`, `kiosk.py`, `app.py`) now has a module-level
+`logger = logging.getLogger(__name__)` and logs at the meaningful points
+— capture thread start/stop, an exception inside `_grab()`, state
+transitions in `KioskController`, recording start/stop with frame and
+drop counts, `_fail()`'s error message, camera-start failure and
+recovery, the force-close confirm decision. Handlers (a `RotatingFileHandler`
+writing `logs/app.log`, capped at 4 × 2MB, plus a console handler) are
+configured exactly once, in `app._configure_logging()`, called at the top
+of `main()`. Every other module only calls `getLogger` and never adds a
+handler itself — standard practice so importing e.g. `recorder.py` from a
+test doesn't also wire up file logging as a side effect. `app.py` also
+installs a `sys.excepthook` that logs uncaught exceptions before
+delegating to the default hook.
+
+**Why:** these are unsupervised, unattended machines — CLAUDE.md's "Who
+uses it" already establishes that failures must be loud and early in the
+UI, but the UI's error banner and `session.json` both disappear the
+moment the window closes or a new session starts. When something breaks
+on a specific student's machine and nobody was there to see the banner,
+`logs/app.log` is the only thing left afterward. The `_grab()` try/except
+in `camera.py` closes a real gap: previously an unhandled exception in
+the capture thread died silently, and the *only* symptom downstream was
+`kiosk.py`'s stall detector firing a couple seconds later with no
+indication of the actual cause.
+
+**Consequence:** state-transition logging in `poll_preflight()` only logs
+on an actual `State` change, not every poll tick (it runs every 250ms via
+`app.py`'s timer) — logging every tick would flood the file with
+"IDLE -> IDLE" noise. Camera-start-failure logging in `app.py` similarly
+logs the first failure and the eventual recovery, not every 2s retry.
+
+**Rejected:** a per-session log file under each `sessions/<...>/`
+directory, mirroring `session.json`. Rejected because the failures this
+is most needed for — a camera never starting, a crash before any session
+begins — happen *before* a session directory exists. A single rotating
+app-level log covers those; `session.json` remains the authoritative
+per-session record for anything that did complete.

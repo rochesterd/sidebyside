@@ -77,7 +77,7 @@ class IdsCamera(BaseCamera):
     """
 
     def __init__(self, serial: str, queue_size: int = 2):
-        super().__init__(queue_size=queue_size)
+        super().__init__(queue_size=queue_size, label=serial)
         self._serial = serial
         # Every one of these must be kept as an instance attribute, not a
         # local in _open(). They wrap child GenTL handles (NodeMap,

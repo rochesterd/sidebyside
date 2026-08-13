@@ -5,6 +5,7 @@ alongside a session.json manifest.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ import av
 
 from camera import BaseCamera, Frame
 from compositor import draw_timer, side_by_side
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -117,6 +120,14 @@ class Recorder:
                 # flush the encoder from this thread while the capture
                 # thread might still be mid-encode - that race is what
                 # produces a corrupt/short composite.mkv with no warning.
+                # Logged in addition to the raise: a caller catching this
+                # broadly (kiosk.py's _fail() does, to still record a
+                # session summary) would otherwise leave no trace of why.
+                logger.error(
+                    "session_dir=%s: capture thread did not stop within 10s; "
+                    "refusing to finalize the encoder",
+                    self.session_dir,
+                )
                 raise RuntimeError(
                     "Recorder's capture thread did not stop within 10s; "
                     "refusing to finalize the encoder while it may still "

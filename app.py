@@ -10,7 +10,10 @@ what it reports.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -21,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -31,12 +35,49 @@ from compositor import side_by_side
 from kiosk import KioskController, PreflightStatus, State
 from synthetic_camera import SyntheticCamera
 
+logger = logging.getLogger(__name__)
+
 PREVIEW_FPS = 30
 POLL_MS = 250
 CAMERA_RETRY_MS = 2000
 CAMERA_A_RESOLUTION = (1600, 1200)
 CAMERA_B_RESOLUTION = (2056, 1542)
 PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recording canvas
+
+LOG_DIR = Path("logs")
+LOG_FILE = LOG_DIR / "app.log"
+
+
+def _configure_logging() -> None:
+    """Durable file logging plus an excepthook, so a failure on a student
+    machine with no one around leaves a trace beyond the in-memory error
+    banner and session.json -- see CLAUDE.md 'Who uses it'.
+
+    RotatingFileHandler caps this at 4 * 2MB = 8MB total rather than
+    growing without bound across a semester of unattended kiosk runs.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
+
+    def _log_uncaught(exc_type, exc_value, exc_tb) -> None:
+        # Without this, an exception outside a caught path (e.g. during Qt
+        # event handling) can leave the app frozen or gone with nothing in
+        # the log explaining why.
+        logger.critical("Uncaught exception", exc_info=(exc_type, exc_value, exc_tb))
+        sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    sys.excepthook = _log_uncaught
 
 
 def bgr_to_pixmap(image: np.ndarray) -> QPixmap:
@@ -142,8 +183,15 @@ class KioskWindow(QMainWindow):
             try:
                 camera.start()
             except Exception as exc:
+                # Only log the first failure and the eventual recovery, not
+                # every retry -- this fires every CAMERA_RETRY_MS while a
+                # camera stays down, which would otherwise flood the log.
+                if key not in self._camera_start_errors:
+                    logger.warning("%s failed to start: %s", self._camera_names[key], exc)
                 self._camera_start_errors[key] = str(exc)
             else:
+                if key in self._camera_start_errors:
+                    logger.info("%s recovered and started", self._camera_names[key])
                 self._camera_start_errors.pop(key, None)
 
     # --- Qt event handlers -------------------------------------------------
@@ -237,15 +285,36 @@ class KioskWindow(QMainWindow):
             parts.append(f"saved to {self.controller.last_session_dir}")
         return "  |  ".join(parts)
 
+    def _confirm_stop_and_exit(self) -> bool:
+        # Split out from closeEvent() so tests can monkeypatch this instead
+        # of dealing with a real modal dialog headlessly.
+        reply = QMessageBox.question(
+            self,
+            "Recording in progress",
+            "A recording is in progress. Stop it and exit?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, event) -> None:
-        self.preview_timer.stop()
-        self.poll_timer.stop()
-        self.camera_retry_timer.stop()
+        # A stray Alt+F4 or X-click shouldn't be able to silently end a
+        # session, but a deliberate force-quit should still be possible --
+        # defaults to No so an accidental click doesn't exit either way.
         if self.controller.state == State.RECORDING:
+            if not self._confirm_stop_and_exit():
+                logger.info("close-during-recording declined; recording continues")
+                event.ignore()
+                return
+            logger.info("close-during-recording confirmed; stopping and exiting")
             try:
                 self.controller.stop_recording()
             except Exception:
-                pass
+                logger.exception("stop_recording() failed during confirmed close")
+
+        self.preview_timer.stop()
+        self.poll_timer.stop()
+        self.camera_retry_timer.stop()
         self.camera_a.stop()
         self.camera_b.stop()
         super().closeEvent(event)
@@ -275,6 +344,9 @@ def main() -> int:
         help="IDS camera serial number for camera_b; omit to use SyntheticCamera",
     )
     args = parser.parse_args()
+
+    _configure_logging()
+    logger.info("app starting: camera_a_serial=%s camera_b_serial=%s", args.camera_a_serial, args.camera_b_serial)
 
     app = QApplication(sys.argv)
     camera_a = _make_camera(args.camera_a_serial, CAMERA_A_RESOLUTION, "cam-a")

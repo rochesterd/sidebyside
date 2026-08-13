@@ -6,6 +6,7 @@ dist/
 *.spec
 sessions/
 recordings/
+logs/
 vendor/
 *.mkv
 *.mp4

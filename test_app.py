@@ -9,12 +9,15 @@ is entered (no .exec()/.show()), so this stays headless.
 
 from __future__ import annotations
 
+import time
 import unittest
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
 from app import KioskWindow
 from camera import BaseCamera
+from kiosk import State
 from synthetic_camera import SyntheticCamera
 
 _qt_app = QApplication.instance() or QApplication([])
@@ -89,6 +92,70 @@ class TestCameraStartFailure(unittest.TestCase):
             window._try_start_cameras()  # simulates the next retry-timer tick
 
             self.assertNotIn("camera_a", window._camera_start_errors)
+        finally:
+            camera_a.stop()
+            camera_b.stop()
+
+
+class TestCloseLockdown(unittest.TestCase):
+    """A stray Alt+F4 or X-click shouldn't silently end a recording, but a
+    deliberate force-quit must still be possible. See CLAUDE.md 'Who uses
+    it' and DECISIONS.md's 2026-08-12 confirm-dialog entry.
+
+    _confirm_stop_and_exit() is monkeypatched rather than driving the real
+    QMessageBox, which would block waiting for input in a headless test.
+    """
+
+    def test_close_is_ignored_when_user_declines_the_confirm_dialog(self):
+        camera_a = SyntheticCamera(160, 120, fps=30)
+        camera_b = SyntheticCamera(160, 120, fps=30)
+        window = KioskWindow(camera_a, camera_b)
+        try:
+            time.sleep(0.2)  # let both cameras actually produce a frame
+            window.controller.poll_preflight()
+            window.controller.start_recording()
+            window._confirm_stop_and_exit = lambda: False
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            self.assertFalse(event.isAccepted())
+            self.assertEqual(window.controller.state, State.RECORDING)
+        finally:
+            if window.controller.state == State.RECORDING:
+                window.controller.stop_recording()
+            camera_a.stop()
+            camera_b.stop()
+
+    def test_close_stops_recording_and_exits_when_user_confirms(self):
+        camera_a = SyntheticCamera(160, 120, fps=30)
+        camera_b = SyntheticCamera(160, 120, fps=30)
+        window = KioskWindow(camera_a, camera_b)
+        try:
+            time.sleep(0.2)  # let both cameras actually produce a frame
+            window.controller.poll_preflight()
+            window.controller.start_recording()
+            window._confirm_stop_and_exit = lambda: True
+
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            self.assertTrue(event.isAccepted())
+            self.assertNotEqual(window.controller.state, State.RECORDING)
+            self.assertIsNotNone(window.controller.last_session_info)
+        finally:
+            camera_a.stop()
+            camera_b.stop()
+
+    def test_close_is_accepted_when_not_recording(self):
+        camera_a = SyntheticCamera(160, 120, fps=30)
+        camera_b = SyntheticCamera(160, 120, fps=30)
+        window = KioskWindow(camera_a, camera_b)
+        try:
+            event = QCloseEvent()
+            window.closeEvent(event)
+
+            self.assertTrue(event.isAccepted())
         finally:
             camera_a.stop()
             camera_b.stop()

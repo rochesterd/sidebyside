@@ -5,6 +5,7 @@ just grab whatever is newest without blocking on capture speed.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -12,6 +13,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,12 +32,17 @@ class BaseCamera(ABC):
     (image, timestamp, index) triple or None if no frame was available.
     """
 
-    def __init__(self, queue_size: int = 2):
+    def __init__(self, queue_size: int = 2, label: str | None = None):
         self._queue: queue.Queue[Frame] = queue.Queue(maxsize=queue_size)
         self._latest_lock = threading.Lock()
         self._latest: Frame | None = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        # For log messages only -- distinguishes cam-a/cam-b (or a serial
+        # number) in a shared log file where "SyntheticCamera" alone
+        # wouldn't. Falls back to the class name if a subclass doesn't pass
+        # one.
+        self.label = label or type(self).__name__
 
     @abstractmethod
     def _open(self) -> None:
@@ -77,6 +85,7 @@ class BaseCamera(ABC):
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        logger.info("%s: capture started", self.label)
 
     def stop(self) -> None:
         if self._thread is None:
@@ -85,10 +94,22 @@ class BaseCamera(ABC):
         self._thread.join(timeout=2.0)
         self._thread = None
         self._close()
+        logger.info("%s: capture stopped", self.label)
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            result = self._grab()
+            try:
+                result = self._grab()
+            except Exception:
+                # Logged and skipped, not re-raised: an unhandled exception
+                # here would silently kill the capture thread with nothing
+                # in get_latest()/read() ever indicating why -- the caller
+                # would only notice minutes later via a stall. This at
+                # least leaves a record of the actual cause. See
+                # DECISIONS.md's Frame.index entry for the related history
+                # of source-side drops going undetected.
+                logger.exception("%s: _grab() raised; skipping this frame", self.label)
+                continue
             if result is None:
                 continue
             image, timestamp, index = result

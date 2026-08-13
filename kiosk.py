@@ -11,6 +11,7 @@ Recorder headlessly.
 from __future__ import annotations
 
 import enum
+import logging
 import shutil
 import time
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from typing import Callable
 
 from camera import BaseCamera
 from recorder import Recorder
+
+logger = logging.getLogger(__name__)
 
 # --- Disk-space preflight -------------------------------------------------
 #
@@ -161,7 +164,16 @@ class KioskController:
             required_bytes=self._required_bytes,
         )
         if self.state != State.RECORDING:
-            self.state = State.READY if status.ok else State.IDLE
+            new_state = State.READY if status.ok else State.IDLE
+            if new_state != self.state:
+                logger.info(
+                    "%s -> %s (cameras_ready=%s, disk_ok=%s)",
+                    self.state.value,
+                    new_state.value,
+                    status.cameras_ready,
+                    status.disk_ok,
+                )
+            self.state = new_state
         return status
 
     def _cameras_ready(self) -> bool:
@@ -186,6 +198,7 @@ class KioskController:
             self._last_progress_time[key] = now
 
         self.state = State.RECORDING
+        logger.info("recording started: session_dir=%s", self._recorder.session_dir)
 
     def poll_recording(self) -> None:
         """Call regularly while RECORDING. If a camera's frame index hasn't
@@ -224,9 +237,19 @@ class KioskController:
         self.last_session_info = session_info
         self.error_message = None
         self.state = State.IDLE
+        dropped = {
+            cam["name"]: cam["dropped_frames"] for cam in session_info.get("cameras", {}).values()
+        }
+        logger.info(
+            "recording stopped: session_dir=%s frame_count=%s dropped=%s",
+            self.last_session_dir,
+            session_info.get("composite", {}).get("frame_count"),
+            dropped,
+        )
         return session_info
 
     def _fail(self, message: str) -> None:
+        logger.error("recording failed: %s", message)
         self.error_message = message
         if self._recorder is not None:
             try:
