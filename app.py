@@ -47,6 +47,13 @@ PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recordi
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 
+# Hardware-verified serials for the kiosk's two fixed instruments (see
+# DECISIONS.md and CLAUDE.md's Hardware table). These are the actual
+# machines students use, so they're the default; --synthetic overrides to
+# SyntheticCamera for development on a machine with no cameras attached.
+CAMERA_A_SERIAL_DEFAULT = "4103484089"  # Haag-Streit slit lamp, UI325xCP-C
+CAMERA_B_SERIAL_DEFAULT = "4110050487"  # Keeler Vantage Plus, U3-327xCP-C
+
 
 def _configure_logging() -> None:
     """Durable file logging plus an excepthook, so a failure on a student
@@ -325,9 +332,9 @@ def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> 
         return SyntheticCamera(*resolution, name=name, fps=30)
     # Imported lazily, not at module level: ids_camera.py pulls in
     # ids_peak/ids_peak_ipl, which aren't installed (or needed) on a dev
-    # machine running only against SyntheticCamera -- see CLAUDE.md's
-    # Environment section. Importing it unconditionally at the top of this
-    # file would break `python app.py` with no arguments on such a machine.
+    # machine running only with --synthetic -- see CLAUDE.md's Environment
+    # section. Importing it unconditionally at the top of this file would
+    # break `python app.py --synthetic` on such a machine.
     from ids_camera import IdsCamera
 
     return IdsCamera(serial=serial)
@@ -337,20 +344,31 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--camera-a-serial",
-        help="IDS camera serial number for camera_a; omit to use SyntheticCamera",
+        default=CAMERA_A_SERIAL_DEFAULT,
+        help="IDS camera serial number for camera_a (default: slit lamp, %(default)s)",
     )
     parser.add_argument(
         "--camera-b-serial",
-        help="IDS camera serial number for camera_b; omit to use SyntheticCamera",
+        default=CAMERA_B_SERIAL_DEFAULT,
+        help="IDS camera serial number for camera_b (default: Keeler, %(default)s)",
+    )
+    parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="Use SyntheticCamera for both cameras instead of real hardware "
+        "(for development on a machine with no cameras attached)",
     )
     args = parser.parse_args()
 
+    camera_a_serial = None if args.synthetic else args.camera_a_serial
+    camera_b_serial = None if args.synthetic else args.camera_b_serial
+
     _configure_logging()
-    logger.info("app starting: camera_a_serial=%s camera_b_serial=%s", args.camera_a_serial, args.camera_b_serial)
+    logger.info("app starting: camera_a_serial=%s camera_b_serial=%s", camera_a_serial, camera_b_serial)
 
     app = QApplication(sys.argv)
-    camera_a = _make_camera(args.camera_a_serial, CAMERA_A_RESOLUTION, "cam-a")
-    camera_b = _make_camera(args.camera_b_serial, CAMERA_B_RESOLUTION, "cam-b")
+    camera_a = _make_camera(camera_a_serial, CAMERA_A_RESOLUTION, "cam-a")
+    camera_b = _make_camera(camera_b_serial, CAMERA_B_RESOLUTION, "cam-b")
     window = KioskWindow(camera_a, camera_b, name_a="cam-a", name_b="cam-b")
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()
