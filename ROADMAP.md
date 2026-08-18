@@ -137,17 +137,15 @@ per-device rather than assuming either way. Plan:
   camera replacement in that port), but per direct feedback, ports aren't
   guaranteed stable enough here to build around — identity (VID/PID) plus
   the single-device fallback is the whole strategy.
-- **Open implementation question, not yet decided:** `cv2.VideoCapture`
-  only gives you an index, not a name or VID/PID. Getting a friendly
-  name + VID/PID *and* correlating that back to an OpenCV-openable index
-  needs either a small enumeration helper (`pygrabber` is a candidate —
-  its actual API needs verifying against the installed package before
-  anything relies on it, the same standard this project already holds
-  `ids_peak_api.txt` to) or shelling out to `Get-PnpDevice`/WMI (already
-  proven working against the real hardware this session) and correlating
-  to an index by trial-opening in enumeration order. Worth a short spike
-  at the start of the `settings.py` work before committing to one —
-  tracked as the first task there, not decided here.
+- **Decided (spike complete, see DECISIONS.md's "UVC device enumeration"
+  entry):** `uvc_enumeration.list_uvc_devices()` reads DirectShow's own
+  device enumerator directly via `pygrabber`'s internals, returning
+  index + friendly name + VID/PID in one pass, in the same order
+  `cv2.VideoCapture(i, cv2.CAP_DSHOW)` opens by — no subprocess call, no
+  name-matching correlation step. Chosen over shelling out to
+  `Get-PnpDevice`/WMI, which would still have needed a separate
+  trial-open-by-index correlation pass. `settings.py`'s dropdown reads
+  this directly.
 
 ### `config.json` (new)
 
@@ -216,8 +214,9 @@ it's about what feeds it, not a new state machine.
 1. `config.json` + loader. Mechanical, unblocks everything else —
    `app.py`/`kiosk.py` read config instead of hardcoded constants; the
    current two serials become this dev machine's `config.example.json`.
-2. `settings.py`. Start with the UVC-enumeration spike above before
-   building the dropdown/preview UI around it.
+2. `settings.py`. The UVC-enumeration spike above is done
+   (`uvc_enumeration.py`) — remaining: the dropdown/preview UI built
+   around it, and writing `config.json`.
 3. Runtime resolution hardening — VID/PID + single-device-fallback logic
    for UVC, the explicit failure-mode messages above.
 4. Documentation — `SUPPORTED_HARDWARE.md`, `SETUP.md` rewrite, real

@@ -811,3 +811,50 @@ Phase 1 actually reads, and ignore anything else — leaves room for a
 stray hand-added field, or a transitional `vid_pid` key sitting next to
 `device` once Phase 3 lands, without the loader needing to change in
 lockstep.
+
+---
+
+## 2026-08-18 — UVC device enumeration: pygrabber's DirectShow internals,
+not Get-PnpDevice/WMI
+
+**Decided:** `uvc_enumeration.list_uvc_devices()` resolves the open
+question ROADMAP.md's "Device compatibility & camera setup system" entry
+left for the start of the `settings.py` work — how to get a UVC device's
+friendly name and VID/PID *and* have it correlate reliably to the index
+`cv2.VideoCapture(i, cv2.CAP_DSHOW)` opens by. It calls into `pygrabber`'s
+DirectShow COM wrappers (`dshow_core.ICreateDevEnum`,
+`dshow_ids.DeviceCategories`/`clsids`) directly — not `pygrabber`'s public
+`FilterGraph.get_input_devices()`, which only exposes `FriendlyName` — and
+additionally reads each moniker's `DevicePath` property bag entry, which
+carries the device's VID/PID (confirmed against the real ELP camera
+currently attached to this dev machine: `DevicePath` came back
+`\\?\usb#vid_32e4&pid_9310&mi_00#...`, matching `Get-PnpDevice`'s
+`InstanceId` for the same device exactly). Index, name, and VID/PID all
+come from one walk of DirectShow's own device enumerator, so there's no
+separate correlation step — verified end to end by opening
+`cv2.VideoCapture(N, cv2.CAP_DSHOW)` for every index this function
+reports and confirming each one actually opens (see
+`test_uvc_enumeration.py`).
+
+**Why not `Get-PnpDevice`/WMI (the other candidate ROADMAP.md named):**
+It gives friendly name + VID/PID cleanly (confirmed working against the
+same real hardware), but not a DirectShow enumeration index — matching
+its result back to a `cv2.CAP_DSHOW` index would still need a second pass
+(trial-opening indices in order and matching by friendly name), which is
+both slower and, with two identically-named devices attached, genuinely
+ambiguous. Shelling out to PowerShell from Python is also just more
+moving parts than a direct COM call for a Windows-only project that
+already accepts a `comtypes`-based dependency's weight (`pygrabber`
+itself depends on it).
+
+**New dependencies:** `pygrabber==0.2`, `comtypes==1.4.16` (pinned in
+`requirements.txt`). Both Windows-only (`comtypes` wraps `ctypes.windll`),
+consistent with this project already being Windows-only.
+
+**Caveat, matching this project's existing `vendor/ids_peak_api.txt`
+precedent for undocumented/compiled surfaces:** `DevicePath` and the
+`ICreateDevEnum`/`dshow_ids` internals this relies on are not part of
+`pygrabber`'s advertised public API (only `FilterGraph`'s methods are
+documented) — verify against the installed `pygrabber` version if a
+future upgrade ever makes `list_uvc_devices()` silently stop returning
+`vid_pid`, rather than assuming today's behavior still holds.
