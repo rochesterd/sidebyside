@@ -40,6 +40,10 @@ Design consequences:
 
 ## Hardware
 
+This table is *this kiosk's* current cameras. For what else is expected
+to work, confirmed-tested alternatives, and what's explicitly excluded,
+see `SUPPORTED_HARDWARE.md`.
+
 | Instrument | Camera | Interface | Notes |
 |---|---|---|---|
 | Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, ~60fps, legacy uEye family — needs the uEye Transport Layer |

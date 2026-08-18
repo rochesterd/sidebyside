@@ -10,6 +10,13 @@ built. Newest at the bottom.
 
 ## 2026-08-17 — Device compatibility & camera setup system
 
+**Status: complete as of 2026-08-18** — all four phases below are done.
+Kept here rather than deleted since it's still the design rationale behind
+`config.py`/`settings.py`/`uvc_enumeration.py`; the authoritative record of
+what was actually built is `DECISIONS.md`'s dated entries and
+`SUPPORTED_HARDWARE.md`, per this file's own "superseded once built" policy
+above.
+
 ### Context
 
 This project started as a single-room, single-configuration tool for
@@ -221,9 +228,11 @@ it's about what feeds it, not a new state machine.
    a separate later phase, once the enumeration spike made it free — see
    DECISIONS.md. IDS instrument roles were already serial-based; no
    equivalent work was needed there.
-4. **Partly done.** `SETUP.md`'s "Verify the install" section now points
-   at `settings.py` instead of hand-editing `config.json`, and the
-   relevant `DECISIONS.md` entries exist. Still open: `SUPPORTED_HARDWARE.md`.
+4. **Done.** `SETUP.md`'s "Verify the install" section points at
+   `settings.py` instead of hand-editing `config.json`; `SUPPORTED_HARDWARE.md`
+   exists (confirmed-tested models, expected-to-work families, explicit
+   exclusions, and how to report a newly-tested device); the relevant
+   `DECISIONS.md` entries exist.
 
 ### Explicitly out of scope for now
 
