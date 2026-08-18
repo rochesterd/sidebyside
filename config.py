@@ -41,10 +41,19 @@ class ThirdPersonConfig:
     friendly_name: str
 
 
+DEFAULT_RECORDING_FPS = 30
+
+
+@dataclass
+class RecordingConfig:
+    fps: int
+
+
 @dataclass
 class AppConfig:
     instruments: dict[str, InstrumentConfig]
     third_person: ThirdPersonConfig
+    recording: RecordingConfig
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
@@ -70,7 +79,9 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
         raise ConfigError(f"{path}: 'third_person' must be an object. {_FIX_HINT}")
     third_person = _parse_third_person(path, third_person_raw)
 
-    return AppConfig(instruments=instruments, third_person=third_person)
+    recording = _parse_recording(path, raw.get("recording"))
+
+    return AppConfig(instruments=instruments, third_person=third_person, recording=recording)
 
 
 def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
@@ -113,3 +124,21 @@ def _parse_third_person(path: Path, entry: dict) -> ThirdPersonConfig:
         raise ConfigError(f"{path}: third_person.friendly_name must be a non-empty string. {_FIX_HINT}")
 
     return ThirdPersonConfig(kind=kind, vid_pid=vid_pid, friendly_name=friendly_name)
+
+
+def _parse_recording(path: Path, entry: object) -> RecordingConfig:
+    # Optional section, unlike instruments/third_person: a missing
+    # `recording` key means "use the measured default," not a broken
+    # config -- see DECISIONS.md's "config-driven recording fps" entry for
+    # why this is a measured value (a technician tunes it against real
+    # observed throughput) rather than something read off the camera.
+    if entry is None:
+        return RecordingConfig(fps=DEFAULT_RECORDING_FPS)
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{path}: 'recording' must be an object. {_FIX_HINT}")
+
+    fps = entry.get("fps", DEFAULT_RECORDING_FPS)
+    if not isinstance(fps, (int, float)) or isinstance(fps, bool) or fps <= 0:
+        raise ConfigError(f"{path}: recording.fps must be a positive number. {_FIX_HINT}")
+
+    return RecordingConfig(fps=fps)

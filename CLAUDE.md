@@ -173,15 +173,27 @@ under it as data, not something to regenerate.
 ## Conventions
 
 - Values that depend on measurement (frame rate, resolution, inter-camera
-  latency offset) belong in a config file, not in source. **Partly true in
-  practice now**: which physical camera fills which role (instrument
-  serials/labels, the third-person VID/PID) is config-driven —
+  latency offset) belong in a config file, not in source — except where
+  the value can instead be *read from the device itself* at the moment
+  it's needed, which beats config entirely: nothing to set, nothing to
+  get stale when hardware changes. Which physical camera fills which role
+  (instrument serials/labels, the third-person VID/PID) is config-driven —
   `config.json` (gitignored, install-specific; `config.example.json` is
   the committed template), loaded by `config.py`, and assigned via
-  `settings.py` rather than hand-edited. Still not yet true: the
-  2560x1080 canvas and 30fps target still live as constructor defaults in
-  `recorder.py`. See `ROADMAP.md`'s "Device compatibility & camera setup
-  system" entry.
+  `settings.py` rather than hand-edited. The recording canvas size is
+  device-derived, not config: `Recorder`/`KioskController` default
+  `width`/`height` to `None`, meaning "sum of both cameras' actual
+  `.resolution` at record time" (mirrors `compositor.side_by_side`'s own
+  default) — self-heals if a camera is swapped for a different
+  resolution model, with no config edit needed. The recording `fps`
+  target stays config-driven (`recording.fps` in `config.json`,
+  `config.py`'s `DEFAULT_RECORDING_FPS` if absent), deliberately *not*
+  read from the device: a camera's nominal/datasheet fps is exactly the
+  number this file's Hardware section already warns not to trust — the
+  slit lamp advertises ~60fps but currently sustains far less, limited by
+  exposure time, not by anything a device query would reveal. See
+  `DECISIONS.md`'s "config-driven recording fps, device-derived canvas
+  size" entry.
 - Record to MKV during capture, remux to MP4 afterward. An interrupted MKV
   is still playable; an interrupted MP4 is lost. When remuxing, filter
   packets on `packet.size == 0`, not `packet.dts is None` — see

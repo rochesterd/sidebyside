@@ -979,3 +979,64 @@ Rescan from mutating a row's candidate list out from under a preview
 that's currently showing "the highlighted entry." **This reentrancy
 question is explicitly unresolved, not answered** — flagging it here
 rather than asserting a behavior that hasn't actually been tested.
+
+---
+
+## 2026-08-18 — Config-driven recording fps, device-derived canvas size
+
+**Decided:** `recorder.py`'s `width`/`height`/`fps` constructor defaults
+(2560x1080x30, previously hardcoded and unreachable from `app.py`) split
+into two different fixes, not one: `fps` became genuinely config-driven
+(`recording.fps` in `config.json`, `config.py`'s new `RecordingConfig` /
+`DEFAULT_RECORDING_FPS`); `width`/`height` did **not** — they became
+device-derived instead. `Recorder.start()` now computes them from
+`self._track_a.camera.resolution` / `self._track_b.camera.resolution`
+whenever the constructor wasn't given explicit values (sum of widths, max
+of heights — the same formula `compositor.side_by_side`'s own `out_size`
+default already used, just previously unreached because `Recorder`
+always passed an explicit `out_size`). `KioskController` mirrors the same
+`None`-means-derive default and threads it through unchanged to
+`Recorder`; its disk-space preflight estimate (`_estimated_canvas()`)
+prefers the same real resolutions once both cameras are live, falling
+back to the old 2560x1080 constant only before then — never a
+correctness issue, since Start stays gated on `cameras_ready` regardless
+of how accurate the estimate is at that point.
+
+**Why not config for canvas size too:** it would work, but device-query
+strictly dominates it for this value — a technician would otherwise have
+to remeasure and re-edit `config.json` every time a camera is swapped for
+a different-resolution model, exactly the kind of drift-prone manual step
+config.json's `label`/`serial`/`vid_pid` fields already avoid for camera
+*identity*. Resolution is a `BaseCamera.resolution` property specifically
+*because* it's meant to be queried, not assumed (see `uvc_camera.py`'s
+"resolution isn't known until it's opened" comment) — there is no
+equivalent reason to keep it out of config the way there is for fps
+(next paragraph), so there's no tradeoff being made here, just an unused
+capability (`side_by_side(out_size=None)`) getting wired up.
+
+**Why fps stays config, not device-queried:** the opposite call, on
+purpose. A camera's advertised/nominal fps (GenICam's
+`AcquisitionFrameRate` node, or UVC's `CAP_PROP_FPS`) is a datasheet
+number, and CLAUDE.md's Hardware section already establishes that this
+project treats measured throughput as authoritative over datasheet
+numbers for exactly this hardware — the slit lamp is the live
+counterexample: it advertises ~60fps but currently sustains far less
+because of an uncalibrated long exposure time (see the "Frame.index was
+never actually gap-detectable" entry above), a limit no device query
+would reveal, since the sensor doesn't know its own effective throughput
+under the current exposure settings. `fps` here also isn't really a
+camera capability at all — it's `Recorder._run()`'s encode/composite
+pacing rate, decoupled from actual per-camera capture rate by design
+(gaps are caught via `Frame.index`, not by tying encoding to arrival).
+Treating it as a measured, technician-set value (observe real sustained
+throughput, set it once) fits `CLAUDE.md`'s existing "values that depend
+on measurement belong in a config file" convention exactly, rather than
+inventing an auto-throttling feature that isn't otherwise needed.
+
+**Rejected:** auto-measuring real sustained fps at startup (a brief
+calibration pass before each recording) instead of a static config value.
+Would get closer to "true" throughput than either a datasheet number or a
+stale manual setting, but it's a materially bigger feature — a recording
+target that can silently change session-to-session isn't obviously
+better than a stable value a technician sets once after watching real
+performance, and no current need justifies the complexity.

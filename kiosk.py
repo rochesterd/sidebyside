@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 #
 # libx264 at crf=23 (Recorder's default) targets quality, not a fixed
 # bitrate, but ~0.08 bits/pixel/frame is a standard rule of thumb for
-# moderate-motion content at that quality. At Recorder's default 2560x1080
-# canvas and 30fps:
+# moderate-motion content at that quality. At a 2560x1080 canvas and 30fps
+# (the fallback estimate used before real camera resolutions are known --
+# see _estimated_canvas() below):
 #
 #   bits/sec  = 0.08 * (2560 * 1080) * 30        ~= 6.64 Mbps
 #   bytes/sec = bits/sec / 8                      ~= 830 KB/s
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 BITS_PER_PIXEL_ESTIMATE = 0.08
 TARGET_SESSION_MINUTES = 10.0
 REQUIRED_SPACE_MULTIPLIER = 2.0
+FALLBACK_CANVAS_WIDTH = 2560
+FALLBACK_CANVAS_HEIGHT = 1080
 
 # How long a camera's frame index may stay unchanged during a recording
 # before it counts as stalled. See DECISIONS.md.
@@ -110,8 +113,12 @@ class KioskController:
         instruments: dict[str, BaseCamera],
         third_person_name: str = "third_person",
         output_root: str | Path = "sessions",
-        width: int = 2560,
-        height: int = 1080,
+        # None means "derive from the two live cameras' own resolution,"
+        # same as Recorder.start()'s default -- see DECISIONS.md's
+        # "config-driven recording fps" entry. Still overridable (tests
+        # use this to keep synthetic recordings small).
+        width: int | None = None,
+        height: int | None = None,
         fps: int = 30,
         stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
         target_minutes: float = TARGET_SESSION_MINUTES,
@@ -131,9 +138,8 @@ class KioskController:
         self._third_person_name = third_person_name
         self._disk_usage_fn = disk_usage_fn
         self._clock = clock
-        self._required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
-            width, height, fps, minutes=target_minutes, bits_per_pixel=bits_per_pixel
-        )
+        self._target_minutes = target_minutes
+        self._bits_per_pixel = bits_per_pixel
         self._recorder_factory = recorder_factory or (
             lambda instrument_camera, instrument_name: Recorder(
                 instrument_camera,
@@ -195,12 +201,16 @@ class KioskController:
         again. error_message / last_session_info are left in place so the
         UI can keep showing the last failure until the next session starts.
         """
+        width, height = self._estimated_canvas()
+        required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
+            width, height, self.fps, minutes=self._target_minutes, bits_per_pixel=self._bits_per_pixel
+        )
         usage = self._disk_usage_fn(str(_existing_ancestor(self.output_root)))
         status = PreflightStatus(
             cameras_ready=self._cameras_ready(),
-            disk_ok=usage.free >= self._required_bytes,
+            disk_ok=usage.free >= required_bytes,
             free_bytes=usage.free,
-            required_bytes=self._required_bytes,
+            required_bytes=required_bytes,
         )
         if self.state != State.RECORDING:
             new_state = State.READY if status.ok else State.IDLE
@@ -214,6 +224,30 @@ class KioskController:
                 )
             self.state = new_state
         return status
+
+    def _estimated_canvas(self) -> tuple[int, int]:
+        """Best-available canvas size for the disk-space estimate. An
+        explicit width/height override wins outright (tests rely on this
+        to keep synthetic recordings small); otherwise prefers the two
+        cameras' real resolutions once both are live, mirroring
+        compositor.side_by_side's own sum-of-widths/max-of-heights default
+        so the estimate matches what Recorder will actually encode.
+        Before that (no instrument selected yet, or its camera hasn't
+        confirmed live), falls back to a conservative default -- Start
+        stays gated on cameras_ready regardless, so an imprecise estimate
+        here never lets a session start on a false "ready."
+        """
+        if self.width is not None and self.height is not None:
+            return self.width, self.height
+
+        third_width, third_height = self.third_person_camera.resolution
+        instrument_width, instrument_height = 0, 0
+        if self.selected_instrument is not None:
+            instrument_width, instrument_height = self.instruments[self.selected_instrument].resolution
+
+        if third_width and third_height and instrument_width and instrument_height:
+            return third_width + instrument_width, max(third_height, instrument_height)
+        return FALLBACK_CANVAS_WIDTH, FALLBACK_CANVAS_HEIGHT
 
     def _cameras_ready(self) -> bool:
         # No instrument picked yet counts as not ready, the same as a

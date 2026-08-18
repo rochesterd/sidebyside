@@ -62,8 +62,12 @@ class Recorder:
         name_a: str = "camera_a",
         name_b: str = "camera_b",
         output_root: str | Path = "sessions",
-        width: int = 2560,  # see DECISIONS.md: wide canvas, not a 1080p split
-        height: int = 1080,
+        # None means "derive from the two cameras' own resolution at
+        # start()" -- side by side, not a 1080p split, whatever that adds
+        # up to. See DECISIONS.md's "config-driven recording fps" entry
+        # for why this is auto-derived rather than configured, unlike fps.
+        width: int | None = None,
+        height: int | None = None,
         fps: int = 30,
         codec: str = "libx264",
         crf: int = 23,
@@ -93,6 +97,18 @@ class Recorder:
         self._start_monotonic: float | None = None
 
     def start(self) -> None:
+        if self.width is None or self.height is None:
+            # Cameras are already live by the time a real caller reaches
+            # here (kiosk.py only calls start_recording() from READY,
+            # which requires both cameras to have delivered a frame), so
+            # .resolution reports the real thing, not a placeholder.
+            a_width, a_height = self._track_a.camera.resolution
+            b_width, b_height = self._track_b.camera.resolution
+            if self.width is None:
+                self.width = a_width + b_width
+            if self.height is None:
+                self.height = max(a_height, b_height)
+
         self.session_dir = self._make_session_dir()
         self.mkv_path = self.session_dir / "composite.mkv"
 

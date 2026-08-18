@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from camera import BaseCamera
 from compositor import side_by_side
-from config import ConfigError, load_config
+from config import DEFAULT_RECORDING_FPS, ConfigError, load_config
 from kiosk import KioskController, PreflightStatus, State
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
@@ -106,6 +106,7 @@ class KioskWindow(QMainWindow):
         third_person_camera: BaseCamera,
         instruments: dict[str, BaseCamera],
         instrument_labels: dict[str, str] | None = None,
+        fps: int = DEFAULT_RECORDING_FPS,
     ):
         super().__init__()
         self.setWindowTitle("Side by Side Recorder")
@@ -114,7 +115,7 @@ class KioskWindow(QMainWindow):
         self.instruments = instruments
         self.instrument_labels = instrument_labels or {key: key for key in instruments}
         self._display_names = {**self.instrument_labels, "third_person": THIRD_PERSON_LABEL}
-        self.controller = KioskController(third_person_camera, instruments)
+        self.controller = KioskController(third_person_camera, instruments, fps=fps)
         self._camera_start_errors: dict[str, str] = {}
         # The instrument the student last picked -- distinct from
         # controller.selected_instrument, which only updates once that
@@ -459,7 +460,9 @@ def main() -> int:
     }
     third_person = _make_third_person_camera(cfg.third_person.vid_pid, third_person_synthetic, "third-person")
     instrument_labels = {key: inst.label for key, inst in cfg.instruments.items()}
-    window = KioskWindow(third_person, instruments, instrument_labels=instrument_labels)
+    window = KioskWindow(
+        third_person, instruments, instrument_labels=instrument_labels, fps=cfg.recording.fps
+    )
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()
     return app.exec()
