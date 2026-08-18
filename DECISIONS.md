@@ -858,3 +858,124 @@ precedent for undocumented/compiled surfaces:** `DevicePath` and the
 documented) — verify against the installed `pygrabber` version if a
 future upgrade ever makes `list_uvc_devices()` silently stop returning
 `vid_pid`, rather than assuming today's behavior still holds.
+
+---
+
+## 2026-08-18 — settings.py + third-person identity moves to VID/PID now
+
+**Decided:** Built `settings.py` (ROADMAP.md's Phase 2) and, alongside it,
+moved the third-person role's identity in `config.json` from a plain UVC
+device index to `vid_pid`/`friendly_name` — originally planned as Phase 3
+("runtime resolution hardening"), pulled forward because `uvc_enumeration.py`
+already provided everything the resolution logic needed and ROADMAP.md
+already fully specced the algorithm; no design ambiguity remained to defer.
+Confirmed with the user before implementing (an index is exactly the
+fragile-across-reboots identity this whole effort exists to move away
+from — shipping `settings.py` writing one would have meant an
+almost-immediate follow-up rewrite). This **supersedes** the 2026-08-18
+"config.json + loader" entry's "Why `third_person` still carries a
+`device` index, not `vid_pid`" paragraph — that reasoning was correct for
+Phase 1 in isolation, but the phase boundary moved once Phase 2 started.
+IDS instrument roles are unaffected (already serial-based, already
+correct).
+
+**`config.json`'s `third_person` block:**
+```json
+"third_person": { "kind": "uvc", "vid_pid": "32E4:9310", "friendly_name": "HD USB Camera" }
+```
+`uvc_enumeration.py` gained `resolve_device(vid_pid, devices=None)`,
+implementing exactly the strategy CLAUDE.md's Hardware table and
+ROADMAP.md's "Third-person (UVC) role" section describe: exactly one UVC
+device attached → use it regardless of configured `vid_pid` (zero
+configuration friction for the common case, self-heals if that single
+camera is swapped for a different model); more than one attached →
+require a `vid_pid` match, refuse to guess otherwise. `devices` is
+injectable so this is unit-tested directly with canned lists — no
+hardware needed for the logic itself, though the underlying enumeration
+was separately verified against the real ELP camera (see the prior
+entry).
+
+**Resolution happens inside `UvcCamera._open()`, not at construction
+time — this is load-bearing, not a style choice.** Verified directly in
+`camera.py`: `BaseCamera.start()` (lines 81-88) calls `self._open()`
+*before* creating the capture thread, and only sets `self._thread` after
+`_open()` succeeds. A raise inside `_open()` therefore leaves
+`self._thread` as `None`, so the *next* `start()` call retries `_open()`
+from scratch — this is exactly the mechanism `app.py`'s existing
+`camera_retry_timer` already depends on for a busy/wrong-serial IDS
+camera, and a third-person camera that isn't physically plugged in yet
+when `app.py` launches needs to fall into that same loop rather than
+raising once, synchronously, out of `main()` before any UI exists (which
+would crash the whole process). `UvcCamera.__init__` therefore gained a
+second identification mode alongside the existing `device` index —
+`UvcCamera(device=..., ...)` XOR `UvcCamera(vid_pid=..., ...)`
+(constructor raises `ValueError` if both or neither are given). Both
+modes stay: `vid_pid` resolves dynamically at `start()` time (used by
+`app.py`'s real runtime path); `device` opens a literal index with no
+resolution (used by `settings.py`'s Preview, which wants to open exactly
+the highlighted dropdown entry, not whatever the fallback logic would
+pick). A resulting `UvcDeviceResolutionError` propagates out of `_open()`
+unwrapped rather than being caught and re-raised as
+`UvcCameraNotFoundError` — they're genuinely different failure classes
+("couldn't decide which device to open" vs. "knew which device, `cv2`
+couldn't open it"), and every caller already just stringifies whichever
+exception it gets, so no unification was needed.
+
+**`vid_pid` is normalized in `config.py`, not just validated.**
+`uvc_enumeration._parse_vid_pid` always uppercases; `resolve_device`
+matches by direct string equality. A hand-typed lowercase value in
+`config.json` (e.g. `"32e4:9310"`) would otherwise pass shape validation
+(`^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$`) but then silently and permanently fail
+to match any attached device — a real, easy-to-hit bug, not a
+hypothetical, so `config.py`'s `_parse_third_person` stores
+`vid_pid.upper()`, not the raw string.
+
+**A UVC device with no discoverable `DevicePath`/VID-PID** (a real,
+documented case — see `uvc_enumeration.py`'s `UvcDeviceInfo.vid_pid: str
+| None`) still appears in `settings.py`'s third-person dropdown rather
+than being silently filtered out, but can't be saved: `DeviceRow`
+represents it as a `RowCandidate` with `key=None`, which `is_valid()`
+already treats the same as "nothing selected," plus a status-line note
+when it's the highlighted selection ("This device has no discoverable
+VID/PID and can't be saved") so the reason is visible, not just a
+disabled Save button with no explanation.
+
+**`ids_camera.py` gained `list_ids_devices()`**, a standalone addition
+(not a refactor of the existing `_open_device()`, which needs the raw
+descriptor objects to call `.OpenDevice()` on and wasn't worth risking).
+Required by CLAUDE.md's architecture rule that nothing outside a camera
+module may import the IDS SDK — `settings.py` cannot enumerate IDS
+devices any other way. Brackets `ids_peak.Library.Initialize()`/`Close()`
+itself, matching `SETUP.md`'s reference script, since — unlike
+`_open_device()` — it isn't tied to a camera object's `_open()`/`_close()`
+lifecycle. `settings.py` imports it lazily (inside a function body, not
+at module level), mirroring `app.py`'s existing `_make_camera` pattern:
+this dev machine has no `ids_peak` installed at all (`import ids_camera`
+raises `ModuleNotFoundError` immediately, confirmed), so a top-level
+import would break `python settings.py` here. `uvc_enumeration`/
+`uvc_camera`, by contrast, are safe as normal top-level imports —
+`pygrabber`/`comtypes` are unconditional `requirements.txt` entries, not
+a separate per-machine install like `ids_peak`. When enumeration fails
+this way, `settings.py` shows a distinct "Could not enumerate IDS
+devices: ..." status on the instrument rows rather than the generic
+"‹not connected›" a row shows with 0 *devices* — "SDK missing" and
+"camera unplugged" are different problems with different fixes, worth
+distinguishing even though both currently happen to gate Save the same way.
+
+**`bgr_to_pixmap` extracted to `qt_image.py`.** It was duplicated
+verbatim in `app.py` and `preview.py` already; `settings.py`'s
+`PreviewDialog` needed it a third time, past the rule-of-three threshold
+this codebase otherwise respects (see `compositor.py`/`uvc_enumeration.py`
+as precedent for small, focused modules). `app.py` and `preview.py` now
+both import it instead of keeping their own copies.
+
+**`PreviewDialog` is opened modally (`.exec()`, not `.show()`).** Two
+reasons: it sidesteps an open question this project has not answered —
+whether `ids_peak.Library.Initialize()`/`Close()` is safely reentrant
+across a Preview holding an `IdsCamera` open while a concurrent Rescan
+tries to enumerate (not covered by `vendor/ids_peak_api.txt`'s scope, not
+worth risking rather than just serializing the two) — and it prevents
+Rescan from mutating a row's candidate list out from under a preview
+that's currently showing "the highlighted entry." **This reentrancy
+question is explicitly unresolved, not answered** — flagging it here
+rather than asserting a behavior that hasn't actually been tested.

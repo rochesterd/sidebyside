@@ -18,7 +18,7 @@ VALID = {
         "slit_lamp": {"kind": "ids", "serial": "111", "label": "Slit Lamp"},
         "bio": {"kind": "ids", "serial": "222", "label": "BIO"},
     },
-    "third_person": {"kind": "uvc", "device": 0},
+    "third_person": {"kind": "uvc", "vid_pid": "32E4:9310", "friendly_name": "HD USB Camera"},
 }
 
 
@@ -38,7 +38,8 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(set(cfg.instruments), {"slit_lamp", "bio"})
         self.assertEqual(cfg.instruments["slit_lamp"].serial, "111")
         self.assertEqual(cfg.instruments["slit_lamp"].label, "Slit Lamp")
-        self.assertEqual(cfg.third_person.device, 0)
+        self.assertEqual(cfg.third_person.vid_pid, "32E4:9310")
+        self.assertEqual(cfg.third_person.friendly_name, "HD USB Camera")
 
     def test_more_than_two_instruments_is_not_a_fixed_pair(self):
         data = json.loads(json.dumps(VALID))
@@ -99,9 +100,50 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(self.path)
 
-    def test_wrong_typed_third_person_device_raises(self):
+    def test_wrong_typed_third_person_vid_pid_raises(self):
         data = json.loads(json.dumps(VALID))
-        data["third_person"]["device"] = "0"
+        data["third_person"]["vid_pid"] = 12345
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_empty_third_person_vid_pid_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["third_person"]["vid_pid"] = ""
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_badly_shaped_third_person_vid_pid_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["third_person"]["vid_pid"] = "not-a-vid-pid"
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_lowercase_third_person_vid_pid_is_normalized_uppercase(self):
+        data = json.loads(json.dumps(VALID))
+        data["third_person"]["vid_pid"] = "32e4:9310"
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.third_person.vid_pid, "32E4:9310")
+
+    def test_missing_third_person_friendly_name_raises(self):
+        data = json.loads(json.dumps(VALID))
+        del data["third_person"]["friendly_name"]
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_wrong_typed_third_person_friendly_name_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["third_person"]["friendly_name"] = 123
         self._write(data)
 
         with self.assertRaises(ConfigError):
@@ -117,7 +159,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_unknown_extra_keys_are_ignored(self):
         data = json.loads(json.dumps(VALID))
-        data["notes"] = "future settings.py field"
+        data["notes"] = "hand-added field, not part of the schema"
         data["instruments"]["slit_lamp"]["vid_pid"] = "32E4:9310"
         self._write(data)
 

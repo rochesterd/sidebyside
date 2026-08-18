@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import unittest
 
-from uvc_enumeration import UvcDeviceInfo, _parse_vid_pid, list_uvc_devices
+from uvc_enumeration import UvcDeviceInfo, UvcDeviceResolutionError, _parse_vid_pid, list_uvc_devices, resolve_device
 
 
 class ParseVidPidTest(unittest.TestCase):
@@ -57,6 +57,40 @@ class ListUvcDevicesTest(unittest.TestCase):
                 self.assertTrue(cap.isOpened(), f"index {device.index} ({device.name!r}) did not open")
             finally:
                 cap.release()
+
+
+class ResolveDeviceTest(unittest.TestCase):
+    def test_no_devices_raises(self):
+        with self.assertRaises(UvcDeviceResolutionError):
+            resolve_device(None, devices=[])
+
+    def test_single_device_wins_regardless_of_configured_vid_pid(self):
+        only = UvcDeviceInfo(index=0, name="Solo Cam", vid_pid="1111:2222")
+
+        self.assertIs(resolve_device(None, devices=[only]), only)
+        self.assertIs(resolve_device("9999:9999", devices=[only]), only)
+
+    def test_multiple_devices_with_no_configured_vid_pid_raises(self):
+        devices = [
+            UvcDeviceInfo(index=0, name="Cam A", vid_pid="1111:2222"),
+            UvcDeviceInfo(index=1, name="Cam B", vid_pid="3333:4444"),
+        ]
+        with self.assertRaises(UvcDeviceResolutionError):
+            resolve_device(None, devices=devices)
+
+    def test_multiple_devices_with_matching_vid_pid_resolves(self):
+        cam_a = UvcDeviceInfo(index=0, name="Cam A", vid_pid="1111:2222")
+        cam_b = UvcDeviceInfo(index=1, name="Cam B", vid_pid="3333:4444")
+
+        self.assertIs(resolve_device("3333:4444", devices=[cam_a, cam_b]), cam_b)
+
+    def test_multiple_devices_with_non_matching_vid_pid_raises(self):
+        devices = [
+            UvcDeviceInfo(index=0, name="Cam A", vid_pid="1111:2222"),
+            UvcDeviceInfo(index=1, name="Cam B", vid_pid="3333:4444"),
+        ]
+        with self.assertRaises(UvcDeviceResolutionError):
+            resolve_device("9999:9999", devices=devices)
 
 
 if __name__ == "__main__":

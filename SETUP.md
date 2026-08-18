@@ -106,10 +106,10 @@ The Keeler needs none of this section — it's native to IDS peak already.
 
 ## 4. Verify the install
 
-There's no camera-listing helper in this codebase yet (only `camera.py`'s
-`BaseCamera` interface and `SyntheticCamera` exist so far — no IDS-backed
-implementation). Use the same standalone script for two different checks,
-depending on the machine:
+`ids_camera.list_ids_devices()` and `settings.py` (Section 6 below) are
+the normal way to see what's attached once the app itself works. Before
+that, to check the SDK/runtime install in isolation, use this standalone
+script for two different checks depending on the machine:
 
 ```python
 from ids_peak import ids_peak
@@ -144,17 +144,7 @@ IDS peak — they're versioned with the SDK, unlike anything on the web.)
 Architecture section is explicit about this: cameras must be identified by
 serial number, never by device index — index order changes across reboots
 and USB port changes, and that's the most common way a setup like this
-silently swaps which camera is "camera_a" and which is "camera_b." Note
-which physical camera has which serial *now*, while you can see both
-labels on screen, so you can pin them correctly instead of guessing by
-enumeration order.
-
-Copy `config.example.json` to `config.json` (repo root) and fill in the
-two serials just noted, plus a `label` for each (what the picker button
-should say). The third-person `device` index can stay the documented
-default of `0` unless more than one UVC device is attached to this
-machine. `app.py` refuses to start with a clear error if `config.json` is
-missing or malformed — see `config.py`.
+silently swaps which camera is "camera_a" and which is "camera_b."
 
 ---
 
@@ -180,3 +170,27 @@ Before reinstalling anything:
   meet.
 - Target 30fps rather than each camera's native ~58-60fps ceiling; that's
   the number the bandwidth math in `CLAUDE.md` was done against.
+
+---
+
+## 6. Assign roles with settings.py
+
+Once the SDK/driver checks above pass, run:
+
+```
+python settings.py
+```
+
+Each row (Slit Lamp, BIO, Third-Person) shows a dropdown of currently-
+detected candidates. Pick the right device for each role, give the two
+instrument rows a label (what the picker button on the kiosk screen will
+say), and use **Preview** on a highlighted selection if you're not sure
+which physical camera it is. **Rescan** re-checks what's attached (e.g.
+after plugging in a camera that wasn't connected yet); **Save** writes
+`config.json`. `app.py` refuses to start with a clear error if
+`config.json` is missing or malformed — see `config.py`.
+
+Re-run `settings.py` any time a camera is replaced or a setting needs to
+change — it's a normal, repeatable tool, not a one-shot installer.
+Restart `app.py` afterward; Save does not hot-reload a running kiosk
+session.

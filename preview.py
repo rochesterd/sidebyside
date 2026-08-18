@@ -6,10 +6,7 @@ from __future__ import annotations
 
 import sys
 
-import cv2
-import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -21,21 +18,13 @@ from PySide6.QtWidgets import (
 )
 
 from compositor import draw_timer, picture_in_picture, side_by_side
+from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
 
 FPS = 30
 CAMERA_A_RESOLUTION = (1600, 1200)
 CAMERA_B_RESOLUTION = (2056, 1542)
 CANVAS_SIZE = (1280, 720)
-
-
-def bgr_to_pixmap(image: np.ndarray) -> QPixmap:
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    rgb = np.ascontiguousarray(rgb)
-    h, w = rgb.shape[:2]
-    qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888)
-    # .copy() so the QImage owns its buffer independent of `rgb`'s lifetime.
-    return QPixmap.fromImage(qimage.copy())
 
 
 class PreviewWindow(QMainWindow):

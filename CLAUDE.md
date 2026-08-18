@@ -44,7 +44,7 @@ Design consequences:
 |---|---|---|---|
 | Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, ~60fps, legacy uEye family — needs the uEye Transport Layer |
 | Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak |
-| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Currently identified by device index, set in `config.json`; see DECISIONS.md for why and ROADMAP.md for the planned VID/PID-based replacement. Any UVC-compliant webcam is expected to work, not just this model. |
+| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Identified by VID/PID, set in `config.json` via `settings.py`; see DECISIONS.md for the identification strategy and the single-device fallback. Any UVC-compliant webcam is expected to work, not just this model. |
 
 The two instrument cameras are machine vision cameras, not webcams: no
 RTSP, no ONVIF, no DirectShow-by-default. They deliver raw frames through
@@ -109,20 +109,25 @@ a UI poll loop can stall the display waiting on a queue.
 |---|---|
 | `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). |
 | `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
-| `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Identified by device index/name, not serial (see Hardware table); `Frame.index` is self-counted, not source-reported. |
+| `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Two identification modes: `device` (a literal DirectShow index, used by `settings.py`'s Preview) and `vid_pid` (resolved to an index at `start()` time via `uvc_enumeration.resolve_device()`, used by `app.py`'s real runtime path — see DECISIONS.md for why resolution happens there, not at construction). `Frame.index` is self-counted, not source-reported. |
+| `uvc_enumeration.py` | `list_uvc_devices()` — index/name/VID:PID for every attached UVC device, in `cv2.CAP_DSHOW`'s own open order, via `pygrabber`'s DirectShow internals. `resolve_device()` — single-device-fallback/ambiguity logic turning a configured `vid_pid` into one `UvcDeviceInfo`. |
+| `ids_camera.py` | `IdsCamera` — `BaseCamera` for the two IDS peak GenICam cameras, opened by serial number. `list_ids_devices()` — serial/model for every currently-attached IDS device, for `settings.py`'s instrument dropdowns. |
 | `config.py` | `load_config()` — reads `config.json` (gitignored; `config.example.json` is the committed template) into which physical camera fills each role. Raises `ConfigError` loudly, before `QApplication` exists, if missing/malformed. |
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
+| `qt_image.py` | `bgr_to_pixmap()` — the one BGR-ndarray-to-`QPixmap` conversion, shared by every window that shows a live camera feed (`app.py`, `preview.py`, `settings.py`). |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
 | `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
 | `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
 | `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — nothing else clickable, and the picker itself disables during a session. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
+| `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
 | `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
 
 `app.py` is what a student actually runs. `preview.py` is a development
 tool (layout dropdown, skew readout) for eyeballing compositing changes
 without going through a full record/stop cycle — never point a student at
-it, it has no Start/Stop discipline.
+it, it has no Start/Stop discipline. `settings.py` is a technician tool —
+same rule: never point a student at it.
 
 ## Recording output
 
@@ -166,13 +171,13 @@ under it as data, not something to regenerate.
 - Values that depend on measurement (frame rate, resolution, inter-camera
   latency offset) belong in a config file, not in source. **Partly true in
   practice now**: which physical camera fills which role (instrument
-  serials/labels, the third-person device index) is config-driven —
+  serials/labels, the third-person VID/PID) is config-driven —
   `config.json` (gitignored, install-specific; `config.example.json` is
-  the committed template), loaded by `config.py`. Still not yet true: the
+  the committed template), loaded by `config.py`, and assigned via
+  `settings.py` rather than hand-edited. Still not yet true: the
   2560x1080 canvas and 30fps target still live as constructor defaults in
   `recorder.py`. See `ROADMAP.md`'s "Device compatibility & camera setup
-  system" entry for the `settings.py` tool (Phase 2) and VID/PID-based
-  third-person resolution (Phase 3) still to come.
+  system" entry.
 - Record to MKV during capture, remux to MP4 afterward. An interrupted MKV
   is still playable; an interrupted MP4 is lost. When remuxing, filter
   packets on `packet.size == 0`, not `packet.dts is None` — see

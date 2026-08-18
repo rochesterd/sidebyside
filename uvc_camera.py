@@ -6,14 +6,28 @@ Hardware table.
 Two deliberate deviations from ids_camera.py's contract, both accepted --
 see DECISIONS.md's "Third-person UVC camera" entry for why:
 
-- Identified by device index, not serial number. cv2.VideoCapture's
-  DirectShow backend has no stable per-device identifier to open by, only
-  an enumeration index -- acceptable as long as this is the only UVC
-  camera attached.
 - Frame.index is a locally-assigned counter, not a source-reported
   sequence number, since UVC/DirectShow exposes no such counter. This
   camera can't detect true source-side drops the way IdsCamera can; only
   consumer-side queue evictions show up in session.json's dropped_frames.
+- Two identification modes, exactly one used per instance (constructor
+  raises ValueError otherwise):
+  - `device`: open this literal DirectShow index directly, no resolution.
+    Used by settings.py's Preview, which wants to open exactly the
+    highlighted dropdown entry.
+  - `vid_pid`: resolved to an index via uvc_enumeration.resolve_device()
+    inside _open() -- not at construction time -- so a camera that isn't
+    attached yet when this object is constructed falls into BaseCamera's
+    normal start()-fails/retry flow (see camera.py: start() only creates
+    the capture thread after _open() succeeds, so a raise here leaves
+    _thread as None and the next start() call retries from scratch) rather
+    than raising once, synchronously, before any retry loop exists. Used
+    by app.py's real runtime path. A resulting UvcDeviceResolutionError
+    propagates unwrapped -- it's a distinct failure ("couldn't decide
+    which device") from UvcCameraNotFoundError ("knew which device, cv2
+    couldn't open it"), and callers already just stringify whichever one
+    they get. See DECISIONS.md's "UVC third-person identity moves to
+    VID/PID" entry.
 """
 
 from __future__ import annotations
@@ -23,6 +37,7 @@ import time
 import cv2
 import numpy as np
 
+import uvc_enumeration
 from camera import BaseCamera
 
 
@@ -31,9 +46,18 @@ class UvcCameraNotFoundError(RuntimeError):
 
 
 class UvcCamera(BaseCamera):
-    def __init__(self, device: int | str, name: str = "third-person", queue_size: int = 2):
+    def __init__(
+        self,
+        device: int | str | None = None,
+        vid_pid: str | None = None,
+        name: str = "third-person",
+        queue_size: int = 2,
+    ):
+        if (device is None) == (vid_pid is None):
+            raise ValueError("UvcCamera requires exactly one of device or vid_pid")
         super().__init__(queue_size=queue_size, label=name)
         self._device = device
+        self._vid_pid = vid_pid
         self._cap: cv2.VideoCapture | None = None
         self._width = 0
         self._height = 0
@@ -44,10 +68,14 @@ class UvcCamera(BaseCamera):
         return (self._width, self._height)
 
     def _open(self) -> None:
-        cap = cv2.VideoCapture(self._device, cv2.CAP_DSHOW)
+        device = self._device
+        if device is None:
+            device = uvc_enumeration.resolve_device(self._vid_pid).index
+
+        cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
         if not cap.isOpened():
             cap.release()
-            raise UvcCameraNotFoundError(f"could not open UVC device {self._device!r}")
+            raise UvcCameraNotFoundError(f"could not open UVC device {device!r}")
 
         # Queried rather than hardcoded -- CLAUDE.md's Conventions section:
         # measured values, not datasheet numbers, and this device's actual

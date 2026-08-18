@@ -13,6 +13,11 @@ upgrade ever makes enumeration silently stop returning vid_pid, treat that
 the same as this project already treats vendor/ids_peak_api.txt: verify
 against the installed package rather than assuming the old behavior still
 holds.
+
+Also home to resolve_device(), the single-device-fallback/ambiguity logic
+uvc_camera.UvcCamera uses to turn a configured vid_pid into an index at
+start() time -- see DECISIONS.md's "UVC third-person identity moves to
+VID/PID" entry.
 """
 
 from __future__ import annotations
@@ -33,6 +38,10 @@ class UvcDeviceInfo:
     index: int
     name: str
     vid_pid: str | None  # "XXXX:YYYY", uppercase hex; None if the device exposes no DevicePath
+
+
+class UvcDeviceResolutionError(RuntimeError):
+    """No attached UVC device could be confidently resolved from config."""
 
 
 def list_uvc_devices() -> list[UvcDeviceInfo]:
@@ -75,3 +84,40 @@ def _parse_vid_pid(device_path: str | None) -> str | None:
     if match is None:
         return None
     return f"{match.group(1).upper()}:{match.group(2).upper()}"
+
+
+def resolve_device(vid_pid: str | None, devices: list[UvcDeviceInfo] | None = None) -> UvcDeviceInfo:
+    """Resolves which attached UVC device to use for the third-person role,
+    per ROADMAP.md's "Third-person (UVC) role" strategy:
+
+    - Exactly one UVC device attached -> use it, regardless of `vid_pid`.
+      Covers the common case (one third-person camera, nothing else UVC on
+      the machine) with zero configuration friction, and self-heals if
+      that single camera is swapped for a different model.
+    - More than one attached -> require a `vid_pid` match; refuse to guess
+      if none is configured, or if the configured one isn't among them.
+    - None attached -> nothing to resolve.
+
+    `devices` is injectable for testing; defaults to a fresh
+    list_uvc_devices() call.
+    """
+    if devices is None:
+        devices = list_uvc_devices()
+
+    if not devices:
+        raise UvcDeviceResolutionError("no UVC device attached")
+
+    if len(devices) == 1:
+        return devices[0]
+
+    if vid_pid is None:
+        raise UvcDeviceResolutionError(
+            f"{len(devices)} UVC devices attached and none is configured -- open Settings and pick one"
+        )
+
+    matches = [d for d in devices if d.vid_pid == vid_pid]
+    if not matches:
+        raise UvcDeviceResolutionError(
+            f"configured UVC device {vid_pid} not found among {len(devices)} attached -- check Settings"
+        )
+    return matches[0]

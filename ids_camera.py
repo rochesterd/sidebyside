@@ -36,6 +36,7 @@ once mounted on the instrument, which this module cannot do on its own.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 import numpy as np
 from ids_peak import ids_peak
@@ -67,6 +68,33 @@ class IdsCameraNotFoundError(RuntimeError):
 
 class IdsCameraAutoExposureTimeoutError(RuntimeError):
     """Auto-exposure/gain convergence didn't finish in time."""
+
+
+@dataclass
+class IdsDeviceInfo:
+    serial: str
+    model_name: str
+
+
+def list_ids_devices() -> list[IdsDeviceInfo]:
+    """Currently-attached IDS peak GenICam devices, for settings.py's
+    instrument-role dropdowns. Empty list is the correct, expected result
+    with none attached -- same "0 found is fine" precedent as SETUP.md's
+    verification script, which this mirrors exactly (including bracketing
+    Library.Initialize()/Close() itself: unlike _open_device() below,
+    which assumes _open() already did that around the whole camera
+    lifecycle, this is a standalone one-shot scan with no camera object
+    involved).
+    """
+    ids_peak.Library.Initialize()
+    try:
+        device_manager = ids_peak.DeviceManager.Instance()
+        device_manager.Update()
+        return [
+            IdsDeviceInfo(serial=d.SerialNumber(), model_name=d.ModelName()) for d in device_manager.Devices()
+        ]
+    finally:
+        ids_peak.Library.Close()
 
 
 class IdsCamera(BaseCamera):

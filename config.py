@@ -12,8 +12,11 @@ already makes.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+
+_VID_PID_RE = re.compile(r"^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$")
 
 DEFAULT_CONFIG_PATH = Path("config.json")
 
@@ -34,7 +37,8 @@ class InstrumentConfig:
 @dataclass
 class ThirdPersonConfig:
     kind: str
-    device: int
+    vid_pid: str  # "XXXX:YYYY", uppercase hex -- see uvc_enumeration.py
+    friendly_name: str
 
 
 @dataclass
@@ -93,11 +97,19 @@ def _parse_third_person(path: Path, entry: dict) -> ThirdPersonConfig:
     if kind != "uvc":
         raise ConfigError(f"{path}: third_person.kind must be \"uvc\", got {kind!r}. {_FIX_HINT}")
 
-    device = entry.get("device")
-    # isinstance(True, int) is True in Python, so "device": true would pass
-    # this check -- not guarded against, treated as user error a JSON
-    # syntax highlighter would already catch.
-    if not isinstance(device, int):
-        raise ConfigError(f"{path}: third_person.device must be an integer. {_FIX_HINT}")
+    vid_pid = entry.get("vid_pid")
+    if not isinstance(vid_pid, str) or not _VID_PID_RE.match(vid_pid):
+        raise ConfigError(
+            f"{path}: third_person.vid_pid must look like \"XXXX:YYYY\" (hex). {_FIX_HINT}"
+        )
+    # Normalized, not just validated: uvc_enumeration.py always uppercases,
+    # and resolve_device() matches by direct string equality -- a
+    # hand-typed lowercase value here would otherwise silently never match
+    # an attached device.
+    vid_pid = vid_pid.upper()
 
-    return ThirdPersonConfig(kind=kind, device=device)
+    friendly_name = entry.get("friendly_name")
+    if not isinstance(friendly_name, str) or not friendly_name:
+        raise ConfigError(f"{path}: third_person.friendly_name must be a non-empty string. {_FIX_HINT}")
+
+    return ThirdPersonConfig(kind=kind, vid_pid=vid_pid, friendly_name=friendly_name)

@@ -18,10 +18,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import cv2
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -37,6 +35,7 @@ from camera import BaseCamera
 from compositor import side_by_side
 from config import ConfigError, load_config
 from kiosk import KioskController, PreflightStatus, State
+from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
 from uvc_camera import UvcCamera
 
@@ -99,15 +98,6 @@ def _configure_logging() -> None:
         sys.__excepthook__(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _log_uncaught
-
-
-def bgr_to_pixmap(image: np.ndarray) -> QPixmap:
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    rgb = np.ascontiguousarray(rgb)
-    h, w = rgb.shape[:2]
-    qimage = QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888)
-    # .copy() so the QImage owns its buffer independent of `rgb`'s lifetime.
-    return QPixmap.fromImage(qimage.copy())
 
 
 class KioskWindow(QMainWindow):
@@ -407,10 +397,10 @@ def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> 
     return IdsCamera(serial=serial)
 
 
-def _make_third_person_camera(device: int, synthetic: bool, name: str) -> BaseCamera:
+def _make_third_person_camera(vid_pid: str | None, synthetic: bool, name: str) -> BaseCamera:
     if synthetic:
         return SyntheticCamera(*THIRD_PERSON_SYNTHETIC_RESOLUTION, name=name, fps=30)
-    return UvcCamera(device, name=name)
+    return UvcCamera(vid_pid=vid_pid, name=name)
 
 
 def main() -> int:
@@ -451,9 +441,9 @@ def main() -> int:
         return 1
 
     logger.info(
-        "app starting: instruments=%s third_person_device=%s instrument_synthetic=%s third_person_synthetic=%s",
+        "app starting: instruments=%s third_person_vid_pid=%s instrument_synthetic=%s third_person_synthetic=%s",
         {key: (None if instrument_synthetic else inst.serial) for key, inst in cfg.instruments.items()},
-        cfg.third_person.device,
+        cfg.third_person.vid_pid,
         instrument_synthetic,
         third_person_synthetic,
     )
@@ -467,7 +457,7 @@ def main() -> int:
         )
         for key, inst in cfg.instruments.items()
     }
-    third_person = _make_third_person_camera(cfg.third_person.device, third_person_synthetic, "third-person")
+    third_person = _make_third_person_camera(cfg.third_person.vid_pid, third_person_synthetic, "third-person")
     instrument_labels = {key: inst.label for key, inst in cfg.instruments.items()}
     window = KioskWindow(third_person, instruments, instrument_labels=instrument_labels)
     window.resize(*PREVIEW_CANVAS_SIZE)

@@ -211,16 +211,19 @@ it's about what feeds it, not a new state machine.
 
 ### Phasing
 
-1. `config.json` + loader. Mechanical, unblocks everything else —
-   `app.py`/`kiosk.py` read config instead of hardcoded constants; the
-   current two serials become this dev machine's `config.example.json`.
-2. `settings.py`. The UVC-enumeration spike above is done
-   (`uvc_enumeration.py`) — remaining: the dropdown/preview UI built
-   around it, and writing `config.json`.
-3. Runtime resolution hardening — VID/PID + single-device-fallback logic
-   for UVC, the explicit failure-mode messages above.
-4. Documentation — `SUPPORTED_HARDWARE.md`, `SETUP.md` rewrite, real
-   `DECISIONS.md` entries for whatever Phase 2's spike settles on.
+1. **Done.** `config.json` + loader — `app.py`/`kiosk.py` read config
+   instead of hardcoded constants.
+2. **Done.** `settings.py` — one row per role, dropdown + Preview +
+   Rescan/Save, writing `config.json`. See DECISIONS.md's 2026-08-18
+   entries.
+3. **Done, for the UVC leg.** VID/PID + single-device-fallback resolution
+   for the third-person role landed alongside `settings.py` rather than as
+   a separate later phase, once the enumeration spike made it free — see
+   DECISIONS.md. IDS instrument roles were already serial-based; no
+   equivalent work was needed there.
+4. **Partly done.** `SETUP.md`'s "Verify the install" section now points
+   at `settings.py` instead of hand-editing `config.json`, and the
+   relevant `DECISIONS.md` entries exist. Still open: `SUPPORTED_HARDWARE.md`.
 
 ### Explicitly out of scope for now
 
