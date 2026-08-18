@@ -1,15 +1,18 @@
-"""Kiosk recording app: one Start button, one Stop button, nothing else
-clickable during a session. See CLAUDE.md 'Who uses it'.
+"""Kiosk recording app: an instrument picker (Slit Lamp / BIO), one Start
+button, one Stop button. See CLAUDE.md 'Who uses it'. The picker and Start
+are the only controls live before a session; the instant Start is pressed,
+the picker disables along with everything else, same as before.
 
-All actual decisions (when Start may be pressed, when a stall counts as a
-failure, what the post-session summary says) live in kiosk.KioskController.
-This module is a thin PySide6 shell that polls it on a timer and reflects
-what it reports.
+All actual decisions (which instrument may be picked, when Start may be
+pressed, when a stall counts as a failure, what the post-session summary
+says) live in kiosk.KioskController. This module is a thin PySide6 shell
+that polls it on a timer and reflects what it reports.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
@@ -34,25 +37,41 @@ from camera import BaseCamera
 from compositor import side_by_side
 from kiosk import KioskController, PreflightStatus, State
 from synthetic_camera import SyntheticCamera
+from uvc_camera import UvcCamera
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_FPS = 30
 POLL_MS = 250
 CAMERA_RETRY_MS = 2000
-CAMERA_A_RESOLUTION = (1600, 1200)
-CAMERA_B_RESOLUTION = (2056, 1542)
+SLIT_LAMP_RESOLUTION = (1600, 1200)
+BIO_RESOLUTION = (2056, 1542)
+# The real ELP-USB100W03M-L21's resolution is queried at runtime (see
+# uvc_camera.py) rather than hardcoded here -- this is only the stand-in
+# used when --third-person-synthetic substitutes a SyntheticCamera for it.
+THIRD_PERSON_SYNTHETIC_RESOLUTION = (640, 480)
 PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recording canvas
+
+# A (0, 0, 3) placeholder, not a real image -- compositor._fit_into_pane
+# treats a zero-width/height source as "just fill this pane with the
+# background color," used when there's no instrument frame yet to show
+# next to the third-person preview.
+_EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
 
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 
-# Hardware-verified serials for the kiosk's two fixed instruments (see
+# Hardware-verified serials for the kiosk's two instruments (see
 # DECISIONS.md and CLAUDE.md's Hardware table). These are the actual
-# machines students use, so they're the default; --synthetic overrides to
-# SyntheticCamera for development on a machine with no cameras attached.
-CAMERA_A_SERIAL_DEFAULT = "4103484089"  # Haag-Streit slit lamp, UI325xCP-C
-CAMERA_B_SERIAL_DEFAULT = "4110050487"  # Keeler Vantage Plus, U3-327xCP-C
+# machines students use, so they're the default; --instrument-synthetic
+# (or --synthetic) overrides to SyntheticCamera for development on a
+# machine with no cameras attached.
+SLIT_LAMP_SERIAL_DEFAULT = "4103484089"  # Haag-Streit slit lamp, UI325xCP-C
+BIO_SERIAL_DEFAULT = "4110050487"  # Keeler Vantage Plus, U3-327xCP-C
+THIRD_PERSON_DEVICE_DEFAULT = 0  # UVC device index -- see CLAUDE.md's Hardware table
+
+INSTRUMENT_LABELS = {"slit_lamp": "Slit Lamp", "bio": "BIO"}
+THIRD_PERSON_LABEL = "third-person camera"
 
 
 def _configure_logging() -> None:
@@ -99,19 +118,26 @@ def bgr_to_pixmap(image: np.ndarray) -> QPixmap:
 class KioskWindow(QMainWindow):
     def __init__(
         self,
-        camera_a: BaseCamera,
-        camera_b: BaseCamera,
-        name_a: str = "camera_a",
-        name_b: str = "camera_b",
+        third_person_camera: BaseCamera,
+        instruments: dict[str, BaseCamera],
+        instrument_labels: dict[str, str] | None = None,
     ):
         super().__init__()
         self.setWindowTitle("Side by Side Recorder")
 
-        self.camera_a = camera_a
-        self.camera_b = camera_b
-        self.controller = KioskController(camera_a, camera_b, name_a=name_a, name_b=name_b)
-        self._camera_names = {"camera_a": name_a, "camera_b": name_b}
+        self.third_person_camera = third_person_camera
+        self.instruments = instruments
+        self.instrument_labels = instrument_labels or {key: key for key in instruments}
+        self._display_names = {**self.instrument_labels, "third_person": THIRD_PERSON_LABEL}
+        self.controller = KioskController(third_person_camera, instruments)
         self._camera_start_errors: dict[str, str] = {}
+        # The instrument the student last picked -- distinct from
+        # controller.selected_instrument, which only updates once that
+        # camera actually confirms live. Kept so a failed start (device
+        # not plugged in yet) can keep retrying the same choice on the
+        # camera-retry timer instead of silently reverting to "nothing
+        # selected."
+        self._desired_instrument: str | None = None
 
         self.error_banner = QLabel()
         self.error_banner.setWordWrap(True)
@@ -124,6 +150,16 @@ class KioskWindow(QMainWindow):
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setMinimumSize(*PREVIEW_CANVAS_SIZE)
         self.video_label.setStyleSheet("background-color: black;")
+
+        self._instrument_buttons: dict[str, QPushButton] = {}
+        picker = QHBoxLayout()
+        for key in self.instruments:
+            button = QPushButton(self.instrument_labels.get(key, key))
+            button.setCheckable(True)
+            button.setMinimumHeight(48)
+            button.clicked.connect(functools.partial(self._on_instrument_clicked, key))
+            picker.addWidget(button)
+            self._instrument_buttons[key] = button
 
         self.start_button = QPushButton("Start")
         self.start_button.setEnabled(False)
@@ -155,6 +191,7 @@ class KioskWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.error_banner)
         layout.addWidget(self.video_label)
+        layout.addLayout(picker)
         layout.addLayout(buttons)
         layout.addWidget(self.status_label)
         layout.addWidget(self.summary_label)
@@ -177,8 +214,10 @@ class KioskWindow(QMainWindow):
         # their own (not plugged in yet) as well as ones that don't (wrong
         # serial, already open elsewhere) -- both look the same from here,
         # so this just keeps retrying rather than requiring an app restart.
-        # SyntheticCamera's start() never fails, so this is a no-op churn
-        # of a single already-running check for the default synthetic path.
+        # Also drives retrying the student's last-picked instrument until
+        # it actually comes up. SyntheticCamera's start() never fails, so
+        # this is a no-op churn of already-running checks on the default
+        # synthetic path.
         self.camera_retry_timer = QTimer(self)
         self.camera_retry_timer.timeout.connect(self._try_start_cameras)
         self.camera_retry_timer.start(CAMERA_RETRY_MS)
@@ -186,22 +225,44 @@ class KioskWindow(QMainWindow):
         self._sync_ui(self.controller.poll_preflight())
 
     def _try_start_cameras(self) -> None:
-        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
-            try:
-                camera.start()
-            except Exception as exc:
-                # Only log the first failure and the eventual recovery, not
-                # every retry -- this fires every CAMERA_RETRY_MS while a
-                # camera stays down, which would otherwise flood the log.
-                if key not in self._camera_start_errors:
-                    logger.warning("%s failed to start: %s", self._camera_names[key], exc)
-                self._camera_start_errors[key] = str(exc)
-            else:
-                if key in self._camera_start_errors:
-                    logger.info("%s recovered and started", self._camera_names[key])
-                self._camera_start_errors.pop(key, None)
+        try:
+            self.third_person_camera.start()
+        except Exception as exc:
+            if "third_person" not in self._camera_start_errors:
+                logger.warning("third-person camera failed to start: %s", exc)
+            self._camera_start_errors["third_person"] = str(exc)
+        else:
+            if "third_person" in self._camera_start_errors:
+                logger.info("third-person camera recovered and started")
+            self._camera_start_errors.pop("third_person", None)
+
+        self._try_select_instrument()
+
+    def _try_select_instrument(self) -> None:
+        if self._desired_instrument is None or self.controller.state == State.RECORDING:
+            return
+        if self.controller.selected_instrument == self._desired_instrument:
+            return
+        key = self._desired_instrument
+        try:
+            self.controller.select_instrument(key)
+        except Exception as exc:
+            if key not in self._camera_start_errors:
+                logger.warning("%s failed to start: %s", key, exc)
+            self._camera_start_errors[key] = str(exc)
+        else:
+            if key in self._camera_start_errors:
+                logger.info("%s recovered and started", key)
+            self._camera_start_errors.pop(key, None)
 
     # --- Qt event handlers -------------------------------------------------
+
+    def _on_instrument_clicked(self, key: str) -> None:
+        if self.controller.state == State.RECORDING:
+            return
+        self._desired_instrument = key
+        self._try_select_instrument()
+        self._sync_ui()
 
     def _on_start_clicked(self) -> None:
         if self.controller.state != State.READY:
@@ -219,11 +280,14 @@ class KioskWindow(QMainWindow):
         self.summary_label.setText(self._format_summary("Session complete", session_info))
 
     def _update_preview(self) -> None:
-        frame_a = self.camera_a.get_latest()
-        frame_b = self.camera_b.get_latest()
-        if frame_a is None or frame_b is None:
+        frame_tp = self.third_person_camera.get_latest()
+        if frame_tp is None:
             return
-        canvas = side_by_side(frame_a.image, frame_b.image, out_size=PREVIEW_CANVAS_SIZE)
+        frame_instrument = None
+        if self.controller.selected_instrument is not None:
+            frame_instrument = self.instruments[self.controller.selected_instrument].get_latest()
+        instrument_image = frame_instrument.image if frame_instrument is not None else _EMPTY_IMAGE
+        canvas = side_by_side(instrument_image, frame_tp.image, out_size=PREVIEW_CANVAS_SIZE)
         self.video_label.setPixmap(bgr_to_pixmap(canvas))
 
     def _poll_tick(self) -> None:
@@ -242,6 +306,9 @@ class KioskWindow(QMainWindow):
         state = self.controller.state
         self.start_button.setEnabled(state == State.READY)
         self.stop_button.setEnabled(state == State.RECORDING)
+        for key, button in self._instrument_buttons.items():
+            button.setEnabled(state != State.RECORDING)
+            button.setChecked(key == self._desired_instrument)
 
         if state == State.RECORDING:
             self.status_label.setText("Recording...")
@@ -252,17 +319,20 @@ class KioskWindow(QMainWindow):
         # ERROR: leave whatever _show_error() just wrote in place.
 
     def _idle_reason(self, preflight) -> str:
+        if self._desired_instrument is None:
+            return "Select an instrument to begin."
         if preflight is None:
             return "Waiting for cameras..."
         missing = []
         if not preflight.cameras_ready:
             if self._camera_start_errors:
                 errors = "; ".join(
-                    f"{self._camera_names[key]}: {msg}" for key, msg in self._camera_start_errors.items()
+                    f"{self._display_names.get(key, key)}: {msg}"
+                    for key, msg in self._camera_start_errors.items()
                 )
-                missing.append(f"both cameras live ({errors})")
+                missing.append(f"cameras live ({errors})")
             else:
-                missing.append("both cameras live")
+                missing.append("cameras live")
         if not preflight.disk_ok:
             free_mb = preflight.free_bytes / (1024 * 1024)
             required_mb = preflight.required_bytes / (1024 * 1024)
@@ -287,7 +357,8 @@ class KioskWindow(QMainWindow):
         comp = session_info["composite"]
         parts = [f"{headline}: {comp['frame_count']} frames"]
         for cam in session_info["cameras"].values():
-            parts.append(f"{cam['name']}: {cam['frame_count']} frames, {cam['dropped_frames']} dropped")
+            display_name = self._display_names.get(cam["name"], cam["name"])
+            parts.append(f"{display_name}: {cam['frame_count']} frames, {cam['dropped_frames']} dropped")
         if self.controller.last_session_dir is not None:
             parts.append(f"saved to {self.controller.last_session_dir}")
         return "  |  ".join(parts)
@@ -322,8 +393,9 @@ class KioskWindow(QMainWindow):
         self.preview_timer.stop()
         self.poll_timer.stop()
         self.camera_retry_timer.stop()
-        self.camera_a.stop()
-        self.camera_b.stop()
+        self.third_person_camera.stop()
+        if self.controller.selected_instrument is not None:
+            self.instruments[self.controller.selected_instrument].stop()
         super().closeEvent(event)
 
 
@@ -340,36 +412,72 @@ def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> 
     return IdsCamera(serial=serial)
 
 
+def _make_third_person_camera(device: int, synthetic: bool, name: str) -> BaseCamera:
+    if synthetic:
+        return SyntheticCamera(*THIRD_PERSON_SYNTHETIC_RESOLUTION, name=name, fps=30)
+    return UvcCamera(device, name=name)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--camera-a-serial",
-        default=CAMERA_A_SERIAL_DEFAULT,
-        help="IDS camera serial number for camera_a (default: slit lamp, %(default)s)",
+        default=SLIT_LAMP_SERIAL_DEFAULT,
+        help="IDS camera serial number for the slit lamp instrument (default: %(default)s)",
     )
     parser.add_argument(
         "--camera-b-serial",
-        default=CAMERA_B_SERIAL_DEFAULT,
-        help="IDS camera serial number for camera_b (default: Keeler, %(default)s)",
+        default=BIO_SERIAL_DEFAULT,
+        help="IDS camera serial number for the BIO/Keeler instrument (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--third-person-device",
+        type=int,
+        default=THIRD_PERSON_DEVICE_DEFAULT,
+        help="UVC device index for the third-person camera (default: %(default)s)",
     )
     parser.add_argument(
         "--synthetic",
         action="store_true",
-        help="Use SyntheticCamera for both cameras instead of real hardware "
+        help="Use SyntheticCamera for all three cameras instead of real hardware "
         "(for development on a machine with no cameras attached)",
+    )
+    parser.add_argument(
+        "--instrument-synthetic",
+        action="store_true",
+        help="Use SyntheticCamera for both instrument cameras (slit lamp, BIO), "
+        "keeping the third-person camera real",
+    )
+    parser.add_argument(
+        "--third-person-synthetic",
+        action="store_true",
+        help="Use SyntheticCamera for the third-person camera, keeping the "
+        "instrument cameras real",
     )
     args = parser.parse_args()
 
-    camera_a_serial = None if args.synthetic else args.camera_a_serial
-    camera_b_serial = None if args.synthetic else args.camera_b_serial
+    instrument_synthetic = args.synthetic or args.instrument_synthetic
+    third_person_synthetic = args.synthetic or args.third_person_synthetic
+
+    slit_lamp_serial = None if instrument_synthetic else args.camera_a_serial
+    bio_serial = None if instrument_synthetic else args.camera_b_serial
 
     _configure_logging()
-    logger.info("app starting: camera_a_serial=%s camera_b_serial=%s", camera_a_serial, camera_b_serial)
+    logger.info(
+        "app starting: slit_lamp_serial=%s bio_serial=%s third_person_device=%s third_person_synthetic=%s",
+        slit_lamp_serial,
+        bio_serial,
+        args.third_person_device,
+        third_person_synthetic,
+    )
 
     app = QApplication(sys.argv)
-    camera_a = _make_camera(camera_a_serial, CAMERA_A_RESOLUTION, "cam-a")
-    camera_b = _make_camera(camera_b_serial, CAMERA_B_RESOLUTION, "cam-b")
-    window = KioskWindow(camera_a, camera_b, name_a="cam-a", name_b="cam-b")
+    instruments = {
+        "slit_lamp": _make_camera(slit_lamp_serial, SLIT_LAMP_RESOLUTION, "slit-lamp"),
+        "bio": _make_camera(bio_serial, BIO_RESOLUTION, "bio"),
+    }
+    third_person = _make_third_person_camera(args.third_person_device, third_person_synthetic, "third-person")
+    window = KioskWindow(third_person, instruments, instrument_labels=INSTRUMENT_LABELS)
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()
     return app.exec()

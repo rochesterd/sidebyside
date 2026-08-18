@@ -94,12 +94,21 @@ class PreflightStatus:
 
 
 class KioskController:
+    """third_person_camera runs for the controller's whole lifetime, same
+    as both cameras used to. `instruments` holds one BaseCamera per
+    selectable instrument (e.g. "slit_lamp", "bio"), constructed but not
+    started -- only one is ever running at a time, since only one
+    instrument is ever physically in use in a session. select_instrument()
+    owns starting/stopping them; nothing else does. See CLAUDE.md's
+    Architecture section and DECISIONS.md's "Third-person UVC camera"
+    entry.
+    """
+
     def __init__(
         self,
-        camera_a: BaseCamera,
-        camera_b: BaseCamera,
-        name_a: str = "camera_a",
-        name_b: str = "camera_b",
+        third_person_camera: BaseCamera,
+        instruments: dict[str, BaseCamera],
+        third_person_name: str = "third_person",
         output_root: str | Path = "sessions",
         width: int = 2560,
         height: int = 1080,
@@ -108,32 +117,33 @@ class KioskController:
         target_minutes: float = TARGET_SESSION_MINUTES,
         bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
         disk_usage_fn: Callable[[str], object] = shutil.disk_usage,
-        recorder_factory: Callable[[], Recorder] | None = None,
+        recorder_factory: Callable[[BaseCamera, str], Recorder] | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
-        self.camera_a = camera_a
-        self.camera_b = camera_b
+        self.third_person_camera = third_person_camera
+        self.instruments = instruments
         self.output_root = Path(output_root)
         self.width = width
         self.height = height
         self.fps = fps
         self.stall_timeout_s = stall_timeout_s
 
+        self._third_person_name = third_person_name
         self._disk_usage_fn = disk_usage_fn
         self._clock = clock
         self._required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
             width, height, fps, minutes=target_minutes, bits_per_pixel=bits_per_pixel
         )
         self._recorder_factory = recorder_factory or (
-            lambda: Recorder(
-                camera_a,
-                camera_b,
-                name_a=name_a,
-                name_b=name_b,
+            lambda instrument_camera, instrument_name: Recorder(
+                instrument_camera,
+                self.third_person_camera,
+                name_a=instrument_name,
+                name_b=third_person_name,
                 output_root=str(self.output_root),
-                width=width,
-                height=height,
-                fps=fps,
+                width=self.width,
+                height=self.height,
+                fps=self.fps,
             )
         )
 
@@ -141,11 +151,40 @@ class KioskController:
         self.error_message: str | None = None
         self.last_session_info: dict | None = None
         self.last_session_dir: Path | None = None
+        self.selected_instrument: str | None = None
 
         self._recorder: Recorder | None = None
-        self._camera_names = {"camera_a": name_a, "camera_b": name_b}
-        self._last_index: dict[str, int] = {"camera_a": -1, "camera_b": -1}
+        self._last_index: dict[str, int] = {"instrument": -1, "third_person": -1}
         self._last_progress_time: dict[str, float] = {}
+
+    # --- Instrument selection -------------------------------------------
+
+    def select_instrument(self, key: str) -> None:
+        """Stop whichever instrument camera was running (if any) and start
+        the newly chosen one. Only one instrument camera is ever live at a
+        time -- see the class docstring. A no-op if `key` is already
+        selected, so callers (app.py's picker buttons) don't need to guard
+        against re-clicking the active choice.
+        """
+        if key not in self.instruments:
+            raise ValueError(f"unknown instrument {key!r}")
+        if self.state == State.RECORDING:
+            raise RuntimeError("cannot change instrument while recording")
+        if key == self.selected_instrument:
+            return
+        if self.selected_instrument is not None:
+            self.instruments[self.selected_instrument].stop()
+        # Cleared before start(), not after: a real camera's start() can
+        # raise (wrong serial, device busy elsewhere -- see IdsCamera). If
+        # it does, the old camera is already stopped, so leaving
+        # selected_instrument pointing at it would make _cameras_ready()
+        # trust a frozen last frame from a camera that isn't actually
+        # running. None here means "nothing confirmed running," which is
+        # the truth until start() below succeeds.
+        self.selected_instrument = None
+        self.instruments[key].start()
+        self.selected_instrument = key
+        logger.info("instrument selected: %s", key)
 
     # --- Idle / ready -------------------------------------------------
 
@@ -177,7 +216,14 @@ class KioskController:
         return status
 
     def _cameras_ready(self) -> bool:
-        return self.camera_a.get_latest() is not None and self.camera_b.get_latest() is not None
+        # No instrument picked yet counts as not ready, the same as a
+        # picked-but-not-yet-live instrument camera -- Start stays
+        # disabled either way, and app.py's status line prompts for a
+        # selection using the same "waiting for..." messaging.
+        if self.selected_instrument is None:
+            return False
+        instrument_camera = self.instruments[self.selected_instrument]
+        return self.third_person_camera.get_latest() is not None and instrument_camera.get_latest() is not None
 
     # --- Recording ------------------------------------------------------
 
@@ -185,20 +231,25 @@ class KioskController:
         if self.state != State.READY:
             raise RuntimeError(f"cannot start recording from state {self.state}")
 
-        self._recorder = self._recorder_factory()
+        instrument_camera = self.instruments[self.selected_instrument]
+        self._recorder = self._recorder_factory(instrument_camera, self.selected_instrument)
         self._recorder.start()
         self.error_message = None
         self.last_session_info = None
         self.last_session_dir = None
 
         now = self._clock()
-        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
+        for key, camera in (("instrument", instrument_camera), ("third_person", self.third_person_camera)):
             frame = camera.get_latest()
             self._last_index[key] = frame.index if frame is not None else -1
             self._last_progress_time[key] = now
 
         self.state = State.RECORDING
-        logger.info("recording started: session_dir=%s", self._recorder.session_dir)
+        logger.info(
+            "recording started: session_dir=%s instrument=%s",
+            self._recorder.session_dir,
+            self.selected_instrument,
+        )
 
     def poll_recording(self) -> None:
         """Call regularly while RECORDING. If a camera's frame index hasn't
@@ -209,9 +260,12 @@ class KioskController:
         if self.state != State.RECORDING:
             return
 
+        instrument_camera = self.instruments[self.selected_instrument]
+        display_names = {"instrument": self.selected_instrument, "third_person": self._third_person_name}
+
         now = self._clock()
         stalled = []
-        for key, camera in (("camera_a", self.camera_a), ("camera_b", self.camera_b)):
+        for key, camera in (("instrument", instrument_camera), ("third_person", self.third_person_camera)):
             frame = camera.get_latest()
             index = frame.index if frame is not None else -1
             if index != self._last_index[key]:
@@ -222,7 +276,7 @@ class KioskController:
                 stalled.append(key)
 
         if stalled:
-            names = ", ".join(self._camera_names[key] for key in stalled)
+            names = ", ".join(display_names[key] for key in stalled)
             self._fail(
                 f"No new frames from {names} for {self.stall_timeout_s:.1f}s+. "
                 "Recording stopped."

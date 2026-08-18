@@ -666,3 +666,97 @@ is most needed for — a camera never starting, a crash before any session
 begins — happen *before* a session directory exists. A single rotating
 app-level log covers those; `session.json` remains the authoritative
 per-session record for anything that did complete.
+
+---
+
+## 2026-08-17 — Third-person UVC camera: index-identified, self-counted
+`Frame.index`, and only one instrument camera runs at a time
+
+**Decided:** Added an ELP-USB100W03M-L21 third-person camera via a new
+`UvcCamera(BaseCamera)` backed by `cv2.VideoCapture`. It deviates from two
+rules elsewhere in this codebase, both accepted deliberately, plus a
+change to camera lifecycle: only one of the two instrument cameras (slit
+lamp, BIO/Keeler) ever runs at a time, chosen by the student via
+`KioskController.select_instrument()`, rather than both running for the
+app's whole lifetime the way they used to.
+
+**Why identified by device index/name, not serial:** CLAUDE.md's
+Architecture section requires serial-number identification specifically
+because index order changes across reboots and USB port changes — real
+past failure mode for the two IDS cameras. OpenCV's DirectShow backend
+(`cv2.VideoCapture`) has no equivalent stable identifier to key off of.
+Accepted because there's exactly one UVC camera in this setup; revisit if
+a second UVC camera is ever added, since two indistinguishable-by-name
+UVC devices would reintroduce the exact enumeration-order risk the
+serial-number rule exists to prevent.
+
+**Why `Frame.index` is self-counted here, unlike `IdsCamera`:** The
+"Frame.index was never actually gap-detectable" entry above fixed
+`BaseCamera` subclasses to report the *source's own* sequence number
+specifically so `recorder.py` could detect real source-side drops, not
+just consumer-side queue evictions. `cv2.VideoCapture`/UVC exposes no such
+counter, so `UvcCamera._grab()` assigns its own gapless counter —
+reintroducing, for this one camera, the exact blind spot that entry
+fixed. Accepted because UVC isn't subject to CLAUDE.md's core worry
+(USB3 Vision silently dropping frames under bandwidth pressure); a
+webcam-class device failing looks like a stall (caught by `kiosk.py`'s
+stall timeout) or a disconnect (caught by `_grab()` raising), not a
+silent partial drop. `dropped_frames` in `session.json` for this camera
+will therefore only ever reflect consumer-side queue evictions, same
+caveat as before the source-index fix for the other two cameras.
+
+**Why only one instrument camera runs at a time:** Only one instrument is
+ever physically in use in a real session — a student is at the slit lamp
+or the BIO, never both. Running both continuously (as the two fixed
+cameras used to) would mean the unused one sits open for no reason and
+adds a picker-independent camera-liveness check with no session it's ever
+part of. `select_instrument()` now owns starting the newly chosen
+instrument camera and stopping whichever one was previously running; the
+third-person camera keeps the old always-on lifecycle since it's used in
+every session regardless of instrument.
+
+**Consequence:** This is also why CLAUDE.md's "Who uses it" section no
+longer says "one Start button, one Stop button, nothing else clickable" —
+the app now needs an instrument picker. It's scoped as tightly as
+possible to preserve the original intent: two large always-visible
+choices (not a menu), enabled only outside `RECORDING`, so it can never
+interrupt or be part of an active session.
+
+**Rejected:** Keeping both instrument cameras running continuously and
+just choosing which feed to composite. Rejected as pointless resource use
+once "only one instrument in use" was confirmed — the camera that isn't
+in the composite this session never needs to be open at all.
+
+---
+
+## 2026-08-17 — UvcCamera hardware-verified against the real ELP camera
+
+**Decided:** Ran a standalone smoke test (`UvcCamera(0, ...).start()`,
+polling `get_latest()`) against real hardware — a "HD USB Camera"
+(VID_32E4&PID_9310), the only UVC camera-class device attached to this
+machine and almost certainly the ELP-USB100W03M-L21. Confirmed working:
+640x480 reported resolution (queried, not hardcoded — see the entry
+above), real image content (mean pixel ~128, full 0-255 range, not a
+black/broken frame), and `Frame.index` incrementing correctly over a 5s
+run.
+
+**Finding:** Time to first frame was variable across three separate runs
+— roughly 0.9s to 1.6s from `start()` to the first non-`None`
+`get_latest()` — noticeably slower and less consistent than the IDS
+cameras' ~0.5s auto-exposure convergence (see the "Hardware smoke test"
+entries above). No code change was needed: `KioskController._cameras_ready()`
+already treats "not live yet" as not-ready regardless of camera type, so
+Start simply stays disabled a little longer after picking this instrument,
+the same mechanism that already absorbs the IDS cameras' convergence
+delay. Worth knowing if the picker ever feels sluggish to respond in
+practice — this is why, not a bug.
+
+**Also confirmed:** `_open()` running in the calling thread (via
+`BaseCamera.start()`) while `_grab()` reads from the spawned capture
+thread — the pattern every `BaseCamera` subclass uses — does not corrupt
+`cv2.VideoCapture`'s DirectShow backend across threads. Checked directly
+because DirectShow's underlying COM apartment-threading rules can in
+principle make this unsafe; a targeted cross-thread `read()` test showed
+no failures under `CAP_DSHOW`, `CAP_MSMF`, or `CAP_ANY`. The original
+"no frame after 1s" result while investigating this turned out to be the
+warm-up latency above, not a threading bug.

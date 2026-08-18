@@ -1,10 +1,11 @@
 """Tests for app.KioskWindow's camera-start handling.
 
 A real camera's start() can fail (wrong serial, device already open
-elsewhere, ...) in ways SyntheticCamera's never does, since SyntheticCamera's
-_open() cannot raise. These exercise that failure path with fake BaseCamera
-subclasses rather than requiring real IDS hardware -- no PySide6 event loop
-is entered (no .exec()/.show()), so this stays headless.
+elsewhere, UVC device not present, ...) in ways SyntheticCamera's never
+does, since SyntheticCamera's _open() cannot raise. These exercise that
+failure path with fake BaseCamera subclasses rather than requiring real
+IDS/UVC hardware -- no PySide6 event loop is entered (no .exec()/.show()),
+so this stays headless.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ _qt_app = QApplication.instance() or QApplication([])
 
 
 class FailingCamera(BaseCamera):
-    """A camera whose _open() always raises, like IdsCamera does when the
-    serial isn't found or the device is already open elsewhere.
+    """A camera whose _open() always raises, like IdsCamera/UvcCamera do
+    when the device isn't found or is already open elsewhere.
     """
 
     def __init__(self, message: str):
@@ -64,37 +65,60 @@ class FlakyCamera(SyntheticCamera):
 
 
 class TestCameraStartFailure(unittest.TestCase):
-    def test_construction_does_not_raise_when_a_camera_fails_to_start(self):
-        camera_a = FailingCamera("no IDS device with serial 'X' found")
-        camera_b = SyntheticCamera(160, 120, fps=30)
+    def test_construction_does_not_raise_when_third_person_camera_fails_to_start(self):
+        third_person = FailingCamera("could not open UVC device 0")
+        instruments = {"slit_lamp": SyntheticCamera(160, 120, fps=30)}
         try:
-            window = KioskWindow(camera_a, camera_b)
+            window = KioskWindow(third_person, instruments)
         except Exception as exc:
             self.fail(f"KioskWindow construction raised instead of degrading: {exc!r}")
         try:
-            self.assertIn("camera_a", window._camera_start_errors)
-            self.assertIn("no IDS device", window._camera_start_errors["camera_a"])
+            self.assertIn("third_person", window._camera_start_errors)
+            self.assertIn("could not open UVC device", window._camera_start_errors["third_person"])
+
+            # The third-person failure doesn't surface in the status line
+            # until an instrument is picked -- before that, "pick one" is
+            # the more useful message.
+            status = window.controller.poll_preflight()
+            self.assertEqual(window._idle_reason(status), "Select an instrument to begin.")
+
+            window._on_instrument_clicked("slit_lamp")
+            status = window.controller.poll_preflight()
+            self.assertIn("could not open UVC device", window._idle_reason(status))
+        finally:
+            third_person.stop()
+            instruments["slit_lamp"].stop()
+
+    def test_instrument_start_failure_is_reported(self):
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instruments = {"slit_lamp": FailingCamera("no IDS device with serial 'X' found")}
+        try:
+            window = KioskWindow(third_person, instruments)
+            window._on_instrument_clicked("slit_lamp")
+
+            self.assertIn("slit_lamp", window._camera_start_errors)
+            self.assertIn("no IDS device", window._camera_start_errors["slit_lamp"])
 
             status = window.controller.poll_preflight()
-            reason = window._idle_reason(status)
-            self.assertIn("no IDS device", reason)
+            self.assertIn("no IDS device", window._idle_reason(status))
         finally:
-            camera_a.stop()
-            camera_b.stop()
+            third_person.stop()
 
-    def test_retry_recovers_once_the_camera_starts_succeeding(self):
-        camera_a = FlakyCamera(160, 120, fps=30, fail_times=1)
-        camera_b = SyntheticCamera(160, 120, fps=30)
+    def test_retry_recovers_once_the_instrument_starts_succeeding(self):
+        third_person = SyntheticCamera(160, 120, fps=30)
+        flaky = FlakyCamera(160, 120, fps=30, fail_times=1)
+        instruments = {"slit_lamp": flaky}
         try:
-            window = KioskWindow(camera_a, camera_b)
-            self.assertIn("camera_a", window._camera_start_errors)
+            window = KioskWindow(third_person, instruments)
+            window._on_instrument_clicked("slit_lamp")
+            self.assertIn("slit_lamp", window._camera_start_errors)
 
             window._try_start_cameras()  # simulates the next retry-timer tick
 
-            self.assertNotIn("camera_a", window._camera_start_errors)
+            self.assertNotIn("slit_lamp", window._camera_start_errors)
         finally:
-            camera_a.stop()
-            camera_b.stop()
+            third_person.stop()
+            flaky.stop()
 
 
 class TestCloseLockdown(unittest.TestCase):
@@ -107,10 +131,11 @@ class TestCloseLockdown(unittest.TestCase):
     """
 
     def test_close_is_ignored_when_user_declines_the_confirm_dialog(self):
-        camera_a = SyntheticCamera(160, 120, fps=30)
-        camera_b = SyntheticCamera(160, 120, fps=30)
-        window = KioskWindow(camera_a, camera_b)
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instruments = {"slit_lamp": SyntheticCamera(160, 120, fps=30)}
+        window = KioskWindow(third_person, instruments)
         try:
+            window._on_instrument_clicked("slit_lamp")
             time.sleep(0.2)  # let both cameras actually produce a frame
             window.controller.poll_preflight()
             window.controller.start_recording()
@@ -124,14 +149,15 @@ class TestCloseLockdown(unittest.TestCase):
         finally:
             if window.controller.state == State.RECORDING:
                 window.controller.stop_recording()
-            camera_a.stop()
-            camera_b.stop()
+            third_person.stop()
+            instruments["slit_lamp"].stop()
 
     def test_close_stops_recording_and_exits_when_user_confirms(self):
-        camera_a = SyntheticCamera(160, 120, fps=30)
-        camera_b = SyntheticCamera(160, 120, fps=30)
-        window = KioskWindow(camera_a, camera_b)
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instruments = {"slit_lamp": SyntheticCamera(160, 120, fps=30)}
+        window = KioskWindow(third_person, instruments)
         try:
+            window._on_instrument_clicked("slit_lamp")
             time.sleep(0.2)  # let both cameras actually produce a frame
             window.controller.poll_preflight()
             window.controller.start_recording()
@@ -144,21 +170,21 @@ class TestCloseLockdown(unittest.TestCase):
             self.assertNotEqual(window.controller.state, State.RECORDING)
             self.assertIsNotNone(window.controller.last_session_info)
         finally:
-            camera_a.stop()
-            camera_b.stop()
+            third_person.stop()
+            instruments["slit_lamp"].stop()
 
     def test_close_is_accepted_when_not_recording(self):
-        camera_a = SyntheticCamera(160, 120, fps=30)
-        camera_b = SyntheticCamera(160, 120, fps=30)
-        window = KioskWindow(camera_a, camera_b)
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instruments = {"slit_lamp": SyntheticCamera(160, 120, fps=30)}
+        window = KioskWindow(third_person, instruments)
         try:
             event = QCloseEvent()
             window.closeEvent(event)
 
             self.assertTrue(event.isAccepted())
         finally:
-            camera_a.stop()
-            camera_b.stop()
+            third_person.stop()
+            instruments["slit_lamp"].stop()
 
 
 if __name__ == "__main__":
