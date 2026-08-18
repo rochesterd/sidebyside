@@ -1,0 +1,103 @@
+"""Loads config.json: which physical camera fills each role (slit lamp,
+BIO, third-person). See ROADMAP.md's "Device compatibility & camera setup
+system" entry and DECISIONS.md for why this exists and what it deviates
+from the eventual (Phase 3+) schema.
+
+Deliberately has no import of camera.py/ids_camera.py/uvc_camera.py -- it
+only parses JSON into dataclasses, so it stays usable on a dev machine with
+no IDS SDK installed, the same assumption app.py's lazy IdsCamera import
+already makes.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+DEFAULT_CONFIG_PATH = Path("config.json")
+
+_FIX_HINT = "Copy config.example.json to config.json and edit it for this machine."
+
+
+class ConfigError(RuntimeError):
+    """config.json is missing, malformed, or missing/wrong-typed required keys."""
+
+
+@dataclass
+class InstrumentConfig:
+    kind: str
+    serial: str
+    label: str
+
+
+@dataclass
+class ThirdPersonConfig:
+    kind: str
+    device: int
+
+
+@dataclass
+class AppConfig:
+    instruments: dict[str, InstrumentConfig]
+    third_person: ThirdPersonConfig
+
+
+def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
+    path = Path(path)
+    if not path.exists():
+        raise ConfigError(f"{path} not found. {_FIX_HINT}")
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"{path} is not valid JSON: {exc}. {_FIX_HINT}") from exc
+
+    instruments_raw = raw.get("instruments")
+    if not isinstance(instruments_raw, dict) or not instruments_raw:
+        raise ConfigError(f"{path}: 'instruments' must be a non-empty object. {_FIX_HINT}")
+
+    instruments: dict[str, InstrumentConfig] = {}
+    for key, entry in instruments_raw.items():
+        instruments[key] = _parse_instrument(path, key, entry)
+
+    third_person_raw = raw.get("third_person")
+    if not isinstance(third_person_raw, dict):
+        raise ConfigError(f"{path}: 'third_person' must be an object. {_FIX_HINT}")
+    third_person = _parse_third_person(path, third_person_raw)
+
+    return AppConfig(instruments=instruments, third_person=third_person)
+
+
+def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{path}: instruments.{key} must be an object. {_FIX_HINT}")
+
+    kind = entry.get("kind")
+    if kind != "ids":
+        raise ConfigError(f"{path}: instruments.{key}.kind must be \"ids\", got {kind!r}. {_FIX_HINT}")
+
+    serial = entry.get("serial")
+    if not isinstance(serial, str) or not serial:
+        raise ConfigError(f"{path}: instruments.{key}.serial must be a non-empty string. {_FIX_HINT}")
+
+    label = entry.get("label")
+    if not isinstance(label, str) or not label:
+        raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
+
+    return InstrumentConfig(kind=kind, serial=serial, label=label)
+
+
+def _parse_third_person(path: Path, entry: dict) -> ThirdPersonConfig:
+    kind = entry.get("kind")
+    if kind != "uvc":
+        raise ConfigError(f"{path}: third_person.kind must be \"uvc\", got {kind!r}. {_FIX_HINT}")
+
+    device = entry.get("device")
+    # isinstance(True, int) is True in Python, so "device": true would pass
+    # this check -- not guarded against, treated as user error a JSON
+    # syntax highlighter would already catch.
+    if not isinstance(device, int):
+        raise ConfigError(f"{path}: third_person.device must be an integer. {_FIX_HINT}")
+
+    return ThirdPersonConfig(kind=kind, device=device)

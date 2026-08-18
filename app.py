@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from camera import BaseCamera
 from compositor import side_by_side
+from config import ConfigError, load_config
 from kiosk import KioskController, PreflightStatus, State
 from synthetic_camera import SyntheticCamera
 from uvc_camera import UvcCamera
@@ -44,8 +45,12 @@ logger = logging.getLogger(__name__)
 PREVIEW_FPS = 30
 POLL_MS = 250
 CAMERA_RETRY_MS = 2000
-SLIT_LAMP_RESOLUTION = (1600, 1200)
-BIO_RESOLUTION = (2056, 1542)
+# Stand-in shapes for --instrument-synthetic, keyed by role -- not
+# identity, so unlike serials/device index these stay out of config.json.
+# Falls back to DEFAULT_SYNTHETIC_RESOLUTION for any role config.json
+# defines that isn't one of today's two (see config.py/ROADMAP.md).
+INSTRUMENT_SYNTHETIC_RESOLUTIONS = {"slit_lamp": (1600, 1200), "bio": (2056, 1542)}
+DEFAULT_SYNTHETIC_RESOLUTION = (1600, 1200)
 # The real ELP-USB100W03M-L21's resolution is queried at runtime (see
 # uvc_camera.py) rather than hardcoded here -- this is only the stand-in
 # used when --third-person-synthetic substitutes a SyntheticCamera for it.
@@ -61,16 +66,6 @@ _EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
 LOG_DIR = Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 
-# Hardware-verified serials for the kiosk's two instruments (see
-# DECISIONS.md and CLAUDE.md's Hardware table). These are the actual
-# machines students use, so they're the default; --instrument-synthetic
-# (or --synthetic) overrides to SyntheticCamera for development on a
-# machine with no cameras attached.
-SLIT_LAMP_SERIAL_DEFAULT = "4103484089"  # Haag-Streit slit lamp, UI325xCP-C
-BIO_SERIAL_DEFAULT = "4110050487"  # Keeler Vantage Plus, U3-327xCP-C
-THIRD_PERSON_DEVICE_DEFAULT = 0  # UVC device index -- see CLAUDE.md's Hardware table
-
-INSTRUMENT_LABELS = {"slit_lamp": "Slit Lamp", "bio": "BIO"}
 THIRD_PERSON_LABEL = "third-person camera"
 
 
@@ -421,22 +416,6 @@ def _make_third_person_camera(device: int, synthetic: bool, name: str) -> BaseCa
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--camera-a-serial",
-        default=SLIT_LAMP_SERIAL_DEFAULT,
-        help="IDS camera serial number for the slit lamp instrument (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--camera-b-serial",
-        default=BIO_SERIAL_DEFAULT,
-        help="IDS camera serial number for the BIO/Keeler instrument (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--third-person-device",
-        type=int,
-        default=THIRD_PERSON_DEVICE_DEFAULT,
-        help="UVC device index for the third-person camera (default: %(default)s)",
-    )
-    parser.add_argument(
         "--synthetic",
         action="store_true",
         help="Use SyntheticCamera for all three cameras instead of real hardware "
@@ -459,25 +438,38 @@ def main() -> int:
     instrument_synthetic = args.synthetic or args.instrument_synthetic
     third_person_synthetic = args.synthetic or args.third_person_synthetic
 
-    slit_lamp_serial = None if instrument_synthetic else args.camera_a_serial
-    bio_serial = None if instrument_synthetic else args.camera_b_serial
-
     _configure_logging()
+
+    # Checked before QApplication exists: a missing/malformed config.json is
+    # a technician setup error, not a student-facing camera preflight (see
+    # kiosk.py for that), so it never needs Qt at all -- just a log line
+    # (logger's StreamHandler already reaches stderr) and a nonzero exit.
+    try:
+        cfg = load_config()
+    except ConfigError as exc:
+        logger.error(str(exc))
+        return 1
+
     logger.info(
-        "app starting: slit_lamp_serial=%s bio_serial=%s third_person_device=%s third_person_synthetic=%s",
-        slit_lamp_serial,
-        bio_serial,
-        args.third_person_device,
+        "app starting: instruments=%s third_person_device=%s instrument_synthetic=%s third_person_synthetic=%s",
+        {key: (None if instrument_synthetic else inst.serial) for key, inst in cfg.instruments.items()},
+        cfg.third_person.device,
+        instrument_synthetic,
         third_person_synthetic,
     )
 
     app = QApplication(sys.argv)
     instruments = {
-        "slit_lamp": _make_camera(slit_lamp_serial, SLIT_LAMP_RESOLUTION, "slit-lamp"),
-        "bio": _make_camera(bio_serial, BIO_RESOLUTION, "bio"),
+        key: _make_camera(
+            None if instrument_synthetic else inst.serial,
+            INSTRUMENT_SYNTHETIC_RESOLUTIONS.get(key, DEFAULT_SYNTHETIC_RESOLUTION),
+            key,
+        )
+        for key, inst in cfg.instruments.items()
     }
-    third_person = _make_third_person_camera(args.third_person_device, third_person_synthetic, "third-person")
-    window = KioskWindow(third_person, instruments, instrument_labels=INSTRUMENT_LABELS)
+    third_person = _make_third_person_camera(cfg.third_person.device, third_person_synthetic, "third-person")
+    instrument_labels = {key: inst.label for key, inst in cfg.instruments.items()}
+    window = KioskWindow(third_person, instruments, instrument_labels=instrument_labels)
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()
     return app.exec()

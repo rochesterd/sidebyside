@@ -760,3 +760,54 @@ principle make this unsafe; a targeted cross-thread `read()` test showed
 no failures under `CAP_DSHOW`, `CAP_MSMF`, or `CAP_ANY`. The original
 "no frame after 1s" result while investigating this turned out to be the
 warm-up latency above, not a threading bug.
+
+---
+
+## 2026-08-18 — config.json + loader (ROADMAP.md Phase 1)
+
+**Decided:** Added `config.py`/`config.json` so which physical camera
+fills each role (slit lamp, BIO, third-person) is no longer a source
+constant in `app.py`. `config.json` is gitignored, like `sessions/` and
+`logs/` — it's install-specific data, not source. `config.example.json`
+is committed in its place, seeded with this machine's real (already
+publicly documented in CLAUDE.md's Hardware table) serials, so a fresh
+clone has something to copy rather than a silent fallback to someone
+else's hardware. `kiosk.KioskController` needed no changes — it was
+already generic over an `instruments: dict[str, BaseCamera]`; this phase
+is purely about where `app.py` sources that dict's contents from.
+
+**Why `third_person` still carries a `device` index, not `vid_pid`:**
+ROADMAP.md's end-state schema sketch uses `vid_pid`/`friendly_name` for
+the third-person role, since no reliable per-unit serial can be assumed
+across arbitrary consumer webcams. That resolution logic (plus the
+single-device-attached fallback) is explicitly scoped as Phase 3 —
+"Runtime resolution hardening" — not this phase. Phase 1 keeps today's
+identification method (a UVC device index) so this stays the mechanical,
+low-risk move ROADMAP.md describes it as, rather than pulling forward
+undecided work (the UVC-enumeration spike ROADMAP.md flags as needed
+before `settings.py`).
+
+**Why the config-load failure is checked before `QApplication` exists:**
+It's a technician-facing setup error (wrong/missing `config.json` on this
+specific machine), not the student-facing camera-liveness preflight
+`kiosk.py` already owns — a student never reaches a state where
+`config.json` could be the problem, since the picker only ever shows
+instruments the config already defines. So it doesn't need Qt at all:
+`logger.error(...)` (already reaching both `logs/app.log` and stderr via
+the existing `StreamHandler`) plus a nonzero exit code is the whole
+response, checked in `main()` right after `_configure_logging()` and
+before `QApplication(sys.argv)` is constructed.
+
+**Rejected:** A `--config` CLI flag for the file path. Nothing in
+ROADMAP.md's Phase 1 description calls for one, `settings.py` (Phase 2)
+will always write the canonical `config.json` path, and no test drives
+`app.main()` directly, so there's no plumbing reason either — the
+CWD-relative default matches existing conventions (`LOG_DIR`, `kiosk.py`'s
+`output_root`).
+
+**Also rejected:** Rejecting unknown/extra keys in `config.json` (strict
+schema validation). Chose to validate only the presence and type of keys
+Phase 1 actually reads, and ignore anything else — leaves room for a
+stray hand-added field, or a transitional `vid_pid` key sitting next to
+`device` once Phase 3 lands, without the loader needing to change in
+lockstep.

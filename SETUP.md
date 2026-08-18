@@ -146,8 +146,15 @@ serial number, never by device index — index order changes across reboots
 and USB port changes, and that's the most common way a setup like this
 silently swaps which camera is "camera_a" and which is "camera_b." Note
 which physical camera has which serial *now*, while you can see both
-labels on screen, so a future camera module's config can pin them
-correctly instead of guessing by enumeration order.
+labels on screen, so you can pin them correctly instead of guessing by
+enumeration order.
+
+Copy `config.example.json` to `config.json` (repo root) and fill in the
+two serials just noted, plus a `label` for each (what the picker button
+should say). The third-person `device` index can stay the documented
+default of `0` unless more than one UVC device is attached to this
+machine. `app.py` refuses to start with a clear error if `config.json` is
+missing or malformed — see `config.py`.
 
 ---
 

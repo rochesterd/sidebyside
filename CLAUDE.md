@@ -44,7 +44,7 @@ Design consequences:
 |---|---|---|---|
 | Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, ~60fps, legacy uEye family — needs the uEye Transport Layer |
 | Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak |
-| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Currently identified by device index, hardcoded in `app.py`; see DECISIONS.md for why and ROADMAP.md for the planned VID/PID-based replacement. Any UVC-compliant webcam is expected to work, not just this model. |
+| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Currently identified by device index, set in `config.json`; see DECISIONS.md for why and ROADMAP.md for the planned VID/PID-based replacement. Any UVC-compliant webcam is expected to work, not just this model. |
 
 The two instrument cameras are machine vision cameras, not webcams: no
 RTSP, no ONVIF, no DirectShow-by-default. They deliver raw frames through
@@ -110,6 +110,7 @@ a UI poll loop can stall the display waiting on a queue.
 | `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). |
 | `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
 | `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Identified by device index/name, not serial (see Hardware table); `Frame.index` is self-counted, not source-reported. |
+| `config.py` | `load_config()` — reads `config.json` (gitignored; `config.example.json` is the committed template) into which physical camera fills each role. Raises `ConfigError` loudly, before `QApplication` exists, if missing/malformed. |
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
 | `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
@@ -163,13 +164,15 @@ under it as data, not something to regenerate.
 ## Conventions
 
 - Values that depend on measurement (frame rate, resolution, inter-camera
-  latency offset) belong in a config file, not in source. **Not yet true in
-  practice**: no config file exists, so the 2560x1080 canvas and 30fps
-  target currently live as constructor defaults in `recorder.py`, and
-  which physical camera fills which role (slit lamp/BIO serials, the
-  third-person device) lives as hardcoded constants in `app.py`. See
-  `ROADMAP.md`'s "Device compatibility & camera setup system" entry for
-  the planned config file and `settings.py` tool that replaces this.
+  latency offset) belong in a config file, not in source. **Partly true in
+  practice now**: which physical camera fills which role (instrument
+  serials/labels, the third-person device index) is config-driven —
+  `config.json` (gitignored, install-specific; `config.example.json` is
+  the committed template), loaded by `config.py`. Still not yet true: the
+  2560x1080 canvas and 30fps target still live as constructor defaults in
+  `recorder.py`. See `ROADMAP.md`'s "Device compatibility & camera setup
+  system" entry for the `settings.py` tool (Phase 2) and VID/PID-based
+  third-person resolution (Phase 3) still to come.
 - Record to MKV during capture, remux to MP4 afterward. An interrupted MKV
   is still playable; an interrupted MP4 is lost. When remuxing, filter
   packets on `packet.size == 0`, not `packet.dts is None` — see

@@ -1,0 +1,7 @@
+{
+  "instruments": {
+    "slit_lamp": { "kind": "ids", "serial": "4103484089", "label": "Slit Lamp" },
+    "bio":       { "kind": "ids", "serial": "4110050487", "label": "BIO" }
+  },
+  "third_person": { "kind": "uvc", "device": 0 }
+}
