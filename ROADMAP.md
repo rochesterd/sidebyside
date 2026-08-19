@@ -271,3 +271,69 @@ isn't re-derived from scratch later; none of these are committed work.
   not moved to `config.json` — no institution has needed a different
   value yet, and adding config for a hypothetical isn't earned (see
   CLAUDE.md's general anti-speculative-config stance).
+
+---
+
+## 2026-08-18 — In-app exposure/gain calibration for cameras with no auto-exposure (planned, not built)
+
+### Context
+
+The 2026-08-12 "Slit lamp camera smoke test" entry in `DECISIONS.md` left
+an open item: that camera has no `ExposureAuto`/`GainAuto` at all (unlike
+the Keeler, which self-converges every session), so it needs a one-time
+manual `ExposureTime`/`Gain` calibration "via IDS peak Cockpit," and
+flagged that whatever value the device last had just persists across
+power cycles with **no code-level check** if it's ever stale or wrong.
+That item was never closed out. Compounding it, `SUPPORTED_HARDWARE.md`
+(written this session) pointed at "see SETUP.md" for that calibration
+step — SETUP.md has no such section. Both are corrected by this entry:
+the plan below supersedes "use Cockpit," so no SETUP.md section for it is
+coming; `SUPPORTED_HARDWARE.md` should stop pointing at one.
+
+### The actual finding
+
+Nothing requires an external tool. `ids_camera.py` already imports
+`ids_peak` directly and already reads/writes GenICam nodes on
+`self._node_map` — that's exactly how `_converge_auto_exposure()`
+controls `ExposureAuto`/`GainAuto` today. `ExposureTime`/`Gain` are just
+two more nodes on that same map. IDS peak Cockpit is a vendor GUI over
+the identical API; there's nothing it can do that this codebase can't do
+directly.
+
+### Planned design
+
+- `settings.py`'s `PreviewDialog`, when opened for an instrument row
+  whose camera lacks `ExposureAuto`/`GainAuto` (same `IsAvailable()`
+  check `_converge_auto_exposure()` already does), shows live
+  `ExposureTime`/`Gain` sliders against the real feed instead of just a
+  static preview.
+- The calibrated values persist in **`config.json`**, per instrument
+  role — not device NVRAM. This fits CLAUDE.md's own convention exactly:
+  values belong in config *except* where they can be read from the
+  device, and a camera with no auto-exposure has nothing to read — there
+  is no sensor-side measurement to query. (`InstrumentConfig` would need
+  optional `exposure_time_us`/`gain` fields; `config.py`'s loader treats
+  them as optional, present only for instruments that need them.)
+- `ids_camera.py`'s `_open()` applies them explicitly from config every
+  session, for any instrument whose config carries them. This is what
+  actually closes the original "Open" item — not by detecting a stale
+  device-side value, but by removing the device-side persistence
+  dependency entirely. Every session gets whatever `config.json` says,
+  deterministically.
+
+### Rejected: a runtime brightness preflight check
+
+Considered as an alternative way to catch a bad calibration — `kiosk.py`
+flagging a suspiciously dark frame before allowing Start, extending
+CLAUDE.md's "loud and early" preflight philosophy from "is a frame
+arriving at all" (binary, unambiguous — the existing `_cameras_ready()`
+check) to "is the frame bright enough" (a fuzzy threshold). Rejected:
+unlike a missing frame, "too dark" has real false-positive risk — a
+legitimately dim scene shouldn't block a student from starting a session.
+The config-driven calibration above solves the root cause deterministically
+instead of trying to heuristically detect its absence at runtime.
+
+### Status
+
+Not built — explicitly deferred ("at some point," not now). Tracked here
+so the design doesn't need to be re-derived when it's picked up.
