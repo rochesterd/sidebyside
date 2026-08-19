@@ -127,6 +127,28 @@ class SettingsWindowTest(unittest.TestCase):
         _select(window._third_person_row, "32E4:9310")
         self.assertTrue(window.save_button.isEnabled())
 
+    def test_same_camera_picked_for_two_roles_blocks_save(self):
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        _select(window._instrument_rows["slit_lamp"], "111")
+        window._instrument_rows["slit_lamp"].label_edit.setText("Slit Lamp")
+        _select(window._instrument_rows["bio"], "111")  # same serial as slit_lamp
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+
+        self.assertFalse(window.save_button.isEnabled())
+        self.assertFalse(window.conflict_label.isHidden())
+        self.assertIn("111", window.conflict_label.text())
+
+        window._on_save_clicked()  # defense in depth: must no-op even if called directly
+        self.assertFalse(self.config_path.exists())
+
+        _select(window._instrument_rows["bio"], "222")  # resolve the conflict
+
+        self.assertTrue(window.conflict_label.isHidden())
+        self.assertTrue(window.save_button.isEnabled())
+
     def test_instrument_row_with_empty_label_is_invalid(self):
         window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
         row = window._instrument_rows["slit_lamp"]

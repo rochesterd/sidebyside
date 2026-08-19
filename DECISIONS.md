@@ -1040,3 +1040,30 @@ stale manual setting, but it's a materially bigger feature — a recording
 target that can silently change session-to-session isn't obviously
 better than a stable value a technician sets once after watching real
 performance, and no current need justifies the complexity.
+
+---
+
+## 2026-08-18 — settings.py blocks Save when two instrument roles pick the same camera
+
+**Decided:** Nothing previously stopped a technician from selecting the
+same physical IDS camera's serial for both `slit_lamp` and `bio` in
+`settings.py` — each row's dropdown is independently populated from the
+same enumerated device list, so picking the same entry twice was always
+possible and `Save` would have written the duplicate serial into both
+roles without complaint. `SettingsWindow._duplicate_serial_roles()` now
+detects this (any serial selected by more than one instrument row) and
+`_update_save_enabled()` disables `Save` with an explicit message
+(`conflict_label`, styled like the existing malformed-config
+`warning_label` but recomputed live on every row change, not just at
+startup) rather than only catching it in a docstring or leaving it to
+`app.py` to fail confusingly later — two roles both trying to open one
+physical device isn't a state `app.py`'s per-role `IdsCamera` construction
+has any way to reconcile. `_on_save_clicked()` also re-checks directly
+(defense in depth against a future caller that bypasses the button's
+`isEnabled()` gate, matching this file's existing pattern of checking
+`is_valid()` in both places).
+
+**Why block Save rather than just warn:** matches every other Save-gating
+condition already in this file (empty label, "‹not connected›", no
+VID/PID) — a real, catchable-at-config-time mistake gets caught here,
+not deferred to a confusing runtime failure on the actual kiosk machine.

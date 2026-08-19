@@ -308,6 +308,19 @@ class SettingsWindow(QMainWindow):
         )
         self.warning_label.hide()
 
+        # Separate from warning_label: that one is about an existing
+        # config.json this window couldn't read; this one is live
+        # validation against the *current* on-screen selections (today,
+        # just "same physical camera picked for two instrument roles" --
+        # app.py would otherwise have both roles fighting to open one
+        # device). Recomputed on every row change, not just at startup.
+        self.conflict_label = QLabel()
+        self.conflict_label.setWordWrap(True)
+        self.conflict_label.setStyleSheet(
+            "background-color: #b00020; color: white; font-weight: bold; padding: 8px;"
+        )
+        self.conflict_label.hide()
+
         self._instrument_rows: dict[str, DeviceRow] = {
             key: DeviceRow(key, title, has_label=True, preview_camera_factory=ids_preview_camera_factory)
             for key, title in ROLE_TITLES.items()
@@ -327,6 +340,7 @@ class SettingsWindow(QMainWindow):
 
         layout = QVBoxLayout()
         layout.addWidget(self.warning_label)
+        layout.addWidget(self.conflict_label)
         for row in self._all_rows():
             layout.addWidget(row)
             row.changed.connect(self._update_save_enabled)
@@ -381,11 +395,35 @@ class SettingsWindow(QMainWindow):
             logger.warning("could not enumerate IDS devices: %s", exc)
             return [], f"Could not enumerate IDS devices: {exc}"
 
+    def _duplicate_serial_roles(self) -> dict[str, list[str]]:
+        """Serials currently selected by more than one instrument row --
+        app.py has no way to open the same physical IDS camera for two
+        roles at once, so this must block Save, not just look odd.
+        """
+        by_serial: dict[str, list[str]] = {}
+        for key, row in self._instrument_rows.items():
+            serial = row.selected_key()
+            if serial is not None:
+                by_serial.setdefault(serial, []).append(key)
+        return {serial: roles for serial, roles in by_serial.items() if len(roles) > 1}
+
     def _update_save_enabled(self) -> None:
+        duplicates = self._duplicate_serial_roles()
+        if duplicates:
+            conflicts = []
+            for serial, roles in duplicates.items():
+                role_titles = " and ".join(ROLE_TITLES.get(r, r) for r in roles)
+                conflicts.append(f"{role_titles} are both set to serial {serial}")
+            self.conflict_label.setText(f"Can't save: {'; '.join(conflicts)}. Pick a different camera for each role.")
+            self.conflict_label.show()
+            self.save_button.setEnabled(False)
+            return
+
+        self.conflict_label.hide()
         self.save_button.setEnabled(all(row.is_valid() for row in self._all_rows()))
 
     def _on_save_clicked(self) -> None:
-        if not all(row.is_valid() for row in self._all_rows()):
+        if self._duplicate_serial_roles() or not all(row.is_valid() for row in self._all_rows()):
             return
 
         third_person_candidate = self._third_person_row.selected_candidate()
