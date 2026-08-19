@@ -243,3 +243,31 @@ it's about what feeds it, not a new state machine.
 - More than one third-person camera, or a variable number of "views"
   beyond the existing instrument + third-person pair — not requested,
   keeps scope matched to the app's actual purpose.
+
+---
+
+## 2026-08-18 — Other camera/recording settings surveyed, not acted on (yet)
+
+Surfaced while reviewing "what settings matter here" alongside the
+UVC autofocus/auto-exposure lock (see DECISIONS.md). Recorded so this
+isn't re-derived from scratch later; none of these are committed work.
+
+- **Recording quality (`codec`/`crf`/`preset`) is hardcoded in
+  `Recorder`'s constructor defaults** (`libx264`, `crf=23`), never wired
+  to `config.json`. Same category `fps` was in before it became
+  config-driven — a real quality-vs-disk-space tradeoff that could
+  reasonably differ by institution's storage budget. Candidate for the
+  same `recording` config section `fps` already lives in, if a real need
+  shows up (e.g. an institution needs smaller files than 23 gives).
+- **White balance is uncorrected on the IDS cameras** — no
+  `BalanceWhiteAuto` handling anywhere in `ids_camera.py`. Deliberately
+  not planned: the use case is technique review (hand/instrument
+  coordination), not color-critical diagnostic imaging, and nobody's
+  flagged it as a problem. Revisit only if that changes.
+- **Session-length/stall-timeout/disk-margin constants**
+  (`TARGET_SESSION_MINUTES`, `DEFAULT_STALL_TIMEOUT_S`,
+  `REQUIRED_SPACE_MULTIPLIER` in `kiosk.py`) are already constructor
+  parameters with sensible measured defaults, not config. Deliberately
+  not moved to `config.json` — no institution has needed a different
+  value yet, and adding config for a hypothetical isn't earned (see
+  CLAUDE.md's general anti-speculative-config stance).

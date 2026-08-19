@@ -11,9 +11,11 @@ catch it) rather than from __init__.
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
-from uvc_camera import UvcCamera
+import cv2
+
+from uvc_camera import _AUTOEXPOSURE_WARMUP_FRAMES, UvcCamera
 from uvc_enumeration import UvcDeviceResolutionError
 
 
@@ -46,6 +48,26 @@ class UvcCameraVidPidResolutionTest(unittest.TestCase):
         # BaseCamera.start() only creates the capture thread after _open()
         # succeeds -- confirm the failed resolution left it retryable.
         self.assertIsNone(camera._thread)
+
+
+class UvcCameraAutofocusExposureLockTest(unittest.TestCase):
+    def test_reads_warmup_frames_then_locks_both_controls(self):
+        camera = UvcCamera(device=0)
+        cap = MagicMock()
+
+        camera._lock_autofocus_and_exposure(cap)
+
+        self.assertEqual(cap.read.call_count, _AUTOEXPOSURE_WARMUP_FRAMES)
+        cap.set.assert_has_calls(
+            [call(cv2.CAP_PROP_AUTOFOCUS, 0), call(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)]
+        )
+
+    def test_does_not_raise_when_device_does_not_support_the_controls(self):
+        camera = UvcCamera(device=0)
+        cap = MagicMock()
+        cap.set.return_value = False  # cv2's own signal for "unsupported control"
+
+        camera._lock_autofocus_and_exposure(cap)  # must not raise
 
 
 if __name__ == "__main__":

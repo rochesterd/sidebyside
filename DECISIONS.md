@@ -1067,3 +1067,54 @@ has any way to reconcile. `_on_save_clicked()` also re-checks directly
 condition already in this file (empty label, "‹not connected›", no
 VID/PID) — a real, catchable-at-config-time mistake gets caught here,
 not deferred to a confusing runtime failure on the actual kiosk machine.
+
+---
+
+## 2026-08-18 — Lock UVC autofocus/auto-exposure after a warmup window
+
+**Decided:** `UvcCamera._open()` now calls
+`_lock_autofocus_and_exposure()`: read a bounded number of frames (10, or
+2.0s, whichever comes first) with autofocus/auto-exposure left at
+whatever `cv2.VideoCapture`'s driver defaults are, then
+`cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)` and
+`cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)`. Motivation: nothing
+previously stopped the third-person webcam from continuously
+autofocusing/auto-exposing through an entire recording, which can
+visibly hunt (refocus, re-expose) mid-session — exactly the distracting-
+artifact problem `ids_camera.py`'s `ExposureAuto`/`GainAuto` = `Once` (not
+`Continuous`) convergence already solves for the two instrument cameras
+(see the 2026-08-12 hardware smoke test entries above). Never fails
+camera open: `cap.set()` returning `False` just means this device doesn't
+support that control, the same tolerance `ids_camera.py`'s
+`IsAvailable()` guard gives an axis the hardware doesn't expose.
+
+**Not the same shape as `ids_camera.py`'s convergence, and that's a real
+platform limitation, not a stylistic choice.** GenICam's
+`ExposureAuto`/`GainAuto` nodes report back `"Off"` once `Once` mode
+actually finishes, so `_converge_auto_exposure()` polls for that signal
+with a timeout that only fires if convergence is genuinely stuck (see
+`IdsCameraAutoExposureTimeoutError`). UVC/DirectShow via
+`cv2.VideoCapture` exposes no equivalent "has this converged yet" flag —
+there is nothing to poll. So this is a fixed warmup window followed by an
+unconditional lock attempt, not poll-until-done, and there's no
+equivalent timeout-error path: a fixed window can't "get stuck," it just
+elapses.
+
+**Explicitly unverified against real hardware as of this entry.** The
+`0.25` value for `CAP_PROP_AUTO_EXPOSURE` is a commonly cited convention
+for "manual mode" across various OpenCV+webcam combinations, not a
+documented standard the way GenICam's node model is — `cv2.VideoCapture`
+property behavior via DirectShow is well known to vary per device/driver,
+the same category of uncertainty this project already treats
+`vendor/ids_peak_api.txt` as the antidote for on the IDS side, except
+there's no equivalent authoritative reference for arbitrary UVC webcams
+to check against. The real ELP camera happened to be unplugged when this
+was implemented (confirmed via `Get-PnpDevice` — no camera-class device
+present), so this shipped as best-effort per explicit instruction rather
+than blocking on hardware access. **Still needs confirming against the
+real camera:** whether `0.25` actually engages manual exposure on this
+device (vs. e.g. `0`/`1`/`3` conventions some drivers use instead) and
+whether `CAP_PROP_AUTOFOCUS` does anything on a device that may be
+fixed-focus to begin with (in which case `cap.set()` returning `False`
+here would be the correct, expected outcome, not a bug). Update this
+entry once verified.
