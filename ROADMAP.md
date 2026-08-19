@@ -70,6 +70,11 @@ this — intuitive.
    replacing a camera, adding a webcam that wasn't attached yet at
    install, fixing a wrong guess. Reconfiguring is "run Settings, pick
    from a dropdown, save, restart the kiosk app" — never a reinstall.
+   (This is a statement about *role assignment* staying repeatable, not a
+   blanket objection to any setup automation — `setup.ps1`, added later,
+   scripts the earlier, genuinely one-shot-per-machine step of getting
+   Python/dependencies installed, and hands off to `settings.py` for this
+   step. See DECISIONS.md's "setup.ps1" entry.)
 3. **Runtime resolution.** Every launch (of `app.py` or a `settings.py`
    rescan) re-resolves each configured role against currently-attached
    hardware using a stable identifier — never a remembered index. A

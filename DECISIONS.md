@@ -1118,3 +1118,96 @@ whether `CAP_PROP_AUTOFOCUS` does anything on a device that may be
 fixed-focus to begin with (in which case `cap.set()` returning `False`
 here would be the correct, expected outcome, not a bug). Update this
 entry once verified.
+
+---
+
+## 2026-08-19 — `setup.ps1`: script the environment bootstrap, not role assignment
+
+**Decided:** Add `setup.ps1` at the repo root, a PowerShell script covering
+SETUP.md Section 1 (venv + `requirements.txt`) and optionally Section 2's
+`requirements-ids.txt` install, ending with a check for whether the IDS
+peak SDK runtime is actually importable and a pointer to `settings.py` as
+the next step. It does not touch `config.json` or camera role assignment.
+
+**Why:** Deploying to a new PC (see CLAUDE.md's setup story generally)
+turned out to have two different kinds of friction bundled together: (1)
+Python/venv/pip — mechanical, identical every time, safe to script — and
+(2) the IDS peak SDK — a real third-party MSI/EXE with kernel drivers that
+no script of ours can install or wrap, and where the interesting choices
+(extended vs. standard setup, whether this machine drives the slit lamp)
+are exactly the human judgment calls SETUP.md Sections 2-3 already walk
+through. Scripting (1) removes real, repetitive friction; scripting (2)
+isn't possible and wasn't attempted — `setup.ps1` just detects the outcome
+(bindings installed, runtime importable or not) and tells the operator
+which SETUP.md section to go read.
+
+This is a distinct thing from ROADMAP's "Device compatibility & camera
+setup system" entry's rule that role assignment is "explicitly *not* a
+one-shot install script" — that rule is about `settings.py` staying a
+persistent, re-run-any-time tool for *which physical device fills which
+role*, not a general objection to automating setup steps. `setup.ps1`
+doesn't do role assignment at all; it prepares the environment and then
+hands off to `settings.py` unchanged. Re-running `setup.ps1` itself is
+also safe (reuses an existing `.venv`, `pip install` is idempotent) — it
+follows the same "repeatable tool, not a one-shot installer" spirit for
+the step it *does* own, it just owns a different step. Amended a
+clarifying parenthetical into ROADMAP's existing line rather than leaving
+it to read as a broader rule than it was.
+
+**Rejected (at first, then partially revisited — see below):** a full GUI
+install wizard covering the entire process end-to-end, including the IDS
+SDK. Still rejected in that full form: it would not actually remove the
+SDK's driver-install friction (still a third-party installer requiring
+the same human choices), and this project's actual remaining audience for
+"set this up on a new machine" is a technician following SETUP.md, not a
+student — the kiosk-facing simplicity CLAUDE.md's "Who uses it" demands
+is about `app.py`, not the setup path.
+
+---
+
+## 2026-08-19 — `setup_wizard.py`: a GUI front end over setup.ps1, not a rewrite of it
+
+**Decided:** Add `setup_wizard.py`, a paged (Welcome → IDS question → run →
+finish) tkinter GUI that shells out to the *same* `setup.ps1`, passing the
+IDS-cameras answer as `-DriveIds Yes|No` instead of `setup.ps1`'s own
+interactive `Read-Host` prompt, and streams its stdout live into a log box.
+`setup.ps1` gained a `-DriveIds` parameter for this; called with no
+argument (a plain `.\setup.ps1` from a terminal) it still prompts
+interactively, unchanged.
+
+**Why a wizard now:** direct follow-up request after the `setup.ps1`
+decision above, once "make it easier" specifically meant "GUI, not a
+terminal prompt" rather than "eliminate the SDK-install step" (that step
+still can't be automated — see above). Shelling out to `setup.ps1` rather
+than reimplementing venv/pip logic in Python keeps exactly one copy of
+that logic, consistent with this codebase's existing aversion to
+duplicated logic (`qt_image.py`'s `bgr_to_pixmap` extraction is the
+precedent).
+
+**Why tkinter, not PySide6:** every other GUI tool here (`app.py`,
+`preview.py`, `settings.py`) uses PySide6, but PySide6 is one of the
+packages `setup.ps1` installs — a PySide6-based wizard couldn't run on the
+truly fresh machine it's meant for, before `requirements.txt` has been
+installed. tkinter ships with the standard python.org Windows installer,
+so it works at that earlier point. This is a deliberate one-off exception
+to "use PySide6 for GUIs" — the ordering constraint here doesn't apply to
+`settings.py`/`preview.py`, which only ever run inside an already-set-up
+venv.
+
+**Why the subprocess call happens in a background thread, polled via a
+queue:** `subprocess.Popen(...).stdout` iteration blocks, and Tkinter
+widgets aren't thread-safe to update directly from a worker thread — the
+standard pattern is a worker thread pushing lines onto a `queue.Queue`
+and the Tk main loop draining it via `after()`, which is what `RunPage`
+does. Confirmed working via a headless smoke test (constructed the
+wizard, drove it through every page without `mainloop()`, and separately
+verified a real `setup.ps1` invocation it kicked off completed and exited
+cleanly with no leftover process or repo changes).
+
+**Rejected:** reimplementing the venv/pip/IDS-bindings logic directly in
+Python inside the wizard instead of shelling out to `setup.ps1`. Would
+avoid a subprocess boundary, but at the cost of two independent
+implementations of the same install steps needing to be kept in sync —
+worse than the subprocess/streaming-output complexity it would save,
+especially since `setup.ps1` is also meant to keep working standalone
+for anyone in a terminal.

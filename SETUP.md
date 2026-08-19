@@ -5,6 +5,18 @@ Procedural — follow the steps in order. For *why* any of this is the way
 it is, see `CLAUDE.md` and `DECISIONS.md`; this doc doesn't repeat that
 reasoning, only points at it.
 
+**Shortcut:** `setup.ps1` (repo root) scripts Section 1 and, on request,
+the `requirements-ids.txt` half of Section 2 — run it first, then read
+Sections 2-3 below only if it tells you the IDS peak SDK runtime still
+needs installing. It's safe to re-run. It does not replace Section 6
+(`settings.py`), which stays a separate, always-manual step.
+
+Prefer a window over a terminal prompt? `python setup_wizard.py` (works
+with the system Python — it doesn't need the venv to exist yet) is the
+same script behind a paged GUI: Welcome → the IDS-cameras question →
+a live-streamed run of `setup.ps1` → a finish page with a button to
+launch `settings.py` directly.
+
 ---
 
 ## 1. Python and the virtual environment
