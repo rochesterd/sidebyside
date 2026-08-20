@@ -5,8 +5,9 @@ Standing context for this project. Read this before making changes.
 ## What this is
 
 `sidebyside` records two cameras simultaneously and produces a single
-composited video, so optometry students at NECO can watch their own hand
-movements alongside the view through the instrument they're using.
+composited video, so optometry students at NECO can watch themselves 
+from a third person view alongside the view through the instrument they're 
+using.
 
 The purpose is self-directed practice for the NBEO CSE (Clinical Skills
 Examination). Students book time, record themselves practising a skill on a
@@ -21,12 +22,18 @@ will not debug anything.
 
 Design consequences:
 
-- Nothing is clickable during a session except Stop. Before a session, the
-  only other control is picking which instrument (slit lamp or BIO) is in
-  use — two large, obviously-labeled, always-visible choices rather than a
-  menu, so an unsupervised first-time user can't get it wrong. The instant
-  Start is pressed, the picker disables along with everything else, same as
-  Start itself.
+- Intuitive to Apple's standard, not just "usable." A tech handles
+  installation, configuration, and calibration; within a session, the
+  student is guided entirely by the app, never by documentation.
+- Protecting the student from mistakes is the goal, not minimizing what's
+  clickable for its own sake. During recording that protection is
+  absolute: nothing but Stop is interactive, since interrupting an
+  irreplaceable, in-progress capture is unrecoverable.
+- Before recording, the same goal applies with less rigidity. Today it's
+  satisfied by a minimal instrument picker + Start (see `app.py`) — not
+  because fewer buttons is inherently better. A more guided flow is fine
+  there, provided nothing in it can bypass the readiness gates below or
+  misconfigure a session.
 - Failures must be **loud and early**. A black pane discovered a week later
   is the worst outcome. Prefer refusing to start over recording something
   broken.
@@ -40,7 +47,7 @@ Design consequences:
 
 ## Hardware
 
-This table is *this kiosk's* current cameras. For what else is expected
+The software is built around these components. For what else is expected
 to work, confirmed-tested alternatives, and what's explicitly excluded,
 see `SUPPORTED_HARDWARE.md`.
 
@@ -56,7 +63,7 @@ the IDS peak SDK and require a host PC. The third-person camera is an
 ordinary UVC webcam and goes through OpenCV's `cv2.VideoCapture` instead —
 see `uvc_camera.py`.
 
-**Bandwidth is the binding constraint.** At full resolution and frame rate,
+**Bandwidth is a real concern.** At full resolution and frame rate,
 8-bit, the two cameras together need roughly 300 MB/s. A single USB 3.0 host
 controller realistically delivers 350-400 MB/s. USB3 Vision degrades by
 silently dropping frames rather than raising an error. Target 30fps, use
@@ -122,16 +129,26 @@ a UI poll loop can stall the display waiting on a queue.
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
 | `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
 | `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
-| `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — nothing else clickable, and the picker itself disables during a session. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
+| `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — today's minimal shape of "protect the student from mistakes," not a fixed ceiling (see "Who uses it"). Picker disables once recording starts. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
 | `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
+| `setup.ps1` | Bootstraps a new machine's Python environment: venv + `requirements.txt`, optionally `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. |
+| `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → IDS question → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. |
 | `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
+| `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, without real hardware or `.show()`/`.exec()`. |
+| `test_compositor.py` | Correctness tests for `side_by_side`/`picture_in_picture` written after a perf rewrite made the fill logic less obviously correct — see DECISIONS.md. |
+| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization. |
+| `test_settings.py` | Headless tests for `SettingsWindow`/`DeviceRow` with injected fake enumeration functions (no real hardware or IDS SDK needed): startup pre-population, Save gating (including the same-camera-two-roles conflict check), Rescan, malformed-config warning, Preview wiring. |
+| `test_uvc_camera.py` | Tests for `UvcCamera`'s `device`/`vid_pid` mutual-exclusivity contract, the autofocus/auto-exposure lock, and that resolution failure surfaces from `start()` rather than `__init__`. |
+| `test_uvc_enumeration.py` | Tests for `list_uvc_devices()`/`resolve_device()` — the latter's single-device-fallback/ambiguity logic via canned device lists; the former verified end to end against real hardware where attached. |
 
 `app.py` is what a student actually runs. `preview.py` is a development
 tool (layout dropdown, skew readout) for eyeballing compositing changes
 without going through a full record/stop cycle — never point a student at
 it, it has no Start/Stop discipline. `settings.py` is a technician tool —
-same rule: never point a student at it.
+same rule: never point a student at it. So are `setup.ps1`/
+`setup_wizard.py`, run once per machine before `settings.py` ever comes
+into it.
 
 ## Recording output
 
@@ -152,9 +169,12 @@ under it as data, not something to regenerate.
 
 ## Environment
 
-- Windows, Python 3.13, venv at `.venv` (activate before running anything)
-- Dependencies: numpy, opencv-python, av (PyAV), PySide6, pinned in
-  `requirements.txt`.
+- Windows, Python 3.13, venv at `.venv` (activate before running anything;
+  `setup.ps1`/`setup_wizard.py` script this and the rest of Environment —
+  see SETUP.md)
+- Dependencies: numpy, opencv-python, av (PyAV), PySide6, pygrabber +
+  comtypes (UVC device enumeration via DirectShow — see
+  `uvc_enumeration.py`), pinned in `requirements.txt`.
 - IDS peak (drivers and transport layers) must be installed separately per
   machine — it includes kernel drivers and cannot be bundled. The
   `ids_peak`/`ids_peak_ipl` Python bindings come from PyPI instead, pinned

@@ -120,24 +120,15 @@ The Keeler needs none of this section — it's native to IDS peak already.
 
 `ids_camera.list_ids_devices()` and `settings.py` (Section 6 below) are
 the normal way to see what's attached once the app itself works. Before
-that, to check the SDK/runtime install in isolation, use this standalone
-script for two different checks depending on the machine:
+that, to check the SDK/runtime install in isolation, run:
 
-```python
-from ids_peak import ids_peak
-
-ids_peak.Library.Initialize()
-try:
-    device_manager = ids_peak.DeviceManager.Instance()
-    device_manager.Update()
-
-    devices = device_manager.Devices()
-    print(f"{len(devices)} device(s) found:")
-    for descriptor in devices:
-        print(f"  {descriptor.ModelName()}  serial={descriptor.SerialNumber()}")
-finally:
-    ids_peak.Library.Close()
+```powershell
+python tools\check_ids.py
 ```
+
+(a standalone script — imports `ids_peak` directly, nothing from this
+project's camera modules) for two different checks depending on the
+machine:
 
 **Check 1 — bindings/runtime match, any machine:** the script should run
 to completion without raising. On a development machine with no cameras
@@ -148,9 +139,9 @@ for a dev box working against `SyntheticCamera`.
 
 **Check 2 — camera enumeration, machine with hardware attached only:**
 expect exactly 2 devices, the `UI-3250CP-C-HQ` and the `U3-327xCP-C`, each
-with a serial number printed. (If method names above don't match what's
-installed, check the locally-installed API docs under Start Menu → IDS →
-IDS peak — they're versioned with the SDK, unlike anything on the web.)
+with a serial number printed. (If `tools\check_ids.py` errors on a method
+name, check the locally-installed API docs under Start Menu → IDS → IDS
+peak — they're versioned with the SDK, unlike anything on the web.)
 
 **Confirm by serial number, not by list position or count.** `CLAUDE.md`'s
 Architecture section is explicit about this: cameras must be identified by

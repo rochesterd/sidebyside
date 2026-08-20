@@ -167,7 +167,11 @@ fresh clone has something to copy and a fresh install with no config
 fails loudly rather than silently running against someone else's
 hardware.
 
-Schema sketch:
+Schema sketch (this was the Phase 1 shape; the shipped schema also gained
+an optional `recording` block once `fps` became config-driven — see
+`DECISIONS.md`'s "Config-driven recording fps, device-derived canvas
+size" entry — and `config.example.json` is the authoritative current
+shape, not this sketch):
 
 ```json
 {
@@ -175,7 +179,8 @@ Schema sketch:
     "slit_lamp": { "kind": "ids", "serial": "4103484089", "label": "Slit Lamp" },
     "bio":       { "kind": "ids", "serial": "4110050487", "label": "BIO" }
   },
-  "third_person": { "kind": "uvc", "vid_pid": "32E4:9310", "friendly_name": "HD USB Camera" }
+  "third_person": { "kind": "uvc", "vid_pid": "32E4:9310", "friendly_name": "HD USB Camera" },
+  "recording": { "fps": 30 }
 }
 ```
 
