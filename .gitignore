@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 build/
 dist/
-*.spec
+packaging/installer_output/
+# packaging/*.spec are tracked source (PyInstaller build specs), not
+# PyInstaller-generated throwaway output -- see PACKAGING.md. build/
+# and dist/ above already cover the actual generated artifacts
+# (packaging/build/, packaging/dist/).
 sessions/
 recordings/
 logs/

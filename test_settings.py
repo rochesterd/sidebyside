@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
+from config import resolve_default_sessions_dir
 from settings import DeviceRow, SettingsWindow
 from synthetic_camera import SyntheticCamera
 from uvc_enumeration import UvcDeviceInfo
@@ -172,7 +173,8 @@ class SettingsWindowTest(unittest.TestCase):
         window._on_save_clicked()
 
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(written, VALID_CONFIG)
+        expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
+        self.assertEqual(written, expected)
 
     def test_rescan_preserves_a_still_present_selection(self):
         window = self._make_window(
@@ -202,6 +204,36 @@ class SettingsWindowTest(unittest.TestCase):
         window.rescan()
 
         self.assertIn("ids_peak not installed", window._instrument_rows["slit_lamp"].status_label.text())
+
+    def test_sessions_dir_defaults_to_resolved_default(self):
+        window = self._make_window()
+
+        self.assertEqual(window.sessions_dir_edit.text(), str(resolve_default_sessions_dir()))
+
+    def test_existing_sessions_dir_is_loaded_from_config(self):
+        data = {**VALID_CONFIG, "sessions_dir": "D:\\recordings"}
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window()
+
+        self.assertEqual(window.sessions_dir_edit.text(), "D:\\recordings")
+
+    def test_browse_button_updates_sessions_dir(self):
+        window = self._make_window()
+
+        with patch("settings.QFileDialog.getExistingDirectory", return_value="E:\\backup"):
+            window._on_browse_sessions_dir()
+
+        self.assertEqual(window.sessions_dir_edit.text(), "E:\\backup")
+
+    def test_cancelled_browse_leaves_sessions_dir_unchanged(self):
+        window = self._make_window()
+        original = window.sessions_dir_edit.text()
+
+        with patch("settings.QFileDialog.getExistingDirectory", return_value=""):
+            window._on_browse_sessions_dir()
+
+        self.assertEqual(window.sessions_dir_edit.text(), original)
 
     def test_preview_button_uses_the_injected_factory(self):
         calls = []

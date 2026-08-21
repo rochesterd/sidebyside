@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import functools
 import logging
+import os
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from camera import BaseCamera
 from compositor import side_by_side
-from config import DEFAULT_RECORDING_FPS, ConfigError, load_config
+from config import DEFAULT_RECORDING_FPS, ConfigError, is_frozen, load_config, resolve_default_sessions_dir
 from kiosk import KioskController, PreflightStatus, State
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
@@ -62,7 +63,10 @@ PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recordi
 # next to the third-person preview.
 _EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
 
-LOG_DIR = Path("logs")
+# See config.py's resolve_default_config_path()/resolve_default_sessions_dir()
+# for why this needs the same frozen/dev split -- a frozen install has no
+# repo checkout for "logs" to be relative to.
+LOG_DIR = Path(os.environ["ProgramData"]) / "sidebyside" / "logs" if is_frozen() else Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 
 THIRD_PERSON_LABEL = "third-person camera"
@@ -107,6 +111,7 @@ class KioskWindow(QMainWindow):
         instruments: dict[str, BaseCamera],
         instrument_labels: dict[str, str] | None = None,
         fps: int = DEFAULT_RECORDING_FPS,
+        output_root: str | Path = "sessions",
     ):
         super().__init__()
         self.setWindowTitle("Side by Side Recorder")
@@ -115,7 +120,7 @@ class KioskWindow(QMainWindow):
         self.instruments = instruments
         self.instrument_labels = instrument_labels or {key: key for key in instruments}
         self._display_names = {**self.instrument_labels, "third_person": THIRD_PERSON_LABEL}
-        self.controller = KioskController(third_person_camera, instruments, fps=fps)
+        self.controller = KioskController(third_person_camera, instruments, fps=fps, output_root=output_root)
         self._camera_start_errors: dict[str, str] = {}
         # The instrument the student last picked -- distinct from
         # controller.selected_instrument, which only updates once that
@@ -460,8 +465,13 @@ def main() -> int:
     }
     third_person = _make_third_person_camera(cfg.third_person.vid_pid, third_person_synthetic, "third-person")
     instrument_labels = {key: inst.label for key, inst in cfg.instruments.items()}
+    output_root = cfg.sessions_dir if cfg.sessions_dir is not None else resolve_default_sessions_dir()
     window = KioskWindow(
-        third_person, instruments, instrument_labels=instrument_labels, fps=cfg.recording.fps
+        third_person,
+        instruments,
+        instrument_labels=instrument_labels,
+        fps=cfg.recording.fps,
+        output_root=output_root,
     )
     window.resize(*PREVIEW_CANVAS_SIZE)
     window.show()

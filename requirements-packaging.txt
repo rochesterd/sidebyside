@@ -1,0 +1,6 @@
+# Build-only tooling for producing the distributable installer -- see
+# PACKAGING.md. Not needed to run or develop the app itself (that's
+# requirements.txt/requirements-ids.txt); only needed on whichever
+# machine actually builds app.exe/settings.exe and the Inno Setup
+# installer around them.
+pyinstaller==6.22.2

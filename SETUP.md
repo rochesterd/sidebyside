@@ -1,21 +1,28 @@
 # SETUP.md
 
-One-time setup per machine, from bare Windows to both cameras enumerating.
-Procedural — follow the steps in order. For *why* any of this is the way
-it is, see `CLAUDE.md` and `DECISIONS.md`; this doc doesn't repeat that
-reasoning, only points at it.
+**This is the developer/source-checkout setup procedure** — building
+sidebyside from source to work on it. If you're setting up a clinic
+machine to actually run the app, you want the distributable installer a
+developer builds via `PACKAGING.md`, not this file — see ROADMAP.md's
+"Distribute a frozen-exe installer, not a Python source bootstrap" entry
+for why those are two different audiences now.
 
-**Shortcut:** `setup.ps1` (repo root) scripts Section 1 and, on request,
-the `requirements-ids.txt` half of Section 2 — run it first, then read
+One-time setup per (dev) machine, from bare Windows to both cameras
+enumerating. Procedural — follow the steps in order. For *why* any of
+this is the way it is, see `CLAUDE.md` and `DECISIONS.md`; this doc
+doesn't repeat that reasoning, only points at it.
+
+**Shortcut:** `setup.ps1` (repo root) scripts Section 1 and the
+`requirements-ids.txt` half of Section 2 — run it first, then read
 Sections 2-3 below only if it tells you the IDS peak SDK runtime still
 needs installing. It's safe to re-run. It does not replace Section 6
 (`settings.py`), which stays a separate, always-manual step.
 
 Prefer a window over a terminal prompt? `python setup_wizard.py` (works
 with the system Python — it doesn't need the venv to exist yet) is the
-same script behind a paged GUI: Welcome → the IDS-cameras question →
-a live-streamed run of `setup.ps1` → a finish page with a button to
-launch `settings.py` directly.
+same script behind a paged GUI: Welcome → a live-streamed run of
+`setup.ps1` → a finish page with a button to launch `settings.py`
+directly.
 
 ---
 

@@ -1241,3 +1241,96 @@ machine should be able to skip `requirements-ids.txt`. It still can —
 just by not running `setup.ps1` at all and installing
 `requirements.txt` directly, which is exactly what this project's own
 dev machine has always done.
+
+---
+
+## 2026-08-20 — Frozen-exe installer built: PyInstaller + Inno Setup, config paths, technician-configurable sessions folder
+
+**Decided:** Executed ROADMAP.md's "Distribute a frozen-exe installer,
+not a Python source bootstrap" plan. `app.py`/`settings.py` freeze into
+`app.exe`/`settings.exe` via `packaging/app.spec`/`packaging/
+settings.spec`; `packaging/sidebyside.iss` (Inno Setup) packages those
+plus a bundled, interactively-launched copy of the IDS peak *extended*
+installer into one real installer. `config.py` gained
+`resolve_default_config_path()`/`resolve_default_sessions_dir()`,
+splitting on `is_frozen()` (PyInstaller's `sys.frozen`): relative to CWD
+in dev/test (unchanged), under `%ProgramData%`/`%PUBLIC%\Documents`
+under a frozen install. `AppConfig` gained an optional `sessions_dir`
+field, technician-set via a new Browse-button field in `settings.py`
+(not a per-role `DeviceRow` — recordings aren't a camera). New
+`PACKAGING.md` documents the developer-only build procedure;
+`SETUP.md`/`CLAUDE.md`'s module table updated to mark `setup.ps1`/
+`setup_wizard.py` as developer-only tooling, no longer part of any path
+a clinic machine goes through.
+
+**Why sessions_dir needed to become config-driven, not just relocated:**
+originally planned as a fixed `%PUBLIC%\Documents\sidebyside\sessions`
+default (mirroring `config.json`'s `%ProgramData%` placement) — revised
+during implementation because recordings are literally "the actual
+deliverable handed to a student" (CLAUDE.md), and a technician needs to
+be able to point that somewhere else (a network share, an external
+drive) without editing `config.json` by hand. `resolve_default_sessions_dir()`
+is still what pre-fills the picker and what `app.py` falls back to if
+`sessions_dir` is absent — existing/dev-mode `config.json` files and
+every existing test fixture needed no changes, confirmed via Explore
+before writing any code (`test_config.py`/`test_settings.py` never
+depend on `DEFAULT_CONFIG_PATH`'s actual value; the only bare
+`load_config()` call anywhere is `app.py:439`).
+
+**The PyInstaller freeze needed no hidden-imports or `--collect-all`
+overrides at all** — confirmed empirically, not assumed: `pyinstaller-
+hooks-contrib` (installed alongside PyInstaller 6.22.2) already covers
+PySide6, `cv2`, `av`, and `comtypes.client` (the `pygrabber`/
+`uvc_enumeration.py` dependency), and PyInstaller's own binary-dependency
+scan picked up `ids_peak`/`ids_peak_ipl`'s native DLLs without any
+vendor-specific hook. Verified by actually running the frozen `app.exe`
+three ways, not just checking the build exited 0: `--synthetic` (all-
+synthetic path), `--third-person-synthetic` (forces the real `from
+ids_camera import IdsCamera` import and `ids_peak`/`ids_peak_ipl` module
+load at startup, using this dev machine's real slit-lamp/BIO serials from
+`config.example.json`), and confirming both `config.json` and `logs/`
+correctly resolved to `%ProgramData%\sidebyside\...` once frozen. All
+three ran cleanly with no import or DLL-load errors. Real-camera-attached
+verification of `IdsCamera.start()` itself is still a follow-up for
+whoever has hardware attached, same caveat this project always carries
+about dev-machine hardware access.
+
+**`upx=False` in both specs, deliberately:** UPX-compressed executables
+are a known source of false-positive antivirus flags, a real risk on a
+locked-down clinic machine and not worth the smaller file size.
+
+**Inno Setup script specifics:**
+- Bundled installer file expected at a fixed, version-agnostic path,
+  `vendor/ids-peak-win-extended-setup-64.exe` (gitignored, same
+  convention as `vendor/ids_peak_api.txt`) — deliberately not named with
+  today's version number, so the `.iss` script never needs editing just
+  because IDS ships a new release; whoever builds the installer
+  re-downloads and renames.
+- `[Run]`'s `Filename` has no silent switches — `waituntilterminated`
+  (Inno's default for a non-`postinstall` entry, made explicit) pauses
+  this installer's own wizard while the technician clicks through IDS's
+  real one, same as if they'd double-clicked it directly. This is
+  bundling for convenience, not a reopening of the "Can setup.ps1 drive
+  the IDS peak SDK installer?" entry's silent-vs-interactive decision.
+- Added a `Check:` guard (`IdsPeakAlreadyInstalled`, checking
+  `DirExists('{pf}\IDS\ids_peak')`) so re-running the installer later
+  (e.g. to update the app itself) doesn't force a technician back through
+  IDS's wizard every time it's already installed. That install path was
+  confirmed directly on this machine during the earlier EULA/licensing
+  investigation (see ROADMAP.md's IDS-installer entry) — more version-
+  independent than checking a specific product GUID in the Uninstall
+  registry key, which changes across IDS peak releases.
+- Compiled successfully end to end (`packaging/installer_output/
+  sidebyside-setup.exe`, ~513MB — expected, given it embeds the 356MB
+  IDS installer). **Not run** on this machine as part of this work — that
+  writes to Program Files/Start Menu and chain-launches a real
+  third-party installer, confirmed as a deliberate stop point before
+  doing so on a real or disposable machine, per `PACKAGING.md`.
+
+**Rejected:** hand-writing the `.spec`/`.iss` files from a blank template
+based on assumed dependency needs. Built empirically instead — a first
+bare `pyinstaller app.py`/`pyinstaller settings.py` CLI run, actually
+launching the result, then encoding whatever that run actually needed
+(nothing extra, as it turned out) into the checked-in spec files. Matches
+this project's existing preference for integration-style verification
+over assumed-correct configuration.

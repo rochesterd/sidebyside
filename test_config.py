@@ -10,8 +10,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from config import ConfigError, load_config
+from config import ConfigError, load_config, resolve_default_config_path, resolve_default_sessions_dir
 
 VALID = {
     "instruments": {
@@ -166,6 +167,67 @@ class ConfigTest(unittest.TestCase):
         cfg = load_config(self.path)
 
         self.assertEqual(cfg.instruments["slit_lamp"].serial, "111")
+
+    def test_missing_sessions_dir_defaults_to_none(self):
+        self._write(VALID)
+        cfg = load_config(self.path)
+
+        self.assertIsNone(cfg.sessions_dir)
+
+    def test_sessions_dir_is_parsed_when_present(self):
+        data = json.loads(json.dumps(VALID))
+        data["sessions_dir"] = "D:\\recordings"
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.sessions_dir, Path("D:\\recordings"))
+
+    def test_empty_sessions_dir_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["sessions_dir"] = ""
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_wrong_typed_sessions_dir_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["sessions_dir"] = 123
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+
+class DefaultPathsTest(unittest.TestCase):
+    """resolve_default_config_path()/resolve_default_sessions_dir() split
+    on sys.frozen -- a frozen install (see ROADMAP.md's "Distribute a
+    frozen-exe installer" entry) has no repo checkout to be relative to.
+    """
+
+    def test_dev_mode_config_path_is_relative_to_cwd(self):
+        with patch("sys.frozen", False, create=True):
+            self.assertEqual(resolve_default_config_path(), Path("config.json"))
+
+    def test_frozen_config_path_is_under_programdata(self):
+        with patch("sys.frozen", True, create=True), patch.dict(
+            "os.environ", {"ProgramData": "C:\\ProgramData"}
+        ):
+            self.assertEqual(
+                resolve_default_config_path(), Path("C:\\ProgramData") / "sidebyside" / "config.json"
+            )
+
+    def test_dev_mode_sessions_dir_is_relative_to_cwd(self):
+        with patch("sys.frozen", False, create=True):
+            self.assertEqual(resolve_default_sessions_dir(), Path("sessions"))
+
+    def test_frozen_sessions_dir_is_under_public_documents(self):
+        with patch("sys.frozen", True, create=True), patch.dict("os.environ", {"PUBLIC": "C:\\Users\\Public"}):
+            self.assertEqual(
+                resolve_default_sessions_dir(),
+                Path("C:\\Users\\Public") / "Documents" / "sidebyside" / "sessions",
+            )
 
 
 if __name__ == "__main__":

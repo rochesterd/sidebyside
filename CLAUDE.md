@@ -123,7 +123,7 @@ a UI poll loop can stall the display waiting on a queue.
 | `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Two identification modes: `device` (a literal DirectShow index, used by `settings.py`'s Preview) and `vid_pid` (resolved to an index at `start()` time via `uvc_enumeration.resolve_device()`, used by `app.py`'s real runtime path — see DECISIONS.md for why resolution happens there, not at construction). `Frame.index` is self-counted, not source-reported. |
 | `uvc_enumeration.py` | `list_uvc_devices()` — index/name/VID:PID for every attached UVC device, in `cv2.CAP_DSHOW`'s own open order, via `pygrabber`'s DirectShow internals. `resolve_device()` — single-device-fallback/ambiguity logic turning a configured `vid_pid` into one `UvcDeviceInfo`. |
 | `ids_camera.py` | `IdsCamera` — `BaseCamera` for the two IDS peak GenICam cameras, opened by serial number. `list_ids_devices()` — serial/model for every currently-attached IDS device, for `settings.py`'s instrument dropdowns. |
-| `config.py` | `load_config()` — reads `config.json` (gitignored; `config.example.json` is the committed template) into which physical camera fills each role. Raises `ConfigError` loudly, before `QApplication` exists, if missing/malformed. |
+| `config.py` | `load_config()` — reads `config.json` (gitignored; `config.example.json` is the committed template) into which physical camera fills each role. Raises `ConfigError` loudly, before `QApplication` exists, if missing/malformed. `resolve_default_config_path()`/`resolve_default_sessions_dir()` split on `is_frozen()` (PyInstaller's `sys.frozen`) — relative to CWD in dev/test, under `%ProgramData%`/`%PUBLIC%\Documents` in a frozen install, since there's no repo checkout to be relative to. `sessions_dir` is an optional `AppConfig` field, technician-set via `settings.py`'s Browse field — see ROADMAP.md's "Distribute a frozen-exe installer" entry. |
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
 | `qt_image.py` | `bgr_to_pixmap()` — the one BGR-ndarray-to-`QPixmap` conversion, shared by every window that shows a live camera feed (`app.py`, `preview.py`, `settings.py`). |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
@@ -131,8 +131,10 @@ a UI poll loop can stall the display waiting on a queue.
 | `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
 | `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — today's minimal shape of "protect the student from mistakes," not a fixed ceiling (see "Who uses it"). Picker disables once recording starts. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
 | `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
-| `setup.ps1` | Bootstraps a new machine's Python environment: venv + `requirements.txt`, optionally `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. |
-| `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → IDS question → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. |
+| `setup.ps1` | Bootstraps a **developer's** machine for working on source: venv + `requirements.txt` + `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. Not part of any path a clinic machine goes through — see `PACKAGING.md`/ROADMAP.md's "Distribute a frozen-exe installer" entry. |
+| `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. Same developer-only scope as `setup.ps1`. |
+| `packaging/app.spec`, `packaging/settings.spec` | PyInstaller specs freezing `app.py`/`settings.py` into standalone `app.exe`/`settings.exe` — no Python, venv, or `pip install` needed on the machine that runs them. See `PACKAGING.md`. |
+| `packaging/sidebyside.iss` | Inno Setup script building the actual distributable: copies the frozen exes into Program Files, creates `app.exe`'s Desktop/Start-menu shortcut (`settings.exe` gets Start-menu only — never point a student at it, same rule as below) and chain-launches a bundled copy of the IDS peak *extended* installer, interactively, no silent flags. See `PACKAGING.md` and ROADMAP.md's "why extended, not IDS Software Suite + runtime setup" entry. |
 | `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
 | `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, without real hardware or `.show()`/`.exec()`. |
@@ -142,18 +144,29 @@ a UI poll loop can stall the display waiting on a queue.
 | `test_uvc_camera.py` | Tests for `UvcCamera`'s `device`/`vid_pid` mutual-exclusivity contract, the autofocus/auto-exposure lock, and that resolution failure surfaces from `start()` rather than `__init__`. |
 | `test_uvc_enumeration.py` | Tests for `list_uvc_devices()`/`resolve_device()` — the latter's single-device-fallback/ambiguity logic via canned device lists; the former verified end to end against real hardware where attached. |
 
-`app.py` is what a student actually runs. `preview.py` is a development
-tool (layout dropdown, skew readout) for eyeballing compositing changes
-without going through a full record/stop cycle — never point a student at
-it, it has no Start/Stop discipline. `settings.py` is a technician tool —
-same rule: never point a student at it. So are `setup.ps1`/
-`setup_wizard.py`, run once per machine before `settings.py` ever comes
-into it.
+`app.py` is what a student actually runs — as the frozen `app.exe` a
+clinic machine's Inno Setup installer places a Desktop shortcut for, not
+`python app.py` from a terminal (see `PACKAGING.md`). `preview.py` is a
+development tool (layout dropdown, skew readout) for eyeballing
+compositing changes without going through a full record/stop cycle —
+never point a student at it, it has no Start/Stop discipline.
+`settings.py` is a technician tool — same rule: never point a student at
+it (it gets a Start-menu entry on a clinic machine, no Desktop shortcut).
+So are `setup.ps1`/`setup_wizard.py`, but those aren't part of a clinic
+machine's path at all anymore — they're developer tooling for working on
+source (see `SETUP.md`), separate from `PACKAGING.md`'s build-the-
+installer procedure that actually produces what a technician runs.
 
 ## Recording output
 
-Each recording writes to `sessions/<YYYY-MM-DD_HHMM>/` (minute-collision
-gets a `_2`, `_3`, ... suffix rather than overwriting):
+Each recording writes to `<sessions_dir>/<YYYY-MM-DD_HHMM>/`
+(minute-collision gets a `_2`, `_3`, ... suffix rather than overwriting).
+`sessions_dir` defaults to a relative `sessions/` folder in dev/test, or
+`%PUBLIC%\Documents\sidebyside\sessions` in a frozen install unless a
+technician picked somewhere else via `settings.py`'s Browse field — see
+`config.py`'s `resolve_default_sessions_dir()` and ROADMAP.md's
+"Distribute a frozen-exe installer" entry for why this needs to be
+technician-choosable rather than fixed:
 
 - `composite.mkv` — written live during capture. Interruption-safe.
 - `composite.mp4` — remuxed from the MKV once `stop()` is called. No
@@ -163,9 +176,10 @@ gets a `_2`, `_3`, ... suffix rather than overwriting):
   timestamp, per-camera and composite frame counts, and per-camera
   dropped-frame counts (computed from gaps in `Frame.index`, not estimated).
 
-`sessions/` is gitignored. Nothing in it is a build artifact of source
-control; it's the actual deliverable handed to a student, so treat contents
-under it as data, not something to regenerate.
+The default relative `sessions/` path is gitignored. Nothing under
+`sessions_dir` is a build artifact of source control; it's the actual
+deliverable handed to a student, so treat contents under it as data, not
+something to regenerate.
 
 ## Environment
 

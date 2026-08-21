@@ -12,15 +12,52 @@ already makes.
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 _VID_PID_RE = re.compile(r"^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$")
 
-DEFAULT_CONFIG_PATH = Path("config.json")
-
 _FIX_HINT = "Copy config.example.json to config.json and edit it for this machine."
+
+
+def is_frozen() -> bool:
+    """True under a PyInstaller-frozen app.exe/settings.exe, false for a
+    normal `python app.py` dev/test run. `sys.frozen` is set by
+    PyInstaller's bootloader before any of the app's own code runs, so
+    this is reliable to check at any point, including at import time.
+    """
+    return bool(getattr(sys, "frozen", False))
+
+
+def resolve_default_config_path() -> Path:
+    """A frozen install has no repo checkout to be relative to, so
+    config.json lives in %ProgramData% instead -- see ROADMAP.md's
+    "Distribute a frozen-exe installer" entry. Dev/test behavior
+    (relative to CWD) is unchanged.
+    """
+    if is_frozen():
+        return Path(os.environ["ProgramData"]) / "sidebyside" / "config.json"
+    return Path("config.json")
+
+
+def resolve_default_sessions_dir() -> Path:
+    """Public Documents, not ProgramData: unlike config.json, a session
+    recording is the actual deliverable a technician goes and retrieves
+    for a student (see CLAUDE.md), so it needs to be somewhere visible in
+    Explorer by default, not a hidden system folder. Only used as the
+    pre-filled default in settings.py's Browse field and as app.py's
+    fallback when config.json doesn't set `sessions_dir` explicitly --
+    once a technician saves a choice, that explicit value always wins.
+    """
+    if is_frozen():
+        return Path(os.environ["PUBLIC"]) / "Documents" / "sidebyside" / "sessions"
+    return Path("sessions")
+
+
+DEFAULT_CONFIG_PATH = resolve_default_config_path()
 
 
 class ConfigError(RuntimeError):
@@ -54,6 +91,11 @@ class AppConfig:
     instruments: dict[str, InstrumentConfig]
     third_person: ThirdPersonConfig
     recording: RecordingConfig
+    # None means "caller decides the default" (resolve_default_sessions_dir()),
+    # not an error -- same optional-with-fallback shape as `recording`,
+    # and for the same reason: every config.json written before this field
+    # existed is still valid.
+    sessions_dir: Path | None = None
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
@@ -80,8 +122,11 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
     third_person = _parse_third_person(path, third_person_raw)
 
     recording = _parse_recording(path, raw.get("recording"))
+    sessions_dir = _parse_sessions_dir(path, raw.get("sessions_dir"))
 
-    return AppConfig(instruments=instruments, third_person=third_person, recording=recording)
+    return AppConfig(
+        instruments=instruments, third_person=third_person, recording=recording, sessions_dir=sessions_dir
+    )
 
 
 def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
@@ -142,3 +187,13 @@ def _parse_recording(path: Path, entry: object) -> RecordingConfig:
         raise ConfigError(f"{path}: recording.fps must be a positive number. {_FIX_HINT}")
 
     return RecordingConfig(fps=fps)
+
+
+def _parse_sessions_dir(path: Path, entry: object) -> Path | None:
+    # Optional, like `recording` above: absent means "caller decides the
+    # default" via resolve_default_sessions_dir(), not a broken config.
+    if entry is None:
+        return None
+    if not isinstance(entry, str) or not entry:
+        raise ConfigError(f"{path}: 'sessions_dir' must be a non-empty string. {_FIX_HINT}")
+    return Path(entry)

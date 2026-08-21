@@ -520,7 +520,7 @@ favors keeping this step manual. No code changed — `setup.ps1` and
 
 ---
 
-## 2026-08-20 — Distribute a frozen-exe installer, not a Python source bootstrap (planned, not built)
+## 2026-08-20 — Distribute a frozen-exe installer, not a Python source bootstrap (built)
 
 ### Context
 
@@ -614,10 +614,12 @@ route to uEye camera drivers). Rejected in favor of extended alone:
 
 ### Status
 
-Planned, not built. Concrete open work once started: PyInstaller build
-scripting for `app.py`/`settings.py`, `config.json` path relocation in
-`config.py`, Inno Setup script authoring, sourcing and embedding the
-extended installer file, shortcut creation, and deciding how the
-developer's own build machine's setup (still `setup.ps1`-based) is kept
-separate from and not confused with the end-user installer this entry
-describes.
+**Built.** See DECISIONS.md's 2026-08-20 "Frozen-exe installer built"
+entry for what was actually implemented, what got revised along the way
+(`sessions_dir` became technician-configurable rather than a fixed
+default — see that entry), and the empirical PyInstaller findings.
+`packaging/installer_output/sidebyside-setup.exe` compiles successfully
+end to end; running the resulting installer on a real/disposable machine
+to verify the full technician-facing flow is the one remaining step, not
+done as part of this work — see `PACKAGING.md`'s "before handing this to
+anyone" checklist.

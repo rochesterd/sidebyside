@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QFileDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -37,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from camera import BaseCamera
-from config import ConfigError, DEFAULT_CONFIG_PATH, load_config
+from config import ConfigError, DEFAULT_CONFIG_PATH, load_config, resolve_default_sessions_dir
 from qt_image import bgr_to_pixmap
 from uvc_camera import UvcCamera
 from uvc_enumeration import UvcDeviceInfo, list_uvc_devices
@@ -338,12 +339,28 @@ class SettingsWindow(QMainWindow):
         self.status_label = QLabel()
         self.status_label.setWordWrap(True)
 
+        # Not a per-role DeviceRow: this is where recordings land, not a
+        # camera. Pre-filled with the resolved default so it's always a
+        # valid value even if the technician never touches it -- see
+        # config.py's resolve_default_sessions_dir().
+        self.sessions_dir_title = QLabel("Recordings folder")
+        self.sessions_dir_title.setMinimumWidth(90)
+        self.sessions_dir_edit = QLineEdit(str(resolve_default_sessions_dir()))
+        self.sessions_dir_edit.setReadOnly(True)
+        self.sessions_dir_browse_button = QPushButton("Browse...")
+        self.sessions_dir_browse_button.clicked.connect(self._on_browse_sessions_dir)
+        sessions_dir_row = QHBoxLayout()
+        sessions_dir_row.addWidget(self.sessions_dir_title)
+        sessions_dir_row.addWidget(self.sessions_dir_edit)
+        sessions_dir_row.addWidget(self.sessions_dir_browse_button)
+
         layout = QVBoxLayout()
         layout.addWidget(self.warning_label)
         layout.addWidget(self.conflict_label)
         for row in self._all_rows():
             layout.addWidget(row)
             row.changed.connect(self._update_save_enabled)
+        layout.addLayout(sessions_dir_row)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.rescan_button)
@@ -377,6 +394,8 @@ class SettingsWindow(QMainWindow):
                 row.set_label_text(inst.label)
                 row.set_pending_selection(inst.serial)
         self._third_person_row.set_pending_selection(cfg.third_person.vid_pid)
+        if cfg.sessions_dir is not None:
+            self.sessions_dir_edit.setText(str(cfg.sessions_dir))
 
     def rescan(self) -> None:
         ids_devices, ids_status = self._safe_list_ids_devices()
@@ -394,6 +413,11 @@ class SettingsWindow(QMainWindow):
         except Exception as exc:
             logger.warning("could not enumerate IDS devices: %s", exc)
             return [], f"Could not enumerate IDS devices: {exc}"
+
+    def _on_browse_sessions_dir(self) -> None:
+        chosen = QFileDialog.getExistingDirectory(self, "Choose recordings folder", self.sessions_dir_edit.text())
+        if chosen:
+            self.sessions_dir_edit.setText(chosen)
 
     def _duplicate_serial_roles(self) -> dict[str, list[str]]:
         """Serials currently selected by more than one instrument row --
@@ -437,6 +461,7 @@ class SettingsWindow(QMainWindow):
                 "vid_pid": third_person_candidate.key,
                 "friendly_name": third_person_candidate.source.name,
             },
+            "sessions_dir": self.sessions_dir_edit.text(),
         }
         self.config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.status_label.setText(f"Saved to {self.config_path}. Restart app.py to apply.")
