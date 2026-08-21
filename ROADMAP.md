@@ -350,7 +350,7 @@ so the design doesn't need to be re-derived when it's picked up.
 
 ---
 
-## 2026-08-19 — Can `setup.ps1` drive the IDS peak SDK installer? (licensing question resolved; mechanism not yet chosen)
+## 2026-08-19 — Can `setup.ps1` drive the IDS peak SDK installer? (resolved: stays manual)
 
 ### Context
 
@@ -469,11 +469,33 @@ mechanisms are viable and the choice is now pure engineering tradeoff:
   directly, so success/failure is self-evident from that UI, at the cost
   of not being hands-off.
 
-Still open regardless of which is chosen: how the script locates the
-installer `.exe`, since CLAUDE.md already rules out bundling it in the
-repo (kernel drivers; also just too large) — prompt for a path each
-time, look in a documented fixed location with a prompt fallback, or
-leave this step manual and unscripted as it is today.
+### Decision
+
+**Stays manual — `setup.ps1` doesn't launch the IDS installer at all.**
+Weighing interactive-launch against silent-replay (see table of
+tradeoffs above), the deciding factor was CLAUDE.md's project-wide
+"failures must be loud and early" principle: silent replay's worst
+failure mode is a response file drifting out of sync with a newer IDS
+installer version and silently installing the wrong feature set (e.g.
+missing the uEye Transport Layer) with no error at all — exactly the
+class of failure this project designs against everywhere else.
+Interactive launch avoids that, but at that point it isn't saving the
+technician anything `setup.ps1` doesn't already do today (detect the
+runtime, point at SETUP.md) — finding and double-clicking the installer
+themselves is not meaningfully more work than watching a script launch
+it for them. So no new code: `setup.ps1`'s existing detect-only behavior
+*is* the decision, not a placeholder for one. This also makes "how the
+script locates the installer `.exe`" moot — it never needs to.
+
+This thread also raised a related question — extended setup vs.
+standard/runtime + a separately-installed IDS Software Suite, for
+machines driving the slit lamp — that turned out to already be answered,
+in `SETUP.md` Sections 2-3, written before this thread: extended is
+already the recommended path (bundles the uEye camera drivers directly,
+no separate Suite needed, and avoids a real footgun where extended setup
+silently uninstalls an existing Suite). Nothing needed to change there;
+this entry just confirms it's still the right call rather than
+duplicating it.
 
 ### Also clarified along the way
 
@@ -487,9 +509,8 @@ real installer at all — already implicitly true of `setup.ps1`'s
 
 ### Status
 
-Licensing question resolved: the EULA permits redistribution and doesn't
-require interactive per-machine acceptance. No code changed yet — the
-remaining decision is purely which mechanism (silent replay vs.
-interactive launch) and how the script locates the installer `.exe`.
-Tracked here so the next session doesn't have to re-derive what's already
-been settled before making that call.
+Resolved. Licensing was never actually the blocker (the EULA permits
+redistribution and doesn't require interactive per-machine acceptance);
+the real deciding factor was CLAUDE.md's failure-mode philosophy, which
+favors keeping this step manual. No code changed — `setup.ps1` and
+`SETUP.md` already reflect the decision as they stand.
