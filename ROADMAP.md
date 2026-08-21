@@ -504,8 +504,11 @@ duplicating it.
 into the native SDK. It never installs the native runtime or kernel
 drivers (USB3 Vision, GenICam TL, uEye TL); nothing on PyPI can. A
 machine that only ever runs `SyntheticCamera` genuinely never needs the
-real installer at all — already implicitly true of `setup.ps1`'s
-`-DriveIds No` path, which skips this whole question.
+real installer at all — though as of 2026-08-20, `setup.ps1` no longer
+asks and just always installs the bindings, on the assumption that any
+machine running it is a real deployment (see DECISIONS.md's "Removed the
+'will this machine drive real IDS cameras?' question" entry); a
+dev-only machine simply doesn't run `setup.ps1`.
 
 ### Status
 

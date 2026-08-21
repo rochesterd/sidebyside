@@ -48,10 +48,12 @@ class WelcomePage(Page):
             justify="left",
             text=(
                 "This sets up the Python environment on this machine: "
-                "creates a virtual environment, installs dependencies, "
-                "and — if this machine drives the real slit lamp / BIO "
-                "cameras — installs the IDS peak Python bindings and "
-                "checks whether the IDS peak SDK runtime is installed.\n\n"
+                "creates a virtual environment, installs dependencies "
+                "including the IDS peak Python bindings, and checks "
+                "whether the IDS peak SDK runtime is installed. Every "
+                "machine this wizard targets is assumed to be a real "
+                "deployment running the prescribed slit lamp / BIO "
+                "cameras, not a bare dev checkout.\n\n"
                 "It does not install the IDS peak SDK itself (that's a "
                 "separate, official installer with its own driver "
                 "components — this wizard will tell you if and when you "
@@ -65,37 +67,6 @@ class WelcomePage(Page):
         ttk.Button(nav, text="Next >", command=wizard.go_next).pack(side="right")
 
 
-class OptionsPage(Page):
-    def __init__(self, parent, wizard):
-        super().__init__(parent)
-        self.wizard = wizard
-
-        ttk.Label(
-            self, text="Step 1 of 2: Cameras", font=("Segoe UI", 13, "bold")
-        ).pack(anchor="w", pady=(0, 12))
-        ttk.Label(
-            self,
-            wraplength=560,
-            justify="left",
-            text="Will this machine drive the real IDS cameras (slit lamp / BIO)?",
-        ).pack(anchor="w", pady=(0, 8))
-
-        ttk.Radiobutton(
-            self, text="Yes — install IDS peak Python bindings too",
-            variable=wizard.drive_ids, value="Yes",
-        ).pack(anchor="w")
-        ttk.Radiobutton(
-            self, text="No — this machine only needs the base app "
-                       "(e.g. SyntheticCamera, or third-person camera only)",
-            variable=wizard.drive_ids, value="No",
-        ).pack(anchor="w")
-
-        nav = ttk.Frame(self)
-        nav.pack(side="bottom", fill="x", pady=(24, 0))
-        ttk.Button(nav, text="Next >", command=wizard.go_next).pack(side="right")
-        ttk.Button(nav, text="< Back", command=wizard.go_back).pack(side="right", padx=(0, 8))
-
-
 class RunPage(Page):
     def __init__(self, parent, wizard):
         super().__init__(parent)
@@ -103,7 +74,7 @@ class RunPage(Page):
         self._started = False
 
         ttk.Label(
-            self, text="Step 2 of 2: Installing", font=("Segoe UI", 13, "bold")
+            self, text="Installing", font=("Segoe UI", 13, "bold")
         ).pack(anchor="w", pady=(0, 12))
 
         self.log = scrolledtext.ScrolledText(
@@ -147,7 +118,7 @@ class RunPage(Page):
         def worker():
             args = [
                 "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", SETUP_PS1, "-DriveIds", self.wizard.drive_ids.get(),
+                "-File", SETUP_PS1,
             ]
             try:
                 proc = subprocess.Popen(
@@ -240,7 +211,7 @@ class FinishPage(Page):
 
 
 class Wizard(tk.Tk):
-    PAGES = (WelcomePage, OptionsPage, RunPage, FinishPage)
+    PAGES = (WelcomePage, RunPage, FinishPage)
 
     def __init__(self):
         super().__init__()
@@ -248,7 +219,6 @@ class Wizard(tk.Tk):
         self.geometry("640x520")
         self.minsize(640, 520)
 
-        self.drive_ids = tk.StringVar(value="No")
         self.setup_ok = False
 
         container = ttk.Frame(self, padding=16)

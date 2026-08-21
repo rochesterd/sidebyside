@@ -1,24 +1,18 @@
 # setup.ps1
 #
 # Bootstraps the Python environment on a new machine: venv + dependencies,
-# optionally the IDS peak Python bindings. Safe to re-run any time (e.g.
-# after installing the IDS peak SDK, or to pick up a requirements.txt
-# change) — it does not overwrite an existing venv, just reuses it.
+# including the IDS peak Python bindings — every machine this installer
+# targets is assumed to be a real deployment running the prescribed
+# instrument cameras (see CLAUDE.md's Hardware table), not a bare dev
+# checkout. Safe to re-run any time (e.g. after installing the IDS peak
+# SDK, or to pick up a requirements.txt change) — it does not overwrite
+# an existing venv, just reuses it.
 #
 # Does NOT touch config.json or camera role assignment; run settings.py
 # for that after this finishes. See SETUP.md for the full procedure this
 # script shortcuts, and DECISIONS.md's "setup.ps1" entry for why this
 # doesn't conflict with settings.py staying a persistent, re-run-any-time
 # tool rather than a one-shot installer.
-#
-# -DriveIds Yes|No skips the interactive prompt below — used by
-# setup_wizard.py to drive this script non-interactively; a plain
-# `.\setup.ps1` from a terminal still prompts as before.
-
-param(
-    [ValidateSet("Yes", "No", "")]
-    [string]$DriveIds = ""
-)
 
 $ErrorActionPreference = "Stop"
 
@@ -58,29 +52,24 @@ Write-Host "Base install complete." -ForegroundColor Green
 Write-Host "  python app.py   runs now, against SyntheticCamera if config.json is missing."
 Write-Host ""
 
-# 4. IDS peak bindings, only if this machine drives the real instrument cameras
-if ($DriveIds -eq "") {
-    $DriveIds = Read-Host "Will this machine drive the real IDS cameras (slit lamp / BIO)? [y/N]"
+# 4. IDS peak bindings
+Write-Host "Installing IDS peak Python bindings from requirements-ids.txt..."
+& $venvPython -m pip install -r requirements-ids.txt
+if ($LASTEXITCODE -ne 0) {
+    Fail "pip install -r requirements-ids.txt failed. Check the pinned versions in that file still resolve on PyPI - see DECISIONS.md's 2026-08-12 entry on why they're pinned exactly."
 }
-if ($DriveIds -match "^[Yy]") {
-    Write-Host "Installing IDS peak Python bindings from requirements-ids.txt..."
-    & $venvPython -m pip install -r requirements-ids.txt
-    if ($LASTEXITCODE -ne 0) {
-        Fail "pip install -r requirements-ids.txt failed. Check the pinned versions in that file still resolve on PyPI - see DECISIONS.md's 2026-08-12 entry on why they're pinned exactly."
-    }
 
-    Write-Host "Checking whether the IDS peak SDK runtime is installed..."
-    & $venvPython -c "from ids_peak import ids_peak; ids_peak.Library.Initialize(); ids_peak.Library.Close()" 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "IDS peak SDK runtime found - bindings loaded and initialized cleanly." -ForegroundColor Green
-    } else {
-        Write-Host ""
-        Write-Host "IDS peak Python bindings are installed, but the SDK runtime itself was not found." -ForegroundColor Yellow
-        Write-Host "Before real cameras will work:"
-        Write-Host "  1. Install IDS peak - see SETUP.md Section 2 (Custom setup, enable the uEye Transport Layer)."
-        Write-Host "  2. Driving the slit lamp specifically also needs SETUP.md Section 3 (uEye camera drivers)."
-        Write-Host "  3. Re-run this script afterward, or just proceed straight to settings.py once installed."
-    }
+Write-Host "Checking whether the IDS peak SDK runtime is installed..."
+& $venvPython -c "from ids_peak import ids_peak; ids_peak.Library.Initialize(); ids_peak.Library.Close()" 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "IDS peak SDK runtime found - bindings loaded and initialized cleanly." -ForegroundColor Green
+} else {
+    Write-Host ""
+    Write-Host "IDS peak Python bindings are installed, but the SDK runtime itself was not found." -ForegroundColor Yellow
+    Write-Host "Before real cameras will work:"
+    Write-Host "  1. Install IDS peak - see SETUP.md Section 2 (Custom setup, enable the uEye Transport Layer)."
+    Write-Host "  2. Driving the slit lamp specifically also needs SETUP.md Section 3 (uEye camera drivers)."
+    Write-Host "  3. Re-run this script afterward, or just proceed straight to settings.py once installed."
 }
 
 Write-Host ""

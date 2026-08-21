@@ -1211,3 +1211,33 @@ implementations of the same install steps needing to be kept in sync —
 worse than the subprocess/streaming-output complexity it would save,
 especially since `setup.ps1` is also meant to keep working standalone
 for anyone in a terminal.
+
+---
+
+## 2026-08-20 — Removed the "will this machine drive real IDS cameras?" question
+
+**Decided:** `setup.ps1` no longer asks (interactively or via the
+`-DriveIds` parameter above); it unconditionally installs
+`requirements-ids.txt` and runs the runtime check every time. `setup_wizard.py`
+loses `OptionsPage`/`drive_ids` entirely — Welcome goes straight to Run.
+**This supersedes the `-DriveIds Yes|No` mechanism described in the
+2026-08-19 `setup_wizard.py` entry above**, which is left as-written for
+the historical record rather than edited.
+
+**Why:** every machine this installer actually targets is a real
+deployment running the prescribed slit lamp/BIO cameras (CLAUDE.md's
+Hardware table), not a bare dev checkout — a dev machine like the one
+this project is built on doesn't run `setup.ps1` at all, it already has
+its environment set up ad hoc. The question was answering a case that
+doesn't occur in practice, at the cost of one more decision a technician
+has to get right (and one more way to end up in the "answered No by
+mistake, `settings.py` shows empty IDS candidate rows" state documented
+in the ROADMAP's IDS-installer entry). Removing it doesn't change
+behavior for the actual audience, only removes a place they could
+misclick.
+
+**Not revisited:** whether a genuinely `SyntheticCamera`-only development
+machine should be able to skip `requirements-ids.txt`. It still can —
+just by not running `setup.ps1` at all and installing
+`requirements.txt` directly, which is exactly what this project's own
+dev machine has always done.
