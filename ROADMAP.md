@@ -347,3 +347,149 @@ instead of trying to heuristically detect its absence at runtime.
 
 Not built — explicitly deferred ("at some point," not now). Tracked here
 so the design doesn't need to be re-derived when it's picked up.
+
+---
+
+## 2026-08-19 — Can `setup.ps1` drive the IDS peak SDK installer? (licensing question resolved; mechanism not yet chosen)
+
+### Context
+
+DECISIONS.md's "setup.ps1" entry (same date) deliberately stopped short of
+scripting the IDS peak SDK install itself — `setup.ps1` only detects
+whether the runtime is importable and points the technician at SETUP.md.
+That was framed as a technical limit (real driver-install friction no
+script removes) rather than also a legal one. This entry is the follow-up
+investigation into whether it's *also* a licensing limit — i.e., whether
+IDS's EULA permits a script to accept it on a technician's behalf, or
+whether that specifically requires a human to interactively click through
+the installer's own UI every time. **Resolved (see "The EULA finding"
+below): the license doesn't require interactive per-machine acceptance.
+Whether to actually build silent driving is still an open implementation
+choice, not a licensing blocker anymore.**
+
+### What was tried, and why it didn't settle the question
+
+Two installers were available for inspection
+(`ids-peak-win-standard-setup-64-26.06.1.exe` and
+`ids-peak-win-extended-setup-64-26.06.1.exe`, v26.6.1, both InstallShield
+bootstrappers bundling several per-driver sub-installers/sub-MSIs):
+
+- Binary string-scanning the outer `.exe` for EULA text found only
+  garbled matches — InstallShield's bootstrapper resources aren't stored
+  as plaintext. It did confirm the installer supports InstallShield's
+  standard silent-install pattern: run once with `/r` to record a
+  response file, then replay non-interactively via `/s -f1<path>`. That
+  mechanism works technically; whether it's *allowed* by the license is
+  the unanswered part.
+- Windows Installer's COM API (`WindowsInstaller.Installer`,
+  `OpenDatabase` in read-only mode — no execution, no UI, doesn't touch
+  the installed product) can read an MSI's embedded license text directly
+  from its `Control` table. This worked against the cached sub-MSI for
+  "IDS peak common" (found via `HKLM:\SOFTWARE\Microsoft\Windows\
+  CurrentVersion\Installer\UserData\S-1-5-18\Products\*\InstallProperties\
+  LocalPackage` → `C:\WINDOWS\Installer\<hash>.msi`) — but the license
+  text it returned was literal **Lorem ipsum placeholder RTF**, not real
+  terms. That sub-package is WiX-built (a different toolset than the
+  InstallShield outer wrapper) and is almost certainly not where the real
+  terms live.
+- The other cached sub-installers (`eth_installer_64.exe`,
+  `usb_installer_64.exe`, `icv_setup_x64.exe`, `libcommon_setup_x64.msi`,
+  under `C:\Program Files (x86)\InstallShield Installation
+  Information\{8515B45A-...}\`) were never checked the same way — the
+  driver installers specifically are the ones a redistribution question
+  would actually turn on, and remain unexamined.
+- An administrative extract (`/a`) of the outer bootstrapper, meant to
+  unpack files without installing/registering anything, failed silently
+  (empty output directory, no error, no process left running, nothing
+  changed on the test machine) — most likely wrong switch syntax for
+  InstallShield's specific `/a` handling, not confirmed as a dead end.
+
+### The runtime setup package, and the EULA it surfaced
+
+IDS publishes a separate **"IDS peak runtime setup"** package — ~118MB
+(v26.6.1) vs. the standard installer's ~262MB, drivers-only (no dev
+environment, no Cockpit, no DirectShow interface), the more plausible
+candidate for something meant for OEM/third-party redistribution as
+opposed to the developer/technician-facing standard/extended installers.
+Downloaded from
+[the official download page](https://en.ids-imaging.com/download-peak.html)
+(direct `WebFetch` of that page is bot-blocked — a human has to click
+through it) as `ids-peak-win-runtime-setup-64-26.06.1.exe`. Clicking
+"Download" on that page also surfaces a separate document — the actual
+license terms, `ids-license-terms-de-en.pdf`, distinct from anything
+embedded in any of the three installer `.exe`s and the real answer to
+the question this entry opened with.
+
+### The EULA finding
+
+"License Terms for IDS Software Suite und/and IDS peak" (last revised
+2020-07-20, bilingual German/English, German controlling per clause 7.3).
+The clauses that actually settle this:
+
+- **Redistribution is explicitly granted, not just tolerated** (clause
+  2.1/2.1.1): a "non-exclusive, non-transferable worldwide right to...
+  integrate part or all of the Software in [Licensee's] own products
+  *only if they operate with IDS cameras*" and to "duplicate or
+  reproduce... and distribute these products to end users or third
+  parties." sidebyside qualifies directly — it only ever operates with
+  IDS cameras.
+- **No clause anywhere requires interactive, per-installation
+  acceptance.** Clause 5.1 ties the license's effective date to
+  "successful download of the Software, not later than the commencement
+  of use" — a download/use-triggered agreement, not a
+  click-through-this-specific-dialog one. This is what actually answers
+  the original question: nothing here blocks `setup.ps1` from replaying
+  a previously-recorded response file (`/s -f1<path>`, found earlier)
+  non-interactively on a new machine.
+- **What's actually prohibited** (clause 2.3): reselling/renting the
+  Software standalone (2.3.1 — not what we'd be doing), decompiling it
+  (2.3.2), using it with non-IDS cameras (2.3.3 — CLAUDE.md's hardware
+  table already only ever names IDS cameras for the two instrument
+  roles), building a competing "comparable control software" (2.3.4), and
+  sublicensing beyond direct subcontractors (2.3.5). None of these bear
+  on how the installer gets invoked.
+- Scope caveat: this document is titled for "IDS Software Suite and IDS
+  peak" generally — treated here as governing the runtime-setup package
+  specifically because it's literally what IDS's own download flow
+  surfaced when that package was requested, not because every word was
+  independently confirmed to be package-specific.
+
+### Mechanism: still an open implementation choice, no longer a licensing one
+
+With the licensing question resolved, both previously-considered
+mechanisms are viable and the choice is now pure engineering tradeoff:
+
+- **Silent replay** (`/r` once to record a response file, `/s -f1<path>`
+  to replay non-interactively on future machines) — fully unattended,
+  but the technician never sees a native "did this actually succeed"
+  signal beyond `setup.ps1`'s own exit code / post-hoc
+  `ids_peak.Library.Initialize()` check.
+- **Interactive launch** (`setup.ps1` starts the installer with no
+  silent flags and waits on it) — the technician drives IDS's own wizard
+  directly, so success/failure is self-evident from that UI, at the cost
+  of not being hands-off.
+
+Still open regardless of which is chosen: how the script locates the
+installer `.exe`, since CLAUDE.md already rules out bundling it in the
+repo (kernel drivers; also just too large) — prompt for a path each
+time, look in a documented fixed location with a prompt fallback, or
+leave this step manual and unscripted as it is today.
+
+### Also clarified along the way
+
+`pip install -r requirements-ids.txt` only ever installs the
+`ids_peak`/`ids_peak_ipl` **Python bindings** — a thin wrapper calling
+into the native SDK. It never installs the native runtime or kernel
+drivers (USB3 Vision, GenICam TL, uEye TL); nothing on PyPI can. A
+machine that only ever runs `SyntheticCamera` genuinely never needs the
+real installer at all — already implicitly true of `setup.ps1`'s
+`-DriveIds No` path, which skips this whole question.
+
+### Status
+
+Licensing question resolved: the EULA permits redistribution and doesn't
+require interactive per-machine acceptance. No code changed yet — the
+remaining decision is purely which mechanism (silent replay vs.
+interactive launch) and how the script locates the installer `.exe`.
+Tracked here so the next session doesn't have to re-derive what's already
+been settled before making that call.
