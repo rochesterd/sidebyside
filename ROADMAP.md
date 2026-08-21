@@ -517,3 +517,107 @@ redistribution and doesn't require interactive per-machine acceptance);
 the real deciding factor was CLAUDE.md's failure-mode philosophy, which
 favors keeping this step manual. No code changed — `setup.ps1` and
 `SETUP.md` already reflect the decision as they stand.
+
+---
+
+## 2026-08-20 — Distribute a frozen-exe installer, not a Python source bootstrap (planned, not built)
+
+### Context
+
+Everything built so far in this area (`setup.ps1`, `setup_wizard.py`)
+assumes the target machine ends up with a full Python environment: a
+`.venv`, `pip install`ed dependencies, and `app.py` run via
+`python app.py`. That was never actually questioned until now — and it
+doesn't hold up against CLAUDE.md's own bar for the student-facing side
+("intuitive to Apple's standard"). There is, in fact, **no documented way
+a student launches the app at all** today — the only instruction anywhere
+is `python app.py` from a terminal (`SETUP.md` line 45). That's a
+dev-workflow artifact that leaked into being the only launch path,
+not a designed one.
+
+The actual goal, stated directly: hand a technician one installer, they
+follow a guide, they end up with a running app — no Python, no source
+code, no terminal, ever touched by them.
+
+### Planned design
+
+- **Freeze `app.py` and `settings.py` into standalone `.exe`s via
+  PyInstaller**, built on the developer's machine (which already has the
+  full venv — base deps plus `ids_peak`/`ids_peak_ipl`). PyInstaller
+  bundles whatever's importable in that venv, so the frozen exes carry
+  the IDS Python bindings automatically — no `pip install` of anything on
+  the target machine, ever.
+- **`config.json` relocates off the source tree.** There's no repo
+  checkout on a target machine in this model, so `config.py`'s path
+  resolution needs a real home for it — likely
+  `%ProgramData%\sidebyside\config.json`. Not yet implemented; existing
+  `load_config()`/`config.example.json` behavior otherwise unaffected.
+- **Inno Setup builds the actual installer** (chosen over WiX Toolset —
+  lower learning curve, single `.exe` output, matches this project's
+  scale). Its job: copy `app.exe`/`settings.exe` to Program Files, create
+  a desktop/Start-menu shortcut for `app.exe` (this is what actually
+  closes the "how does a student launch this" gap above — nothing today
+  does), and chain-launch the bundled IDS peak installer (see below).
+- **The IDS peak *extended* setup installer is bundled inside the Inno
+  Setup installer** as an embedded payload, launched via Inno's `[Run]`
+  section — **interactively, no silent flags**, waiting for it to exit
+  before continuing. This is bundling for convenience, not a reopening of
+  the "should this be silently driven" question closed in the entry
+  above — the technician still sees IDS's real wizard and clicks through
+  it themselves; only the "go find and download it yourself" step goes
+  away. `SETUP.md`'s current step 1 (create a myIDS account, download the
+  installer from IDS's site) becomes unnecessary for anyone using this
+  combined installer.
+- **`setup.ps1`/`setup_wizard.py` become developer-only tooling.** Not
+  removed — still exactly what someone modifying source code needs to set
+  up a dev environment — but no longer part of the path a clinic machine
+  ever goes through.
+
+### Decision: bundle extended setup, not IDS Software Suite + runtime setup
+
+Considered instead: bundling the smaller `runtime setup` package
+alongside a separately-bundled `IDS Software Suite` installer (the
+combination `SETUP.md` Section 3 already documents as the non-extended
+route to uEye camera drivers). Rejected in favor of extended alone:
+
+- **Self-contained vs. two unknowns chained together.** Extended is one
+  vendor-tested installer that already bundles the uEye camera drivers
+  directly. IDS Software Suite is a separate, older product line never
+  investigated this session — unknown size, unknown installer behavior —
+  and per IDS's own docs it exists specifically as a compatibility bridge
+  for the uEye Transport Layer, not clearly something IDS keeps investing
+  in as their product line moves toward native GenICam/peak. Depending on
+  it is the same "unexplored legacy second product with its own footprint
+  and version constraints" tradeoff the IDS-installer entry above already
+  rejected once, for the same underlying reason.
+- **One chain link vs. two.** Software Suite + runtime setup means
+  launching two installers in sequence, in the right order, each able to
+  fail or drift out of version-sync independently. Extended is one
+  `[Run]` step.
+- The one real point in Suite+runtime's favor — a smaller installed
+  footprint on the clinic machine, since it skips Cockpit/dev tools/
+  sample code extended drags in — is disk-space tidiness, not something
+  CLAUDE.md treats as a real constraint anywhere, and not worth trading
+  reliability for.
+
+### Rejected
+
+- **A true single MSI that also silently installs Python itself** for the
+  purpose of running raw source, instead of freezing the app. Once the
+  app is frozen, Python on the target machine stops being relevant at
+  all — this alternative was only ever solving a problem the frozen-exe
+  approach removes outright, not a real remaining option.
+- **PyInstaller-freezing `setup_wizard.py` alone** (discussed before this
+  entry) — superseded. That would have produced a nicer front end for
+  bootstrapping a Python dev environment on the target machine, but the
+  target machine no longer needs one at all in this model.
+
+### Status
+
+Planned, not built. Concrete open work once started: PyInstaller build
+scripting for `app.py`/`settings.py`, `config.json` path relocation in
+`config.py`, Inno Setup script authoring, sourcing and embedding the
+extended installer file, shortcut creation, and deciding how the
+developer's own build machine's setup (still `setup.ps1`-based) is kept
+separate from and not confused with the end-user installer this entry
+describes.
