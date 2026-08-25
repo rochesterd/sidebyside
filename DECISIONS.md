@@ -1334,3 +1334,48 @@ launching the result, then encoding whatever that run actually needed
 (nothing extra, as it turned out) into the checked-in spec files. Matches
 this project's existing preference for integration-style verification
 over assumed-correct configuration.
+
+## 2026-08-25 — Missing-config startup failure was silent in the frozen exe
+
+Found by actually running `sidebyside-setup.exe` on a machine with no
+`config.json` yet (a fresh Windows Sandbox session, standing in for a
+never-before-configured clinic machine) — exactly the "not verified" gap
+the 2026-08-20 entry above flagged. The installer itself worked correctly
+(IDS peak's wizard launched and completed, both shortcuts appeared), but
+clicking the `app.exe` Desktop shortcut produced nothing visible at all.
+
+**Root cause:** `app.py`'s `main()` handled a missing/malformed
+`config.json` by logging the error and returning 1, on the reasoning
+(recorded in the removed comment) that this is "a technician setup
+error... it never needs Qt at all." That was true when the only way to
+run this was `python app.py` from a terminal, where `logger`'s
+`StreamHandler` reaching `stderr` was actually visible. `packaging/
+app.spec` builds `app.exe` with `console=False` (deliberately, for a
+windowed kiosk app), and Explorer launches a Desktop shortcut with no
+console attached at all — so that `stderr` write reaches nobody. The
+`RotatingFileHandler` still captured the error durably in `LOG_FILE`
+(`%ProgramData%\sidebyside\logs\app.log`), so the information wasn't
+*lost*, but nothing pointed a technician at it. This directly contradicts
+CLAUDE.md's "failures must be loud and early" — a double-click producing
+literally nothing is quieter than the "black pane" that principle already
+calls out as the worst case.
+
+**Fix:** `QApplication.instance() or QApplication(sys.argv)` moved before
+the `load_config()` call (previously constructed only after it succeeded,
+further down `main()`), so a `ConfigError` can show `QMessageBox.critical`
+before returning 1 — matched by a regression test
+(`test_app.TestMissingConfigStartup`) mocking `load_config` to raise and
+asserting the dialog fires. `QApplication.instance() or ...` rather than
+an unconditional constructor call: makes `main()` safe to call from a
+test process that already created one at module import time (this test
+file's existing `_qt_app = QApplication.instance() or QApplication([])`
+pattern), with no behavior change in real usage where no instance exists
+yet when `main()` runs.
+
+Verified by rerunning the frozen `app.exe` directly with no
+`%ProgramData%\sidebyside\config.json` present: the process now stays
+alive holding a blocking dialog open, instead of exiting within
+milliseconds as it did before the fix. Installer recompiled with the
+fixed `app.exe`; re-verification on a clean machine is the immediate
+follow-up, same as the 2026-08-20 entry's original "not yet verified"
+item this replaces.

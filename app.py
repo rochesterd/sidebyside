@@ -436,14 +436,26 @@ def main() -> int:
 
     _configure_logging()
 
-    # Checked before QApplication exists: a missing/malformed config.json is
-    # a technician setup error, not a student-facing camera preflight (see
-    # kiosk.py for that), so it never needs Qt at all -- just a log line
-    # (logger's StreamHandler already reaches stderr) and a nonzero exit.
+    # QApplication created before the config check (not after, as a plain
+    # log-and-exit would allow) specifically so a missing/malformed
+    # config.json can show a QMessageBox. app.exe is built with
+    # console=False (see packaging/app.spec) and launched from a Desktop
+    # shortcut with no console attached, so logger's StreamHandler->stderr
+    # reaches nobody -- a technician on a freshly installed machine (no
+    # config.json yet, the exact case this guards) would double-click the
+    # icon and see literally nothing happen. The RotatingFileHandler still
+    # captures it durably in LOG_FILE either way; this is about the
+    # in-the-moment signal, not the record.
+    # QApplication.instance() or ...: guards against a second instantiation
+    # when main() runs inside a test process that already created one at
+    # module import time (see test_app.py) -- in real usage there's never
+    # an existing instance before main() runs, so this is a no-op there.
+    app = QApplication.instance() or QApplication(sys.argv)
     try:
         cfg = load_config()
     except ConfigError as exc:
         logger.error(str(exc))
+        QMessageBox.critical(None, "sidebyside - Setup required", str(exc))
         return 1
 
     logger.info(
@@ -454,7 +466,6 @@ def main() -> int:
         third_person_synthetic,
     )
 
-    app = QApplication(sys.argv)
     instruments = {
         key: _make_camera(
             None if instrument_synthetic else inst.serial,

@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import patch
 
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
+import app
 from app import KioskWindow
 from camera import BaseCamera
+from config import ConfigError
 from kiosk import State
 from synthetic_camera import SyntheticCamera
 
@@ -185,6 +188,29 @@ class TestCloseLockdown(unittest.TestCase):
         finally:
             third_person.stop()
             instruments["slit_lamp"].stop()
+
+
+class TestMissingConfigStartup(unittest.TestCase):
+    """A missing/malformed config.json must surface visibly, not just to a
+    log file. app.exe is built windowed (console=False, see
+    packaging/app.spec) and launched from a Desktop shortcut with no
+    console attached -- a log-and-exit with no QMessageBox is silent to
+    whoever double-clicked the icon. Regression test for that gap, found
+    by actually running the frozen installer on a machine with no
+    config.json yet (see DECISIONS.md).
+    """
+
+    def test_config_error_shows_a_message_box_and_returns_nonzero(self):
+        with (
+            patch("sys.argv", ["app.py"]),
+            patch("app.load_config", side_effect=ConfigError("config.json not found")),
+            patch("app.QMessageBox.critical") as mock_critical,
+        ):
+            result = app.main()
+
+        self.assertEqual(result, 1)
+        mock_critical.assert_called_once()
+        self.assertIn("config.json not found", mock_critical.call_args.args[-1])
 
 
 if __name__ == "__main__":
