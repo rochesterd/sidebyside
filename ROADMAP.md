@@ -623,3 +623,10 @@ end to end; running the resulting installer on a real/disposable machine
 to verify the full technician-facing flow is the one remaining step, not
 done as part of this work — see `PACKAGING.md`'s "before handing this to
 anyone" checklist.
+
+**Revised 2026-08-25:** this entry's body text above describes the
+bundled IDS peak installer as launched "interactively, no silent flags."
+That's superseded — it's now driven silently, with its own verification
+layered on. See DECISIONS.md's 2026-08-25 "Silent IDS peak install, with
+verification Kinexis doesn't have" entry for the reversal and what was
+actually built.

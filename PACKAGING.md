@@ -68,7 +68,53 @@ filename regardless of the version number in what you downloaded, so
 `sidebyside.iss` never needs editing just because IDS shipped a new
 release.
 
-## 4. Compile the installer
+## 4. Record a silent-install response file for that exact installer
+
+`sidebyside.iss` drives the IDS peak installer **silently** (see
+`DECISIONS.md`'s "Silent IDS peak install" entry for why, and the
+verification it relies on instead of a technician watching the wizard).
+That needs an InstallShield response file recorded from a real install of
+the *same* installer placed in step 3, at:
+
+```
+vendor\ids-peak-response.iss
+```
+
+**Record it on a machine with no prior IDS peak install** — a fresh
+Windows Sandbox session is the easiest way to guarantee that (a
+recording taken on a machine that already has IDS peak gets InstallShield's
+Modify/Repair/Remove dialog flow instead of a fresh-install flow, which
+records the wrong thing entirely). In that clean environment:
+
+```
+<the exact filename you downloaded>.exe /r /f1"C:\ids-peak-response.iss"
+```
+
+This runs the real, interactive wizard while recording every answer —
+it's a genuine install, not a dry run. Click through it for real:
+**Custom** install, leave every component checked (or at minimum ensure
+**uEye Transport Layer** — listed as `UEyeSupport` in the 26.x-series
+component tree — stays checked), leave the destination at its default.
+**At the final restart prompt, choose "No, I will restart later"** — this
+is not optional: since the replay is silent, whatever gets recorded here
+fires automatically and unprompted on every real clinic machine this
+response file is later replayed on. Recording "restart now" would mean
+every future silent install triggers an unannounced reboot on a real
+clinic machine.
+
+Copy the resulting `C:\ids-peak-response.iss` out of the sandbox to
+`vendor\ids-peak-response.iss` on the build machine. Gitignored, same
+convention as the installer `.exe` itself in step 3.
+
+**Must be re-recorded** (the same way, in a fresh clean environment)
+every time the installer `.exe` in step 3 is bumped to a new IDS release
+— a response file recorded against one version's dialog layout can
+silently produce the wrong result when replayed against a different
+version's layout. `IdsPeakAlreadyInstalled()`'s post-install re-check in
+`sidebyside.iss` is the safety net if this step gets missed, not a
+substitute for actually doing it.
+
+## 5. Compile the installer
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\sidebyside.iss
@@ -80,8 +126,17 @@ one file a technician actually needs. Gitignored, like the rest of
 
 **Before handing this to anyone**, actually run it on a real (or
 disposable/VM) Windows machine and confirm: both shortcuts appear and
-launch their respective `.exe`s, the IDS peak installer's own wizard
-launches and completes, and — on a machine that already has IDS peak
-installed — re-running `sidebyside-setup.exe` skips that step
-(`IdsPeakAlreadyInstalled` in `packaging/sidebyside.iss`'s `[Code]`
-section).
+launch their respective `.exe`s, the IDS peak SDK installs correctly
+(check `%ProgramFiles%\IDS\ids_peak` — no wizard appears, this happens
+silently now), the Finished page shows the native "restart now / restart
+later" choice (not a separate popup — see `DECISIONS.md`'s "Silent IDS
+peak install: native restart page" entry for why the install runs
+*before* sidebyside's own files specifically to make this work), and
+choosing "restart now" genuinely restarts the machine. And — on a machine
+that already has a current-enough IDS peak installed — re-running
+`sidebyside-setup.exe` skips reinstalling it (`IdsPeakAlreadyInstalled` in
+`packaging/sidebyside.iss`'s `[Code]` section) and the Finished page shows
+no restart choice, since nothing changed. If the silent install fails or
+can't be verified, the installer shows an explicit error dialog rather
+than continuing silently — confirm that path too by temporarily renaming
+`vendor\ids-peak-response.iss` before a test run.

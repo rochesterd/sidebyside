@@ -1379,3 +1379,362 @@ milliseconds as it did before the fix. Installer recompiled with the
 fixed `app.exe`; re-verification on a clean machine is the immediate
 follow-up, same as the 2026-08-20 entry's original "not yet verified"
 item this replaces.
+
+## 2026-08-25 — `IdsPeakAlreadyInstalled()` checks a version, not just a folder
+
+Follow-up investigation into the restart-prompt friction from the
+Sandbox re-test above led to comparing how other real optometry/
+ophthalmology device vendors handle IDS peak deployment — specifically
+Haag-Streit's EyeSuite and Keeler's own Kinexis (Vantage Plus Digital
+BIO) installers, both supplied by the user for analysis. Binary/archive
+inspection (embedded-string scanning for the InstallShield-vs-Advanced-
+Installer-vs-Inno-Setup engine question, then `innounp` — the standard
+Inno Setup archive unpacker — to list Kinexis's actual embedded file
+table) found:
+
+- **EyeSuite** (Advanced Installer, MSI-backed) bundles and installs a
+  full IDS peak SDK + both transport layers (`ids_ueyegentl`,
+  `ids_u3vgentl`) via a real named-property silent install (`/qn`,
+  `APPDIR=`) — confirming Advanced Installer's silent path is genuinely
+  robust, unlike IDS's own InstallScript-based installer.
+- **Kinexis** (Inno Setup) bundles `ids_peak_2.9.0.0.exe` plus a real,
+  working InstallShield response file and drives it exactly the way this
+  project's earlier IDS-installer entry described hypothetically:
+  `ids_peak_2.9.0.0.exe /s /f1".\Install_Setup.iss"`, no exit-code check
+  afterward beyond a flat `timeout /t 4`. The response file's own
+  `[...SetupType2-0] Result=303` / `Result=304` entries are exactly the
+  positional, non-semantic dialog-index recording described in that
+  entry — real confirmation, not a hypothetical. It does *not* enable the
+  uEye Transport Layer, consistent with the Vantage Plus Digital's camera
+  being native USB3 Vision (no Transport Layer needed) per CLAUDE.md's
+  hardware table.
+
+**The concrete, actionable finding:** Kinexis silently installs IDS peak
+**2.9.0.0** — a version far older than `26.06.1`, what
+`vendor/ids-peak-win-extended-setup-64.exe` currently bundles — into the
+same `{pf}\IDS\ids_peak` location `IdsPeakAlreadyInstalled()` in
+`packaging/sidebyside.iss` was checking with a bare `DirExists()`. A real
+clinic machine that's only ever run Kinexis (plausible, since it's
+Keeler's own software for the same BIO) would have that check wrongly
+report "already installed" and skip the bundled installer entirely,
+silently leaving a years-out-of-date SDK in place instead of the current
+one `requirements-ids.txt`'s pinned Python bindings actually expect —
+this was a real gap, not a hypothetical one, found by actually inspecting
+a real vendor installer rather than assumed.
+
+**Fix:** `IdsPeakAlreadyInstalled()` now checks
+`{pf}\IDS\ids_peak\program\ids_peak.dll`'s own `FileVersion` via Inno's
+`GetVersionNumbers`/`ComparePackedVersion`, against a new
+`IdsPeakMinDllVersion` preprocessor constant (`"1.16.0.0"`) — confirmed
+empirically to be what the currently-bundled `26.06.1` extended setup
+actually installs, via `(Get-Item '...\ids_peak\program\ids_peak.dll').
+VersionInfo.FileVersion` on this dev machine (which has run that exact
+installer). IDS's installer-package version string (e.g. `"26.06.1"`) and
+this DLL's own `FileVersion` (`"1.16.0.0"`) are unrelated numbering
+schemes — confirmed by checking both directly, not assumed to match —
+so the DLL's own version field is what has to be compared, and
+`IdsPeakMinDllVersion` needs updating (the same empirical way) whenever
+`vendor/ids-peak-win-extended-setup-64.exe` is bumped to a new IDS
+release.
+
+**A syntax pitfall hit while writing this fix, worth remembering:** Inno
+Setup's Pascal `[Code]` section comments (`{ ... }`) don't nest, and don't
+treat their own contents as inert — a literal `{pf}` constant reference
+*inside* a `{ }`-delimited comment closes the comment early at that `}`,
+silently turning the rest of the intended comment into parsed code
+(`Error on line 96: Column 52: Syntax error.` was the actual symptom).
+Fixed by switching that comment block to `(* ... *)` delimiters, which
+don't conflict with literal braces, and by avoiding constant-reference
+syntax inside comments in general going forward.
+
+**Decision on the restart/silent-install question this whole thread
+started from:** unchanged — still keep IDS's own bundled installer
+interactive, with "choose Restart Later if prompted" as the
+documentation fix (sidebyside's own files/shortcuts are already
+installed by the time `[Run]` fires `ids-peak-win-extended-setup-64.exe`,
+so nothing functionally depends on that restart happening immediately).
+Kinexis proves silent driving is *possible* — a real vendor ships it —
+but its own implementation (no error-checking beyond a flat sleep, a
+now-confirmed-real version-drift case) is a live example of the exact
+fragility risk the earlier entry was concerned about, not a
+counterargument to it.
+
+## 2026-08-25 — Silent IDS peak install, with verification Kinexis doesn't have
+
+### Reversal
+
+The entry directly above concluded "stays manual," and the 2026-08-19
+entry before that reached the same conclusion for `setup.ps1`. Both are
+now superseded: `packaging/sidebyside.iss` drives IDS peak's installer
+**silently**. What actually changed the calculus, across this
+conversation's back-and-forth:
+
+- **The "student finds a dead camera weeks later" framing was wrong.** A
+  technician runs `settings.py` and uses its Preview button right after
+  installing, before ever handing the machine to a student -- a bad
+  silent install surfaces there, close in time to the actual cause, not
+  weeks later disconnected from it.
+- **Version-drift risk assumes a careless process; this project doesn't
+  have one.** One developer (the user) controls every
+  `vendor\ids-peak-win-extended-setup-64.exe` bump and can re-record
+  deliberately each time, rather than a team where "someone forgot" is
+  realistic.
+- **The installer's own success signal was never the only available
+  one.** `IdsPeakAlreadyInstalled()`'s real `ids_peak.dll` version check
+  (previous entry) already exists and can be run *after* a silent
+  install, not just before one -- closing the actual gap in Kinexis's
+  own approach (it trusts a silent replay with zero verification) without
+  needing a human to watch the wizard to get that verification.
+
+### What was built
+
+`InstallIdsPeakSilently()` in `packaging/sidebyside.iss`'s `[Code]`
+section, called from `CurStepChanged(ssPostInstall)` (replacing the old
+declarative interactive Run entry entirely):
+
+1. Skips entirely if `IdsPeakAlreadyInstalled()` already passes (unchanged
+   behavior from the previous entry).
+2. Otherwise runs `ids-peak-win-extended-setup-64.exe /s /f1"<response
+   file>" /f2"<log file>"` via `Exec()`, capturing the real exit code --
+   this is the same `/s /f1` mechanism Kinexis uses in production (see
+   previous entry), just with the verification it lacks layered on:
+   - `Exec()` returning False, or a nonzero `ResultCode`, is a **hard
+     failure** (Windows blocked it, the installer crashed) -- shown as an
+     explicit error dialog pointing at `SETUP.md`'s manual steps, not
+     swallowed.
+   - Even `ResultCode = 0` isn't trusted as the whole story: a stale
+     response file can replay cleanly against a *different* dialog layout
+     in a newer IDS peak version and report success while silently
+     picking the wrong components -- exactly the failure mode discussed
+     in the previous entry. `IdsPeakAlreadyInstalled()` runs *again*
+     afterward as the real verification; if it still fails, that's shown
+     as its own explicit error rather than assumed fine because the exit
+     code was 0.
+3. `NeedRestart(): Boolean` -- Inno Setup's own built-in hook, returning
+   True only when this run actually installed and verified IDS peak.
+   Needed because the response file's recorded answer to IDS's own
+   restart prompt is deliberately "restart later" (below) -- with nobody
+   watching a silent install, that answer just fires unprompted if
+   recorded as "restart now," so it has to defer, which means *something*
+   still needs to surface "you should restart" to the technician. Inno's
+   native Finished-page restart prompt is that surface, rather than a
+   custom dialog.
+4. The IDS installer's own `/f2` log now writes to `{app}\
+   ids-peak-install.log` (not `{tmp}`, which Inno wipes once setup
+   finishes -- a log path a technician can't actually open after the fact
+   isn't useful in an error message).
+
+### Recording the response file
+
+`vendor\ids-peak-response.iss`, recorded via `<installer>.exe /r /f1"..."`
+on a **fresh Windows Sandbox session** (not this dev machine, which
+already has IDS peak -- recording against an already-installed machine
+gets InstallShield's Modify/Repair/Remove flow instead of a fresh-install
+one, recording the wrong thing). Full steps in `PACKAGING.md`. Two things
+learned doing this for real, not assumed:
+
+- **This IDS peak version (26.6.1) is better-behaved than Kinexis's much
+  older bundled 2.9.0.0.** Its `SdComponentTree` dialog records **named**
+  component keys (`UEyeSupport\UEyeDrivers`, `USB3VisionProducer`, ...),
+  not pure numeric positions the way the older `SetupType2` dialog does
+  for the top-level install type. Doesn't remove the positional-replay
+  risk in general (the top-level dialogs are still numeric `Result=`
+  codes), but it's a real, observed data point that "positional" isn't
+  uniformly true across every dialog in every IDS peak version.
+- **The recorded restart answer matters more here than in the abandoned
+  interactive design.** Told the user explicitly, before recording: since
+  the replay is silent, whatever gets recorded at the final restart
+  prompt fires automatically on every future clinic machine with nobody
+  present to answer it -- recording "restart now" would mean an
+  unannounced reboot on a real clinic machine every time this response
+  file gets replayed. Recorded "No, I will restart later"
+  (`SdFinishReboot-0`: `Result=1, BootOption=0`), consistent with
+  `NeedRestart()` above picking up the slack instead.
+
+### A recurring Pascal Script syntax pitfall (three more hits, same bug)
+
+The 2026-08-25 "checks a version, not just a folder" entry above already
+noted that a literal `{pf}` inside a `{ }`-delimited Pascal comment closes
+the comment early, since Inno's Pascal comments don't nest. Building this
+feature hit the *same* bug twice more in one sitting -- `{app}`/`{tmp}`
+inside a `{ }` comment, and separately a literal `[Run]` inside a `{ }`
+(now `(* *)`) comment, which isn't a Pascal nesting issue at all but a
+different mechanism: Inno's own section-tag scanner runs a line-based
+pass looking for `[SectionName]`-shaped lines *before* Pascal comment
+parsing happens at all, so a bracketed reference to another section's
+name inside any comment can break section detection regardless of
+comment style. Take away for next time: avoid literal `{constant}` and
+`[SectionName]` text inside any `[Code]` comment, in any delimiter style
+-- reword around it instead of assuming the comment is inert.
+
+### Status
+
+Built and compiles cleanly (`packaging\installer_output\sidebyside-setup.exe`).
+**Not yet verified end-to-end** on a real clean machine -- the sandbox
+session used to record the response file now has IDS peak installed from
+that recording, so it can't also be the clean-machine test for the silent
+replay; that needs a *separate* fresh sandbox session. Also not yet
+verified: the deliberate-failure path (temporarily renaming/breaking
+`vendor\ids-peak-response.iss` and confirming the error dialogs actually
+fire instead of silently continuing).
+
+## 2026-08-25 — Silent IDS peak install: the restart prompt never showed
+
+First real Sandbox test of the silent-install build (previous entry)
+surfaced a bug: after a genuinely fresh, verified-successful silent IDS
+peak install, Setup went straight to the plain "Completing the sidebyside
+Setup Wizard" Finished page -- no restart-choice radio buttons, even
+though `NeedRestart()` returned `IdsPeakInstalledThisRun`, which
+`InstallIdsPeakSilently()` had just set `True`. No error dialog either,
+and `ids_peak.dll` was confirmed present on disk -- so the install itself
+genuinely worked; only the restart notification was silently missing.
+
+### Root cause, confirmed empirically, not guessed
+
+Three throwaway `.iss` test scripts (compiled and run with `/VERYSILENT
+/LOG=`, entirely outside the sandbox loop, to avoid another 15-minute
+round trip per iteration) isolated this precisely:
+
+1. A script returning a **hardcoded** `NeedRestart(): Boolean := True`
+   worked correctly (`Need to restart Windows? Yes` in Setup's own log).
+2. A script matching the *real* structure -- a global flag set to `True`
+   inside `CurStepChanged(ssPostInstall)`, read back by `NeedRestart()`
+   -- did **not** work (`Need to restart Windows? No`), reproducing the
+   bug exactly.
+3. Adding `Log()` calls to every step nailed the exact ordering:
+   ```
+   CurStepChanged called with CurStep=1     (ssInstall)
+   Creating directory: ...                   (Files/Icons written here)
+   NeedRestart() called, MyFlag=False        <- queried HERE
+   CurStepChanged called with CurStep=2     (ssPostInstall)
+   Setting MyFlag to True                    <- too late, already asked
+   Need to restart Windows? No
+   ```
+   Inno queries `NeedRestart()` exactly once, right after Files/Icons
+   finish writing but **before** `CurStepChanged` is ever called with
+   `ssPostInstall`. Nothing re-queries it afterward. A flag set from
+   inside `ssPostInstall` is therefore structurally always one step too
+   late, regardless of what the flag's value is -- this wasn't a
+   Pascal bug, it was a wrong assumption about Inno's own call order
+   (confirmed against Inno's actual source on GitHub,
+   `jrsoftware/issrc`, which shows the internal `NeedsRestart` decision
+   and its "Need to restart Windows?" log line both happening inside the
+   same `Install` procedure that later calls `CurStepChanged(ssPostInstall)`
+   -- not after it).
+
+### Why not just move the IDS install earlier (to `ssInstall`)
+
+That would fix the ordering, but reopens the exact risk `ssPostInstall`
+was chosen to avoid: `ssInstall` fires *before* `[Files]`/`[Icons]` are
+written, so if the silent `Exec()` call ever hung indefinitely (not just
+returned a nonzero code, which is already handled either way) rather
+than erroring, sidebyside's own `app.exe`/`settings.exe`/shortcuts might
+never get installed at all. Keeping the IDS install in `ssPostInstall`
+preserves "sidebyside itself is safe regardless of what happens to the
+bundled IDS installer" from the original 2026-08-20 frozen-exe entry.
+
+### Fix
+
+Dropped `NeedRestart()` and the `IdsPeakInstalledThisRun` global
+entirely. `InstallIdsPeakSilently()` now shows an explicit
+`MsgBox(mbInformation)` directly -- "A restart is recommended..." --
+right after a verified-successful install, instead of depending on
+Inno's internal call order at all. Simpler code, and a message that's
+guaranteed to actually appear rather than a native mechanism with a
+timing gotcha this project only found by instrumenting it directly.
+Matches CLAUDE.md's general "loud and early" bias better than the
+native mechanism did anyway.
+
+Verified against the real `sidebyside.iss` compiling cleanly; **not yet
+re-verified in an actual fresh Sandbox** that the MsgBox appears at the
+right moment -- that's the next real test, along with the
+still-outstanding deliberate-failure-path check from the previous entry.
+
+## 2026-08-25 — Silent IDS peak install: native restart page
+
+Follow-up to the entry directly above. The MsgBox fix worked, but wasn't
+what was actually wanted -- a plain "OK"-only popup, not a real Restart
+now/Restart later choice like IDS's own installer. First attempt at that
+(`TaskDialogMsgBox` with custom button labels, triggering `shutdown.exe
+/r` directly on "Restart now") worked but was still a separate popup, not
+integrated into Setup's own Finished page. Getting the *native* Finished-
+page radio-button choice back on the table required working out, and
+then accepting, what it actually costs -- summarized here since the
+reasoning spans several back-and-forths, not one decision.
+
+**Why `ssPostInstall` can't produce the native choice, confirmed, not
+assumed:** `NextButtonClick` doesn't fire for the Finished page's Finish
+button (confirmed against Inno's own documentation) -- so even manually
+toggling `WizardForm.YesRadio`/`NoRadio` visibility from `ssPostInstall`
+would show a choice with no supported way to read back which one got
+picked when Finish is clicked.
+
+**Why moving the whole install to `ssInstall` isn't just risky, it's
+broken outright, as literally described:** a purpose-built empirical test
+(a `[Files]` entry logged for both `{tmp}`-file existence and `{app}`-dir
+existence at each `CurStepChanged` step) showed both are `0` at
+`ssInstall` and `1` by `ssPostInstall` -- Setup's normal file-copy phase,
+`{tmp}` extraction included, hasn't run yet when `ssInstall` fires. Naively
+moving `Exec()` there would point at a 356MB file that doesn't exist.
+
+**What actually made it work:** `ExtractTemporaryFile()` (confirmed via
+Inno's own docs: pulls a specific `[Files]` entry, flagged `dontcopy`, out
+of the archive on demand, ahead of Setup's normal bulk-copy timing) plus
+`ForceDirectories(ExpandConstant('{app}'))` to manually create the install
+directory early for the log path. A combined throwaway test (dontcopy +
+ExtractTemporaryFile + ForceDirectories + setting the restart flag, all
+from `ssInstall`) confirmed the full chain works: `NeedRestart()` sees the
+flag as `True`, and Setup's own log shows `Need to restart Windows? Yes`.
+
+**The real tradeoff, worked through with direct pushback, not glossed
+over:** moving the silent IDS install to `ssInstall` means sidebyside's
+own files/shortcuts are no longer guaranteed installed before it runs --
+the entire reason `ssPostInstall` was chosen in the first place. Several
+rounds of direct questioning actually about what this protects against in
+practice:
+- A genuine indefinite hang (not a clean error -- those are already
+  caught by the exit-code/log checks either way) is the only scenario
+  where ordering matters at all.
+- Inno has no timeout/cancel on `Exec(..., ewWaitUntilTerminated, ...)`,
+  so a real hang can only ever be resolved by a technician force-killing
+  the process by hand -- there is no automatic rollback in either
+  ordering once that happens; whatever was already written to disk stays
+  written.
+- Without a working system-wide IDS peak install, neither `app.exe` (no
+  instrument cameras) nor `settings.exe` (no IDS devices to detect) can
+  do their real job anyway -- "sidebyside is installed" was overstating
+  the benefit as "sidebyside works," which it doesn't, without IDS peak.
+- The odds of an actual indefinite hang (as opposed to a clean, already-
+  handled error) are low, and `WizardForm.StatusLabel.Caption` already
+  identifies which step is running if a technician comes back to a stuck
+  installer either way.
+
+Net conclusion: the `ssPostInstall` ordering's real remaining benefit was
+narrower than originally presented (diagnostic clarity + not re-doing the
+fast file-copy step on retry, not "a working app"), the failure mode it
+protects against doesn't resolve cleanly under either ordering regardless,
+and the native restart-page UX was worth that narrower tradeoff. Decision:
+switched to `ssInstall`.
+
+**What changed in `packaging/sidebyside.iss`:**
+- `vendor\ids-peak-win-extended-setup-64.exe` and
+  `vendor\{#IdsPeakResponseFile}`'s `[Files]` entries: `deleteafterinstall`
+  → `dontcopy`, moved to the top of `[Files]` (solid-compression
+  decompression cost grows with position in the archive).
+- `InstallIdsPeakSilently()`: calls `ExtractTemporaryFile()` for both,
+  then `ForceDirectories({app})`, before doing anything else. Ends by
+  setting `IdsPeakInstalledThisRun := True` on verified success (the hard-
+  failure and verification-failure `MsgBox`es are unchanged from the
+  previous entry -- those still apply regardless of timing).
+- `NeedRestart()` and the `IdsPeakInstalledThisRun` global are back, this
+  time actually working -- the `TaskDialogMsgBox`/`shutdown.exe` block
+  from the previous entry is removed entirely.
+- `CurStepChanged`: `ssPostInstall` → `ssInstall`.
+
+Verified against the real script compiling cleanly, including the
+`vendor\` files still landing in the compressed archive despite the
+`dontcopy` flag change (confirmed via the compile log's `Compressing:`
+lines). **Not yet re-verified end-to-end in a fresh Sandbox** -- same
+outstanding real test as the previous two entries, now including
+confirming the native Finished-page choice actually appears and that
+choosing "Yes" there genuinely triggers a restart.
