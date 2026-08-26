@@ -61,14 +61,14 @@ class SettingsWindowTest(unittest.TestCase):
         self,
         ids_devices: list = (),
         uvc_devices: list = (),
-        ids_preview_factory=lambda serial: SyntheticCamera(160, 120, fps=30),
-        uvc_preview_factory=lambda index: SyntheticCamera(160, 120, fps=30),
+        instrument_preview_factory=lambda candidate: SyntheticCamera(160, 120, fps=30),
+        uvc_preview_factory=lambda candidate: SyntheticCamera(160, 120, fps=30),
     ) -> SettingsWindow:
         return SettingsWindow(
             config_path=self.config_path,
             list_ids_devices_fn=lambda: list(ids_devices),
             list_uvc_devices_fn=lambda: list(uvc_devices),
-            ids_preview_camera_factory=ids_preview_factory,
+            instrument_preview_camera_factory=instrument_preview_factory,
             uvc_preview_camera_factory=uvc_preview_factory,
         )
 
@@ -175,6 +175,38 @@ class SettingsWindowTest(unittest.TestCase):
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
+
+    def test_bio_row_offers_the_net2860_candidate_after_rescan(self):
+        window = self._make_window()
+
+        bio_keys = {c.key for c in window._instrument_rows["bio"]._candidates}
+        slit_lamp_keys = {c.key for c in window._instrument_rows["slit_lamp"]._candidates}
+
+        self.assertIn("net2860", bio_keys)
+        self.assertNotIn("net2860", slit_lamp_keys)  # BIO-specific, not offered on slit lamp
+
+    def test_selecting_net2860_and_saving_writes_expected_json_shape(self):
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE])
+        _select(window._instrument_rows["slit_lamp"], "111")
+        window._instrument_rows["slit_lamp"].label_edit.setText("Slit Lamp")
+        _select(window._instrument_rows["bio"], "net2860")
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860", "label": "BIO"})
+
+    def test_existing_net2860_config_preselects_it_on_load(self):
+        data = json.loads(json.dumps(VALID_CONFIG))
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO"}
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(uvc_devices=[THIRD_PERSON_DEVICE])
+
+        self.assertEqual(window._instrument_rows["bio"].selected_key(), "net2860")
+        self.assertEqual(window._instrument_rows["bio"].label_text(), "BIO")
 
     def test_calibration_round_trips_through_device_row_into_saved_config(self):
         window = self._make_window(
@@ -316,17 +348,32 @@ class SettingsWindowTest(unittest.TestCase):
     def test_preview_button_uses_the_injected_factory(self):
         calls = []
 
-        def factory(serial):
-            calls.append(serial)
+        def factory(candidate):
+            calls.append(candidate.preview_target)
             return SyntheticCamera(160, 120, fps=30)
 
-        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE], ids_preview_factory=factory)
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE], instrument_preview_factory=factory)
         _select(window._instrument_rows["slit_lamp"], "111")
 
         with patch("settings.PreviewDialog.exec", return_value=None):
             window._instrument_rows["slit_lamp"]._on_preview_clicked()
 
         self.assertEqual(calls, ["111"])
+
+    def test_preview_button_routes_net2860_candidate_through_the_net2860_factory(self):
+        calls = []
+
+        def factory(candidate):
+            calls.append(candidate.kind)
+            return SyntheticCamera(160, 120, fps=30)
+
+        window = self._make_window(instrument_preview_factory=factory)
+        _select(window._instrument_rows["bio"], "net2860")
+
+        with patch("settings.PreviewDialog.exec", return_value=None):
+            window._instrument_rows["bio"]._on_preview_clicked()
+
+        self.assertEqual(calls, ["net2860"])
 
 
 class PreviewDialogTest(unittest.TestCase):

@@ -55,9 +55,16 @@ _UNSET = object()  # sentinel: "no pending preselection", distinct from a real N
 
 @dataclass
 class RowCandidate:
-    key: str | None  # value written to config.json; None if this device can't be saved (see uvc_pid note)
+    # UI-level selection identity (dropdown matching, is_valid()'s "something
+    # is selected" check) -- None if this device can't be saved (see uvc_pid
+    # note). NOT always literally what's written to config.json's "serial":
+    # for kind="net2860" this is a fixed sentinel ("net2860"), since
+    # _instrument_data() writes that kind's config shape from `kind` alone,
+    # not from this key.
+    key: str | None
+    kind: str  # "ids" / "uvc" / "net2860" -- which BaseCamera subclass this becomes
     display_name: str
-    preview_target: object  # what the row's preview_camera_factory is called with
+    preview_target: object  # e.g. serial (ids) / device index (uvc) -- what the preview factory pulls out of this candidate
     source: object  # the original IdsDeviceInfo/UvcDeviceInfo, for pulling extra fields (e.g. friendly_name) at Save time
 
 
@@ -70,20 +77,62 @@ def _default_list_ids_devices() -> list:
     return list_ids_devices()
 
 
-def _default_make_ids_camera(serial: str) -> BaseCamera:
+def _default_make_ids_camera(candidate: RowCandidate) -> BaseCamera:
     from ids_camera import IdsCamera
 
-    return IdsCamera(serial=serial)
+    return IdsCamera(serial=candidate.preview_target)
 
 
-def _default_make_uvc_camera(index: int) -> BaseCamera:
-    return UvcCamera(device=index, name="preview")
+def _default_make_uvc_camera(candidate: RowCandidate) -> BaseCamera:
+    return UvcCamera(device=candidate.preview_target, name="preview")
+
+
+def _default_make_net2860_camera(_candidate: RowCandidate) -> BaseCamera:
+    # Lazy import -- see app.py's _make_camera for why (net2860_camera.py's
+    # default paths assume .venv32/ exists).
+    from net2860_camera import Net2860Camera
+
+    return Net2860Camera(label="preview")
+
+
+def _default_make_instrument_camera(candidate: RowCandidate) -> BaseCamera:
+    """Shared preview factory for both instrument rows (slit lamp, BIO) --
+    branches per-candidate rather than per-row, since the BIO row can offer
+    both "ids" and "net2860" candidates. See DECISIONS.md's "Net2860Camera"
+    entry."""
+    if candidate.kind == "net2860":
+        return _default_make_net2860_camera(candidate)
+    return _default_make_ids_camera(candidate)
 
 
 def _ids_candidates(devices: list) -> list[RowCandidate]:
     return [
-        RowCandidate(key=d.serial, display_name=f"{d.model_name}  (serial {d.serial})", preview_target=d.serial, source=d)
+        RowCandidate(
+            key=d.serial,
+            kind="ids",
+            display_name=f"{d.model_name}  (serial {d.serial})",
+            preview_target=d.serial,
+            source=d,
+        )
         for d in devices
+    ]
+
+
+def _net2860_candidates() -> list[RowCandidate]:
+    """Not device-scanned, unlike _ids_candidates()/_uvc_candidates() --
+    this camera has no device-manager-visible category to enumerate without
+    actually spinning up the 32-bit helper subprocess (see DECISIONS.md's
+    "Net2860Camera" entry), so it's a single static candidate always offered
+    on the BIO row instead. key="net2860" doubles as its own sentinel: there's
+    exactly one of this camera, so no real identity to key off of."""
+    return [
+        RowCandidate(
+            key="net2860",
+            kind="net2860",
+            display_name="Legacy BIO (NET GmbH KS722OUP)",
+            preview_target=None,
+            source=None,
+        )
     ]
 
 
@@ -91,6 +140,7 @@ def _uvc_candidates(devices: list[UvcDeviceInfo]) -> list[RowCandidate]:
     return [
         RowCandidate(
             key=d.vid_pid,
+            kind="uvc",
             display_name=f"{d.name}  ({d.vid_pid})" if d.vid_pid else f"{d.name}  (no VID/PID)",
             preview_target=d.index,
             source=d,
@@ -391,10 +441,14 @@ class PreviewDialog(QDialog):
 class DeviceRow(QWidget):
     """One role's dropdown + (optional) label field + Preview button.
 
-    Generic over instrument roles (IDS devices, editable label, key=serial)
-    and the third-person role (UVC devices, no label, key=vid_pid) -- the
-    difference is entirely in the candidates/factory passed in, not in this
-    class's behavior. See DECISIONS.md.
+    Generic over instrument roles (editable label, one or more candidate
+    kinds -- IDS devices, or IDS devices plus the static net2860 candidate
+    on the BIO row) and the third-person role (UVC devices, no label,
+    key=vid_pid) -- the difference is entirely in the candidates/factory
+    passed in, not in this class's behavior. A row's candidates can mix
+    kinds (the BIO row does); each RowCandidate carries its own `kind` so
+    the (shared) preview factory and Save's config-shape logic branch
+    per-candidate. See DECISIONS.md's "Net2860Camera" entry.
     """
 
     changed = Signal()
@@ -404,7 +458,7 @@ class DeviceRow(QWidget):
         role_key: str,
         title: str,
         has_label: bool,
-        preview_camera_factory: Callable[[object], BaseCamera],
+        preview_camera_factory: Callable[[RowCandidate], BaseCamera],
         supports_calibration: bool = False,
         parent=None,
     ):
@@ -547,7 +601,7 @@ class DeviceRow(QWidget):
         if candidate is None:
             return
         try:
-            camera = self._preview_camera_factory(candidate.preview_target)
+            camera = self._preview_camera_factory(candidate)
         except Exception as exc:
             QMessageBox.warning(self, "Preview failed", str(exc))
             return
@@ -575,8 +629,8 @@ class SettingsWindow(QMainWindow):
         config_path: Path | str = DEFAULT_CONFIG_PATH,
         list_ids_devices_fn: Callable[[], list] = _default_list_ids_devices,
         list_uvc_devices_fn: Callable[[], list[UvcDeviceInfo]] = list_uvc_devices,
-        ids_preview_camera_factory: Callable[[str], BaseCamera] = _default_make_ids_camera,
-        uvc_preview_camera_factory: Callable[[int], BaseCamera] = _default_make_uvc_camera,
+        instrument_preview_camera_factory: Callable[[RowCandidate], BaseCamera] = _default_make_instrument_camera,
+        uvc_preview_camera_factory: Callable[[RowCandidate], BaseCamera] = _default_make_uvc_camera,
     ):
         super().__init__()
         self.setWindowTitle("Camera Settings")
@@ -609,7 +663,7 @@ class SettingsWindow(QMainWindow):
                 key,
                 title,
                 has_label=True,
-                preview_camera_factory=ids_preview_camera_factory,
+                preview_camera_factory=instrument_preview_camera_factory,
                 supports_calibration=True,
             )
             for key, title in ROLE_TITLES.items()
@@ -680,7 +734,10 @@ class SettingsWindow(QMainWindow):
             inst = cfg.instruments.get(key)
             if inst is not None:
                 row.set_label_text(inst.label)
-                row.set_pending_selection(inst.serial)
+                # inst.serial is None for kind="net2860" -- that candidate's
+                # key is the sentinel "net2860" (== inst.kind), not a serial.
+                pending_key = inst.serial if inst.kind == "ids" else inst.kind
+                row.set_pending_selection(pending_key)
                 row.set_calibration(inst.exposure_time_us, inst.gain)
                 row.set_white_balance(inst.red_balance_ratio, inst.blue_balance_ratio)
         self._third_person_row.set_pending_selection(cfg.third_person.vid_pid)
@@ -689,8 +746,12 @@ class SettingsWindow(QMainWindow):
 
     def rescan(self) -> None:
         ids_devices, ids_status = self._safe_list_ids_devices()
-        for row in self._instrument_rows.values():
-            row.set_candidates(_ids_candidates(ids_devices), status=ids_status)
+        ids_candidates = _ids_candidates(ids_devices)
+        for key, row in self._instrument_rows.items():
+            # "bio" only: this camera is a BIO-specific alternative, not a
+            # slit-lamp one -- see DECISIONS.md's "Net2860Camera" entry.
+            candidates = ids_candidates + _net2860_candidates() if key == "bio" else ids_candidates
+            row.set_candidates(candidates, status=ids_status)
 
         uvc_devices = self._list_uvc_devices_fn()
         self._third_person_row.set_candidates(_uvc_candidates(uvc_devices))
@@ -737,6 +798,10 @@ class SettingsWindow(QMainWindow):
         self.save_button.setEnabled(all(row.is_valid() for row in self._all_rows()))
 
     def _instrument_data(self, row: DeviceRow) -> dict:
+        candidate = row.selected_candidate()
+        if candidate is not None and candidate.kind == "net2860":
+            return {"kind": "net2860", "label": row.label_text()}
+
         data = {"kind": "ids", "serial": row.selected_key(), "label": row.label_text()}
         exposure_time_us, gain = row.calibration()
         if exposure_time_us is not None:

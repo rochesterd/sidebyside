@@ -67,7 +67,10 @@ class ConfigError(RuntimeError):
 @dataclass
 class InstrumentConfig:
     kind: str
-    serial: str
+    # None only for kind="net2860" -- that camera has no serial (there's
+    # exactly one of it, no identification scheme; see DECISIONS.md's
+    # "Net2860Camera" entry). Required (non-None) for kind="ids".
+    serial: str | None
     label: str
     # Set only for a camera with no ExposureAuto/GainAuto (the slit lamp) --
     # see ids_camera.py's needs_manual_calibration() and ROADMAP.md's
@@ -149,16 +152,34 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         raise ConfigError(f"{path}: instruments.{key} must be an object. {_FIX_HINT}")
 
     kind = entry.get("kind")
-    if kind != "ids":
-        raise ConfigError(f"{path}: instruments.{key}.kind must be \"ids\", got {kind!r}. {_FIX_HINT}")
-
-    serial = entry.get("serial")
-    if not isinstance(serial, str) or not serial:
-        raise ConfigError(f"{path}: instruments.{key}.serial must be a non-empty string. {_FIX_HINT}")
+    if kind not in ("ids", "net2860"):
+        raise ConfigError(
+            f"{path}: instruments.{key}.kind must be \"ids\" or \"net2860\", got {kind!r}. {_FIX_HINT}"
+        )
 
     label = entry.get("label")
     if not isinstance(label, str) or not label:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
+
+    if kind == "net2860":
+        # No serial (there's exactly one of this camera, no identification
+        # scheme -- see DECISIONS.md's "Net2860Camera" entry) and no
+        # exposure/gain/white-balance calibration (not implemented for this
+        # camera). Rejected loudly rather than silently ignored, so
+        # copy-pasting an "ids" entry and only changing "kind" fails fast
+        # instead of producing a config.json that looks configured but
+        # isn't.
+        unexpected = {"serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio"} & entry.keys()
+        if unexpected:
+            raise ConfigError(
+                f"{path}: instruments.{key} is kind \"net2860\", which doesn't take "
+                f"{', '.join(sorted(unexpected))}. {_FIX_HINT}"
+            )
+        return InstrumentConfig(kind=kind, serial=None, label=label)
+
+    serial = entry.get("serial")
+    if not isinstance(serial, str) or not serial:
+        raise ConfigError(f"{path}: instruments.{key}.serial must be a non-empty string. {_FIX_HINT}")
 
     exposure_time_us = _parse_optional_positive_number(path, f"instruments.{key}.exposure_time_us", entry.get("exposure_time_us"))
     gain = _parse_optional_positive_number(path, f"instruments.{key}.gain", entry.get("gain"))

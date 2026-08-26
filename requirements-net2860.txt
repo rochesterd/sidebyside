@@ -1,0 +1,16 @@
+# Dependencies for the 32-bit helper process (net2860_helper.py) that talks
+# to the older Vantage Plus BIO's NET GmbH KS722OUP camera -- see
+# DECISIONS.md's "Net2860Camera: 32-bit helper process for the older
+# Vantage Plus BIO" entry.
+#
+# Installed into .venv32/ (a separate 32-bit Python environment) by
+# setup_net2860_helper.ps1, NOT into the project's normal .venv -- these
+# packages only matter to net2860_helper.py, which never runs under the
+# main 64-bit interpreter. Deliberately not a subset of requirements.txt:
+# PySide6/av/opencv-python are irrelevant to this helper and some may not
+# even have 32-bit wheels.
+#
+# Versions pinned to what was verified working against the real camera.
+comtypes==1.4.16
+pygrabber==0.2
+numpy==2.5.2

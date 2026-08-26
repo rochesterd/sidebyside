@@ -34,7 +34,14 @@ from PySide6.QtWidgets import (
 
 from camera import BaseCamera
 from compositor import side_by_side
-from config import DEFAULT_RECORDING_FPS, ConfigError, is_frozen, load_config, resolve_default_sessions_dir
+from config import (
+    DEFAULT_RECORDING_FPS,
+    ConfigError,
+    InstrumentConfig,
+    is_frozen,
+    load_config,
+    resolve_default_sessions_dir,
+)
 from kiosk import KioskController, PreflightStatus, State
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
@@ -391,17 +398,29 @@ class KioskWindow(QMainWindow):
 
 
 def _make_camera(
-    serial: str | None,
+    inst: InstrumentConfig,
+    synthetic: bool,
     resolution: tuple[int, int],
     name: str,
-    exposure_time_us: float | None = None,
-    gain: float | None = None,
-    red_balance_ratio: float | None = None,
-    blue_balance_ratio: float | None = None,
     target_fps: float | None = None,
 ) -> BaseCamera:
-    if serial is None:
+    if synthetic:
         return SyntheticCamera(*resolution, name=name, fps=30)
+
+    if inst.kind == "net2860":
+        # Imported lazily, not at module level: net2860_camera.py's default
+        # paths assume .venv32/ exists, which it won't on a dev machine
+        # that never set it up -- same reasoning as ids_camera.py's lazy
+        # import just below. Not actually needed until a "net2860" instrument
+        # is selected, same as ids_camera.py isn't needed until an "ids" one
+        # is. See DECISIONS.md's "Net2860Camera" entry -- no target_fps or
+        # calibration args, neither is implemented for this camera.
+        from net2860_camera import Net2860Camera
+
+        return Net2860Camera(label=name)
+
+    # kind == "ids" -- config.py's _parse_instrument only allows "ids" or
+    # "net2860", and "net2860" was handled above.
     # Imported lazily, not at module level: ids_camera.py pulls in
     # ids_peak/ids_peak_ipl, which aren't installed (or needed) on a dev
     # machine running only with --synthetic -- see CLAUDE.md's Environment
@@ -410,11 +429,11 @@ def _make_camera(
     from ids_camera import IdsCamera
 
     return IdsCamera(
-        serial=serial,
-        exposure_time_us=exposure_time_us,
-        gain=gain,
-        red_balance_ratio=red_balance_ratio,
-        blue_balance_ratio=blue_balance_ratio,
+        serial=inst.serial,
+        exposure_time_us=inst.exposure_time_us,
+        gain=inst.gain,
+        red_balance_ratio=inst.red_balance_ratio,
+        blue_balance_ratio=inst.blue_balance_ratio,
         target_fps=target_fps,
     )
 
@@ -478,7 +497,10 @@ def main() -> int:
 
     logger.info(
         "app starting: instruments=%s third_person_vid_pid=%s instrument_synthetic=%s third_person_synthetic=%s",
-        {key: (None if instrument_synthetic else inst.serial) for key, inst in cfg.instruments.items()},
+        {
+            key: "synthetic" if instrument_synthetic else f"{inst.kind}:{inst.serial}"
+            for key, inst in cfg.instruments.items()
+        },
         cfg.third_person.vid_pid,
         instrument_synthetic,
         third_person_synthetic,
@@ -486,13 +508,10 @@ def main() -> int:
 
     instruments = {
         key: _make_camera(
-            None if instrument_synthetic else inst.serial,
+            inst,
+            instrument_synthetic,
             INSTRUMENT_SYNTHETIC_RESOLUTIONS.get(key, DEFAULT_SYNTHETIC_RESOLUTION),
             key,
-            exposure_time_us=inst.exposure_time_us,
-            gain=inst.gain,
-            red_balance_ratio=inst.red_balance_ratio,
-            blue_balance_ratio=inst.blue_balance_ratio,
             target_fps=cfg.recording.fps,
         )
         for key, inst in cfg.instruments.items()

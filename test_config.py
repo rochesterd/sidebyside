@@ -93,6 +93,48 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(self.path)
 
+    def test_net2860_instrument_loads_with_no_serial(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO"}
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["bio"].kind, "net2860")
+        self.assertIsNone(cfg.instruments["bio"].serial)
+        self.assertEqual(cfg.instruments["bio"].label, "BIO")
+
+    def test_net2860_instrument_rejects_serial(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "serial": "222"}
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_net2860_instrument_rejects_calibration_fields(self):
+        for field, value in [
+            ("exposure_time_us", 1000.0),
+            ("gain", 2.0),
+            ("red_balance_ratio", 1.5),
+            ("blue_balance_ratio", 1.5),
+        ]:
+            with self.subTest(field=field):
+                data = json.loads(json.dumps(VALID))
+                data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", field: value}
+                self._write(data)
+
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+    def test_net2860_instrument_still_requires_label(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860"}
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
     def test_missing_third_person_raises(self):
         data = json.loads(json.dumps(VALID))
         del data["third_person"]

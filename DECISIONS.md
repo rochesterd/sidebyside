@@ -1922,3 +1922,223 @@ lower risk, though their real-device *effect* still isn't verified. Full
 test suite (134 tests) passes; nothing IDS-node-specific has
 `test_ids_camera.py` coverage since `ids_peak` isn't importable here, same
 precedent the exposure/gain feature was already shipped under.
+
+---
+
+## 2026-08-26 — `Net2860Camera`: 32-bit helper process for the older Vantage Plus BIO
+
+**Decided:** A second, older-model Keeler Vantage Plus Digital BIO was
+connected for testing. Built and hardware-verified `Net2860Camera`, a new
+`BaseCamera` implementation for it, plus a 32-bit helper subprocess
+(`net2860_helper.py`) and a small framed stdout protocol
+(`net2860_protocol.py`) between the two. Not yet wired into
+`config.py`/`app.py`/`kiosk.py`/`settings.py` -- this entry covers only the
+camera module itself; making it selectable end-to-end in the running kiosk
+app is separate follow-up work (`kiosk.py` needs zero changes for that
+when it happens -- confirmed it's already generic over `BaseCamera` and
+never branches on `InstrumentConfig.kind`).
+
+**Hardware identity:** Not IDS Imaging hardware (VID `0x1409`) at all --
+raw USB descriptor shows VID `0x20F1` (NET GmbH), PID `0x0004`,
+`bInterfaceClass = 0xFF` (Vendor Specific, i.e. not UVC). Opening the unit
+confirmed the actual capture silicon is an eMPIA EM2860 USB video bridge
+chip (marking on the board: "eMPIA EM2860 PGNA7-014 1510-01AG"), OEM'd by
+NET GmbH under their own VID/PID with their own driver rather than eMPIA's
+reference identity (`0xEB1A`). The sensor line is a 1/2" CCD (NET GmbH
+"KS722OUP" board), interlaced PAL, negotiating `720x576` in practice
+(device-derived at runtime, not hardcoded -- see below).
+
+**Why neither `ids_camera.py` nor `uvc_camera.py` can see it:** No
+GenICam/USB3 Vision presence (not IDS hardware). No UVC/DirectShow-
+video-capture-source-category presence either -- confirmed via
+`uvc_enumeration.list_uvc_devices()`, which only saw the laptop's built-in
+webcam and a phone virtual camera. The vendor driver (`net2860_usbx64.sys`
++ `netvecam4.ax`) registers a DirectShow filter as an ordinary COM class
+(`{6B83EF35-8FB5-45CB-BFF4-0876FF6F31D5}`, registered name `"KS722OUP"`)
+but NOT under `CLSID_VideoInputDeviceCategory`, so nothing that discovers
+capture devices by enumeration (OpenCV, `pygrabber`, this project's own
+`uvc_enumeration.py`) can find it. It has to be instantiated directly by
+CLSID -- confirmed this is exactly the mechanism Keeler's own bundled app
+("Kapture") uses internally, by reading `Kapture`'s `Logs\Capture.log`
+(`AddFilterbyCLSID Name,pF = USB source,...`) from a prior Kapture install
+already present on the dev machine. Kapture itself was not used or needed
+for any part of this -- its license only gates its own app UI, not the
+driver/filter, which is an ordinary Windows COM component independent of
+it.
+
+**Why a 32-bit helper subprocess, not in-process:** Every user-mode piece
+of this vendor filter (`netvecam4.ax`, and the `Sample Grabber`/`qedit.dll`
+registration used alongside it) is registered only in the WOW6432Node
+(32-bit) COM view -- confirmed by reading PE headers directly:
+`net2860_usbx64.sys` (kernel driver) is native x64, but `netvecam4.ax`,
+`NET_USBIO_EMP1.dll`, and Kapture's own `Kapture.exe`/`VC2860.exe` are all
+x86. File dates suggest this is simply a 2011 shipping decision NET GmbH
+never revisited (the kernel driver is dated 2009, already 64-bit; the
+32-bit-only user-mode filter is dated two years later) rather than a
+technical requirement -- the product line appears dead since (NET GmbH's
+current site has moved on to unrelated GenICam/USB3/GigE Vision products).
+The project's venv Python is 64-bit, so this camera's capture code cannot
+run in the same process as the rest of `sidebyside`; `net2860_camera.py`
+launches a 32-bit Python subprocess (`net2860_helper.py`, under a separate
+`.venv32/` -- see `setup_net2860_helper.ps1`) that does the actual
+DirectShow work and streams frames back over a pipe. This mirrors
+CLAUDE.md's "nothing outside a camera module may reference the vendor SDK"
+rule, with the process boundary standing in for the module boundary
+`ids_camera.py`/`uvc_camera.py` normally provide on their own --
+`net2860_camera.py` itself never imports `comtypes`/`pygrabber`.
+
+**Generic eMPIA driver considered and rejected:** Microsoft's own Update
+Catalog (WHQL-signed, downloaded directly from
+`catalog.s.download.windowsupdate.com`) has a genuine 64-bit eMPIA EM28xx
+driver package (`emPRP64.ax`, `emBDA64.sys`, `emOEM64.sys`, dated 2015),
+which would have eliminated the 32-bit constraint entirely. Rejected after
+inspecting its `.inf`: all 54 hardware IDs it declares use eMPIA's own
+reference VID (`0xEB1A`) only -- none match NET GmbH's OEM VID
+(`0x20F1&PID_0004`). Using it would require hand-editing the INF to add
+our hardware ID and enabling machine-wide test-signing mode (both kernel
+drivers in the package are unsigned once the INF is modified) -- a
+security-posture change affecting the whole machine, for an unverified
+payoff (no guarantee this differently-designed board even initializes
+correctly under a generic reference driver). The proven CLSID/32-bit-helper
+path was already working by the time this was evaluated; not worth the
+risk for an uncertain improvement.
+
+**Wire protocol (`net2860_protocol.py`), why not named pipe/socket/shared
+memory:** A subprocess stdout pipe with a small framed protocol (`RDY1`
+handshake carrying device-derived resolution, `FRM1` per frame, `ERR1` on
+failure) is the simplest correct option for what is always a 1:1
+parent/child relationship -- process lifetime and pipe lifetime are
+naturally tied together (no separate handle/port/segment to leak or clean
+up), and it needed no new project dependency. Frame timestamps are
+`time.monotonic()` taken in the helper at the moment its
+`ISampleGrabberCB.BufferCB` callback fires, which is valid to compare
+against the main process's own `time.monotonic()` since Windows'
+monotonic clock (`QueryPerformanceCounter`) is one system-wide clock
+domain, not per-process.
+
+**`Frame.index` deviation:** Assigned by `net2860_helper.py`, incrementing
+once per `BufferCB` callback -- not a vendor-reported sequence number,
+since this filter's frame-numbering (if it has one at all) isn't
+documented or observed anywhere, and inventing a read of one would be
+guessing at an undocumented API surface the same way CLAUDE.md already
+warns against for the IDS SDK. Same accepted deviation `uvc_camera.py`'s
+`UvcCamera` already makes from `ids_camera.py`'s contract (a
+locally-assigned counter standing in for a real FrameID), but assigned by
+the helper rather than by `Net2860Camera` itself, since the helper is the
+component actually sitting at the capture callback -- `net2860_camera.py`
+is one pipe-read removed from that boundary, and re-counting there would
+only count "frames this process happened to read," not "frames the source
+produced."
+
+**Verified against real hardware:** `tools/smoke_test_net2860_camera.py`
+against the real camera through the actual `Net2860Camera`/`BaseCamera`
+capture thread (not a standalone script): resolution negotiated as
+`720x576`; 30 frames captured via `camera.read()` at roughly 14fps;
+`Frame.index` increments contiguously 0-29 with no gaps. Captured image
+content is real sensor noise (confirmed non-corrupted, non-garbage pixel
+data) rather than a real picture, because the BIO's own illumination
+wasn't on and it wasn't pointed at anything during this test -- a physical
+setup issue, not a software one; see the mechanism verification earlier in
+this investigation for the equivalent finding via a scratch proof-of-concept
+before this module existed. Full test suite (158 tests) passes, including
+new `test_net2860_protocol.py` (pure wire-format round-trip/error-case
+tests, no mocking needed) and `test_net2860_camera.py` (mocks
+`subprocess.Popen`, same boundary-mocking pattern `test_uvc_camera.py`
+uses for `cv2.VideoCapture`) -- no `test_ids_camera.py`-style gap here,
+since both are fully offline/hardware-independent.
+
+**What's NOT done, stated plainly:** Not wired into
+`config.py`/`app.py`/`kiosk.py`/`settings.py` -- this camera is not yet
+selectable in the running app. Not packaged -- `net2860_helper.py` is not
+frozen into a standalone exe, so a clinic install would currently need a
+32-bit Python present, which `PACKAGING.md`'s frozen-exe distribution
+model doesn't provide; freezing it is real, separate future work. No
+`IAMStreamConfig`-based frame-rate control (mirroring `UvcCamera.
+_apply_frame_rate_cap`) -- this vendor filter's stream-config support
+hasn't been observed or tested, so it isn't claimed. `SUPPORTED_HARDWARE.md`
+lists this under a new "Prototyped, not yet integrated" section rather
+than "Confirmed tested" -- it doesn't fit that table's implicit "usable in
+the app today" meaning (it isn't wired in or packaged), but calling it
+merely "untested" alongside things nobody has ever tried would undersell
+the real hardware verification above.
+
+---
+
+## 2026-08-26 — `Net2860Camera` wired into `config.py`/`app.py`/`settings.py`, real recording verified
+
+**Decided:** Wired the previous entry's `Net2860Camera` into the running app
+as `kind: "net2860"`, an alternative to `kind: "ids"` for the existing `bio`
+instrument role -- not a new role. `kiosk.py` needed zero changes (confirmed:
+already fully generic over `BaseCamera`, never branches on `kind`); the
+picker still shows exactly two buttons.
+
+**`config.py`:** `InstrumentConfig.serial` becomes `str | None`.
+`_parse_instrument()` accepts `kind: "net2860"`, requiring only `label` and
+loudly rejecting `serial`/`exposure_time_us`/`gain`/`red_balance_ratio`/
+`blue_balance_ratio` if present (catches copy-pasting an `"ids"` entry and
+only changing `kind`, rather than silently ignoring the leftover fields).
+
+**`app.py`:** `_make_camera()` had no real `kind` dispatch before this --
+it inferred real-vs-synthetic from `serial is None` and always built an
+`IdsCamera`. Now takes the whole `InstrumentConfig` plus an explicit
+`synthetic: bool`, branching on `inst.kind` (`net2860` -> lazily-imported
+`Net2860Camera(label=name)`, same lazy-import-avoids-a-hard-dependency
+reasoning as the existing `ids_camera` import).
+
+**`settings.py`:** the BIO row's dropdown needed a net2860 candidate
+alongside real IDS devices, but this camera has no device-manager-visible
+category to enumerate (see the previous entry) -- so it's a **static**
+candidate (`_net2860_candidates()`), always offered, BIO row only, not
+device-scanned. `RowCandidate` gained a `kind` field so a row can mix
+candidate kinds; the preview factory (`ids_preview_camera_factory` ->
+`instrument_preview_camera_factory`) now receives the whole candidate and
+branches on `.kind` instead of always building an `IdsCamera`. Save
+(`_instrument_data()`) branches the same way, writing `{"kind": "net2860",
+"label": ...}` with no `serial`/calibration keys. Load
+(`_load_existing_config()`) preselects via `inst.kind` rather than
+`inst.serial` when the kind isn't `"ids"` -- the static candidate's
+`key="net2860"` doubles as its own sentinel, since there's exactly one of
+this camera to select.
+
+**Verified end-to-end with real hardware, headlessly** (no GUI-automation
+tool available, so driven through the same production code the GUI calls --
+`kiosk.py` is documented as "unit-testable headlessly" for exactly this
+reason):
+1. `settings.py` with real enumeration/factories: `rescan()` lists the
+   net2860 candidate on the BIO row only; selecting it and calling the real
+   `_instrument_data()` produces `{"kind": "net2860", "label": "BIO
+   (legacy)"}`; the real default preview factory builds a working
+   `Net2860Camera` that starts and returns a real frame
+   (`shape=(576, 720, 3)`).
+2. `app.py`'s real `_make_camera()` with a real `InstrumentConfig(kind=
+   "net2860", ...)` and `synthetic=False` returns a working `Net2860Camera`
+   producing real frames -- confirms the dispatch itself, not just that the
+   class works standalone.
+3. A full real recording via a real `KioskController` (real `Net2860Camera`
+   for `bio`, the real UVC "Integrated Webcam" for third-person, no slit
+   lamp -- none is attached to this dev machine right now, and
+   `KioskController` doesn't require exactly two instruments): reached
+   `READY`, recorded 3 real seconds, produced a real `composite.mp4`
+   (2,739,629 bytes) and `session.json` with sane numbers -- composite
+   `1360x576` (720+640 wide, `max(576, 480)` tall, matching
+   `side_by_side`'s aspect-preserving letterbox), 31 composite frames at
+   the 10fps target over ~3.1s. `bio`'s `dropped_frames: 46` against 31
+   delivered is expected, not a bug -- the net2860 camera free-runs faster
+   than the 10fps recording target used for this test, and
+   `recorder.py`'s `_drain_latest()` deliberately discards the excess
+   (CLAUDE.md: "prefer dropping frames over blocking a capture thread"),
+   showing up correctly in the drop count exactly the way real hardware
+   drops do.
+
+**Tests:** `test_config.py` gained 4 cases (valid net2860 parse; rejects
+`serial`; rejects each calibration field; still requires `label`).
+`test_settings.py`'s `_make_window()` fixture updated (factory now receives
+a candidate, not a bare target) plus 5 new cases (BIO-only candidate
+presence, save shape, load preselection, preview routing). Full suite: 166
+tests, all passing.
+
+**What's still NOT done:** Packaging -- `net2860_helper.py` isn't frozen
+into a standalone exe, so a clinic install built via `PACKAGING.md`'s
+current process still needs a 32-bit Python present, which it doesn't
+provide. Explicitly the next, separate step (per the user: wire in and
+confirm it works first, then decide on packaging).
