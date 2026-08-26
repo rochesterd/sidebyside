@@ -331,6 +331,66 @@ directly.
   dependency entirely. Every session gets whatever `config.json` says,
   deterministically.
 
+### Calibration UX (added 2026-08-25, still not built): auto-calibrate
+### assist, not sliders alone
+
+Worked through against the actual constraints this feature has to fit,
+before writing any code:
+
+- **Who does this and how skilled are they.** Never a student (Settings
+  is technician-only, per CLAUDE.md's "Who uses it"). The technician
+  isn't necessarily a machine-vision or photography person either —
+  today's process (IDS peak Cockpit) only assumes someone comfortable
+  dragging a slider and judging a live image by eye. That's the right
+  skill level to design for, not photometry knowledge, and not "no
+  knowledge at all" either.
+- **No physical tools available or needed.** No light meter, no
+  reference chart — whatever the calibration process measures has to
+  come from the image itself, in software.
+- **Lighting is instrument-controlled, not ambient.** The slit lamp
+  supplies its own illumination; once positioned, sensor brightness is
+  mostly a function of the instrument's own lamp intensity, not the
+  room. That determinism is exactly what makes a *software* auto-
+  calibrate viable at all — the scene isn't something that needs
+  re-tuning per session or per room, just once per instrument/camera
+  pairing.
+- **Why sliders alone (the originally planned design, above) aren't
+  enough on their own.** They reduce to the same "eyeball it and hope"
+  process Cockpit already was — no reproducibility between technicians
+  or installs, and no way to verify a slider-guess was actually good,
+  which is the same gap this whole entry exists to close. Pure manual
+  entry of raw `ExposureTime`/`Gain` numbers is worse still — too
+  technical for the target skill level, useful only as a readout of
+  current values, not as the primary interaction.
+
+**Resulting design direction:** a one-shot "auto-calibrate" button
+alongside the sliders, not instead of them.
+
+- Auto-calibrate is a *software* algorithm this codebase runs once when
+  the technician clicks it — not the hardware's own `ExposureAuto`/
+  `GainAuto` (which this camera doesn't have) and not a continuous loop
+  running during real recording. Capture a handful of live frames,
+  compute the image's **median** brightness (robust against a bright
+  reflection or dark surround skewing a plain mean), compare to a target
+  brightness, adjust `ExposureTime`/`Gain` proportionally, repeat for a
+  bounded number of iterations, stop.
+- **Raise `ExposureTime` before `Gain`** when more brightness is needed,
+  falling back to `Gain` only once exposure time is maxed or
+  impractically slow. Gain amplifies sensor noise, exposure time
+  doesn't — worth the explicit priority since this footage gets reviewed
+  by students studying their own technique, where noise costs more than
+  it would in a typical machine-vision application.
+- Sliders stay as the override/fallback for whatever the algorithm gets
+  wrong (a hot reflection off a metal instrument part, an unusual scene)
+  — auto-calibrate proposes a starting point, the technician can still
+  nudge it watching the live preview, not an either/or.
+
+None of this changes the "Planned design" section above (sliders in
+`PreviewDialog`, values persisted in `config.json`, applied by
+`ids_camera.py`'s `_open()` every session) — it's specifically about
+*how the technician arrives at good values* in the first place, which
+that section left as "eyeball it," same as Cockpit did.
+
 ### Rejected: a runtime brightness preflight check
 
 Considered as an alternative way to catch a bad calibration — `kiosk.py`
@@ -345,8 +405,9 @@ instead of trying to heuristically detect its absence at runtime.
 
 ### Status
 
-Not built — explicitly deferred ("at some point," not now). Tracked here
-so the design doesn't need to be re-derived when it's picked up.
+Not built — explicitly deferred ("at some point," not now). Tracked here,
+including the 2026-08-25 calibration-UX refinement above, so none of this
+design needs to be re-derived when it's picked up.
 
 ---
 
