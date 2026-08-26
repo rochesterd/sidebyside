@@ -176,6 +176,84 @@ class SettingsWindowTest(unittest.TestCase):
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
 
+    def test_calibration_round_trips_through_device_row_into_saved_config(self):
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+        row.label_edit.setText("Slit Lamp")
+
+        with patch("settings.PreviewDialog") as mock_dialog_cls:
+            mock_dialog = mock_dialog_cls.return_value
+            mock_dialog.calibration_supported = True
+            mock_dialog.final_exposure_time_us = 12345.0
+            mock_dialog.final_gain = 3.5
+            mock_dialog.white_balance_supported = False
+            row._on_preview_clicked()
+
+        self.assertEqual(row.calibration(), (12345.0, 3.5))
+
+        _select(window._instrument_rows["bio"], "222")
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["instruments"]["slit_lamp"]["exposure_time_us"], 12345.0)
+        self.assertEqual(written["instruments"]["slit_lamp"]["gain"], 3.5)
+
+    def test_calibration_not_persisted_when_preview_camera_lacks_it(self):
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+
+        with patch("settings.PreviewDialog") as mock_dialog_cls:
+            mock_dialog_cls.return_value.calibration_supported = False
+            mock_dialog_cls.return_value.white_balance_supported = False
+            row._on_preview_clicked()
+
+        self.assertEqual(row.calibration(), (None, None))
+
+    def test_white_balance_round_trips_through_device_row_into_saved_config(self):
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+        row.label_edit.setText("Slit Lamp")
+
+        with patch("settings.PreviewDialog") as mock_dialog_cls:
+            mock_dialog = mock_dialog_cls.return_value
+            mock_dialog.calibration_supported = False
+            mock_dialog.white_balance_supported = True
+            mock_dialog.final_red_balance_ratio = 1.8
+            mock_dialog.final_blue_balance_ratio = 2.1
+            row._on_preview_clicked()
+
+        self.assertEqual(row.white_balance(), (1.8, 2.1))
+
+        _select(window._instrument_rows["bio"], "222")
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["instruments"]["slit_lamp"]["red_balance_ratio"], 1.8)
+        self.assertEqual(written["instruments"]["slit_lamp"]["blue_balance_ratio"], 2.1)
+
+    def test_white_balance_not_persisted_when_preview_camera_lacks_it(self):
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+
+        with patch("settings.PreviewDialog") as mock_dialog_cls:
+            mock_dialog_cls.return_value.calibration_supported = False
+            mock_dialog_cls.return_value.white_balance_supported = False
+            row._on_preview_clicked()
+
+        self.assertEqual(row.white_balance(), (None, None))
+
     def test_rescan_preserves_a_still_present_selection(self):
         window = self._make_window(
             ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
@@ -262,6 +340,187 @@ class PreviewDialogTest(unittest.TestCase):
         finally:
             dialog.close()
         self.assertIsNone(camera._thread)  # stopped by closeEvent
+
+    def test_camera_without_needs_manual_calibration_shows_no_calibration_controls(self):
+        from settings import PreviewDialog
+
+        camera = SyntheticCamera(160, 120, fps=30)  # no needs_manual_calibration() at all
+        dialog = PreviewDialog(camera, "Test")
+        try:
+            self.assertFalse(dialog.calibration_supported)
+            self.assertFalse(hasattr(dialog, "exposure_slider"))
+        finally:
+            dialog.close()
+
+
+class _FakeCalibratableCamera(SyntheticCamera):
+    """Stands in for an IdsCamera lacking ExposureAuto/GainAuto/
+    BalanceWhiteAuto (the slit lamp plausibly lacks all three) -- exercises
+    PreviewDialog's exposure/gain *and* white-balance branches headlessly,
+    without the IDS peak SDK. Extended in place (rather than a second fake)
+    specifically so the "both blocks visible at once" case is directly
+    testable against one camera.
+    """
+
+    def __init__(self):
+        super().__init__(160, 120, fps=30)
+        self._exposure_time_us = 1000.0
+        self._gain = 2.0
+        self._red_balance_ratio = 1.5
+        self._blue_balance_ratio = 1.2
+
+    def needs_manual_calibration(self) -> bool:
+        return True
+
+    def get_exposure_time_us(self) -> float:
+        return self._exposure_time_us
+
+    def set_exposure_time_us(self, value: float) -> None:
+        self._exposure_time_us = value
+
+    def exposure_time_range_us(self) -> tuple[float, float]:
+        return (100.0, 10_000.0)
+
+    def get_gain(self) -> float:
+        return self._gain
+
+    def set_gain(self, value: float) -> None:
+        self._gain = value
+
+    def gain_range(self) -> tuple[float, float]:
+        return (1.0, 8.0)
+
+    def auto_calibrate(self, **_kwargs) -> bool:
+        self._exposure_time_us = 4000.0
+        self._gain = 3.0
+        return True
+
+    def needs_manual_white_balance(self) -> bool:
+        return True
+
+    def get_red_balance_ratio(self) -> float:
+        return self._red_balance_ratio
+
+    def set_red_balance_ratio(self, value: float) -> None:
+        self._red_balance_ratio = value
+
+    def red_balance_ratio_range(self) -> tuple[float, float]:
+        return (0.5, 4.0)
+
+    def get_blue_balance_ratio(self) -> float:
+        return self._blue_balance_ratio
+
+    def set_blue_balance_ratio(self, value: float) -> None:
+        self._blue_balance_ratio = value
+
+    def blue_balance_ratio_range(self) -> tuple[float, float]:
+        return (0.5, 4.0)
+
+    def auto_white_balance(self, **_kwargs) -> bool:
+        self._red_balance_ratio = 1.9
+        self._blue_balance_ratio = 2.2
+        return True
+
+
+class PreviewDialogCalibrationTest(unittest.TestCase):
+    def test_calibratable_camera_shows_sliders_seeded_from_its_current_values(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            self.assertTrue(dialog.calibration_supported)
+            self.assertEqual(dialog.exposure_slider.value(), 1000)
+            self.assertEqual(dialog.final_exposure_time_us, 1000.0)
+            self.assertEqual(dialog.final_gain, 2.0)
+        finally:
+            dialog.close()
+
+    def test_initial_calibration_is_applied_before_reading_slider_seed(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp", initial_exposure_time_us=5000.0, initial_gain=4.0)
+        try:
+            self.assertEqual(camera.get_exposure_time_us(), 5000.0)
+            self.assertEqual(dialog.final_gain, 4.0)
+        finally:
+            dialog.close()
+
+    def test_auto_calibrate_button_updates_sliders_and_final_values(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            dialog._on_calibrate_clicked()
+            self.assertEqual(dialog.final_exposure_time_us, 4000.0)
+            self.assertEqual(dialog.final_gain, 3.0)
+            self.assertEqual(dialog.exposure_slider.value(), 4000)
+            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+        finally:
+            dialog.close()
+
+    def test_white_balance_sliders_seeded_from_current_values(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            self.assertTrue(dialog.white_balance_supported)
+            self.assertEqual(dialog.red_balance_slider.value(), 150)  # 1.5 * scale(100)
+            self.assertEqual(dialog.final_red_balance_ratio, 1.5)
+            self.assertEqual(dialog.final_blue_balance_ratio, 1.2)
+        finally:
+            dialog.close()
+
+    def test_initial_white_balance_is_applied_before_reading_slider_seed(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(
+            camera, "Slit Lamp", initial_red_balance_ratio=2.5, initial_blue_balance_ratio=3.0
+        )
+        try:
+            self.assertEqual(camera.get_red_balance_ratio(), 2.5)
+            self.assertEqual(dialog.final_blue_balance_ratio, 3.0)
+        finally:
+            dialog.close()
+
+    def test_auto_white_balance_button_updates_sliders_and_final_values(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            dialog._on_white_balance_clicked()
+            self.assertEqual(dialog.final_red_balance_ratio, 1.9)
+            self.assertEqual(dialog.final_blue_balance_ratio, 2.2)
+            self.assertEqual(dialog.red_balance_slider.value(), 190)
+            self.assertEqual(dialog.white_balance_status_label.text(), "Calibrated.")
+        finally:
+            dialog.close()
+
+    def test_exposure_gain_and_white_balance_status_labels_stay_independent(self):
+        """A camera lacking both ExposureAuto/GainAuto and BalanceWhiteAuto
+        shows both control blocks at once -- calibrating one must not
+        clobber the other's status message. This is why the two blocks
+        use separate status labels rather than a shared one.
+        """
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            dialog._on_calibrate_clicked()
+            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+            self.assertEqual(dialog.white_balance_status_label.text(), "")
+
+            dialog._on_white_balance_clicked()
+            self.assertEqual(dialog.white_balance_status_label.text(), "Calibrated.")
+            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+        finally:
+            dialog.close()
 
 
 if __name__ == "__main__":

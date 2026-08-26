@@ -168,6 +168,91 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual(cfg.instruments["slit_lamp"].serial, "111")
 
+    def test_missing_exposure_gain_default_to_none(self):
+        self._write(VALID)
+        cfg = load_config(self.path)
+
+        self.assertIsNone(cfg.instruments["slit_lamp"].exposure_time_us)
+        self.assertIsNone(cfg.instruments["slit_lamp"].gain)
+
+    def test_exposure_gain_are_parsed_when_present(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 15000
+        data["instruments"]["slit_lamp"]["gain"] = 2.5
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["slit_lamp"].exposure_time_us, 15000.0)
+        self.assertEqual(cfg.instruments["slit_lamp"].gain, 2.5)
+
+    def test_zero_exposure_time_us_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 0
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_negative_gain_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["gain"] = -1.0
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_wrong_typed_exposure_time_us_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = "fast"
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_missing_red_blue_balance_ratio_default_to_none(self):
+        self._write(VALID)
+        cfg = load_config(self.path)
+
+        self.assertIsNone(cfg.instruments["slit_lamp"].red_balance_ratio)
+        self.assertIsNone(cfg.instruments["slit_lamp"].blue_balance_ratio)
+
+    def test_red_blue_balance_ratio_are_parsed_when_both_present(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["red_balance_ratio"] = 1.8
+        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["slit_lamp"].red_balance_ratio, 1.8)
+        self.assertEqual(cfg.instruments["slit_lamp"].blue_balance_ratio, 2.1)
+
+    def test_only_red_balance_ratio_present_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["red_balance_ratio"] = 1.8
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_only_blue_balance_ratio_present_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+    def test_negative_red_balance_ratio_raises(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["red_balance_ratio"] = -1.0
+        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
     def test_missing_sessions_dir_defaults_to_none(self):
         self._write(VALID)
         cfg = load_config(self.path)

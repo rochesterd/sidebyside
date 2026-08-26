@@ -390,7 +390,16 @@ class KioskWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> BaseCamera:
+def _make_camera(
+    serial: str | None,
+    resolution: tuple[int, int],
+    name: str,
+    exposure_time_us: float | None = None,
+    gain: float | None = None,
+    red_balance_ratio: float | None = None,
+    blue_balance_ratio: float | None = None,
+    target_fps: float | None = None,
+) -> BaseCamera:
     if serial is None:
         return SyntheticCamera(*resolution, name=name, fps=30)
     # Imported lazily, not at module level: ids_camera.py pulls in
@@ -400,13 +409,22 @@ def _make_camera(serial: str | None, resolution: tuple[int, int], name: str) -> 
     # break `python app.py --synthetic` on such a machine.
     from ids_camera import IdsCamera
 
-    return IdsCamera(serial=serial)
+    return IdsCamera(
+        serial=serial,
+        exposure_time_us=exposure_time_us,
+        gain=gain,
+        red_balance_ratio=red_balance_ratio,
+        blue_balance_ratio=blue_balance_ratio,
+        target_fps=target_fps,
+    )
 
 
-def _make_third_person_camera(vid_pid: str | None, synthetic: bool, name: str) -> BaseCamera:
+def _make_third_person_camera(
+    vid_pid: str | None, synthetic: bool, name: str, target_fps: float | None = None
+) -> BaseCamera:
     if synthetic:
         return SyntheticCamera(*THIRD_PERSON_SYNTHETIC_RESOLUTION, name=name, fps=30)
-    return UvcCamera(vid_pid=vid_pid, name=name)
+    return UvcCamera(vid_pid=vid_pid, name=name, target_fps=target_fps)
 
 
 def main() -> int:
@@ -471,10 +489,17 @@ def main() -> int:
             None if instrument_synthetic else inst.serial,
             INSTRUMENT_SYNTHETIC_RESOLUTIONS.get(key, DEFAULT_SYNTHETIC_RESOLUTION),
             key,
+            exposure_time_us=inst.exposure_time_us,
+            gain=inst.gain,
+            red_balance_ratio=inst.red_balance_ratio,
+            blue_balance_ratio=inst.blue_balance_ratio,
+            target_fps=cfg.recording.fps,
         )
         for key, inst in cfg.instruments.items()
     }
-    third_person = _make_third_person_camera(cfg.third_person.vid_pid, third_person_synthetic, "third-person")
+    third_person = _make_third_person_camera(
+        cfg.third_person.vid_pid, third_person_synthetic, "third-person", target_fps=cfg.recording.fps
+    )
     instrument_labels = {key: inst.label for key, inst in cfg.instruments.items()}
     output_root = cfg.sessions_dir if cfg.sessions_dir is not None else resolve_default_sessions_dir()
     window = KioskWindow(

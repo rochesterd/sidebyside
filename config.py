@@ -69,6 +69,21 @@ class InstrumentConfig:
     kind: str
     serial: str
     label: str
+    # Set only for a camera with no ExposureAuto/GainAuto (the slit lamp) --
+    # see ids_camera.py's needs_manual_calibration() and ROADMAP.md's
+    # "In-app exposure/gain calibration" entry. None means "let
+    # _converge_auto_nodes() handle this axis," the same as before these
+    # fields existed -- every config.json written before this is still valid.
+    exposure_time_us: float | None = None
+    gain: float | None = None
+    # Set only for a camera with no BalanceWhiteAuto -- see ids_camera.py's
+    # needs_manual_white_balance() and ROADMAP.md's 2026-08-26 entry. Unlike
+    # exposure_time_us/gain (independent axes), these two are validated as a
+    # pair: BalanceWhiteAuto=Once converges both together, so there's no
+    # "auto blue, manual red" -- _parse_instrument() rejects exactly one
+    # being present.
+    red_balance_ratio: float | None = None
+    blue_balance_ratio: float | None = None
 
 
 @dataclass
@@ -145,7 +160,39 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
     if not isinstance(label, str) or not label:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
 
-    return InstrumentConfig(kind=kind, serial=serial, label=label)
+    exposure_time_us = _parse_optional_positive_number(path, f"instruments.{key}.exposure_time_us", entry.get("exposure_time_us"))
+    gain = _parse_optional_positive_number(path, f"instruments.{key}.gain", entry.get("gain"))
+
+    red_balance_ratio = _parse_optional_positive_number(
+        path, f"instruments.{key}.red_balance_ratio", entry.get("red_balance_ratio")
+    )
+    blue_balance_ratio = _parse_optional_positive_number(
+        path, f"instruments.{key}.blue_balance_ratio", entry.get("blue_balance_ratio")
+    )
+    if (red_balance_ratio is None) != (blue_balance_ratio is None):
+        raise ConfigError(
+            f"{path}: instruments.{key} must set both red_balance_ratio and blue_balance_ratio, "
+            f"or neither -- BalanceWhiteAuto converges them together, there's no partial manual "
+            f"white balance. {_FIX_HINT}"
+        )
+
+    return InstrumentConfig(
+        kind=kind,
+        serial=serial,
+        label=label,
+        exposure_time_us=exposure_time_us,
+        gain=gain,
+        red_balance_ratio=red_balance_ratio,
+        blue_balance_ratio=blue_balance_ratio,
+    )
+
+
+def _parse_optional_positive_number(path: Path, field_name: str, value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"{path}: {field_name} must be a positive number. {_FIX_HINT}")
+    return float(value)
 
 
 def _parse_third_person(path: Path, entry: dict) -> ThirdPersonConfig:

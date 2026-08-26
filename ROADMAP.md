@@ -270,10 +270,11 @@ isn't re-derived from scratch later; none of these are committed work.
   same `recording` config section `fps` already lives in, if a real need
   shows up (e.g. an institution needs smaller files than 23 gives).
 - **White balance is uncorrected on the IDS cameras** — no
-  `BalanceWhiteAuto` handling anywhere in `ids_camera.py`. Deliberately
-  not planned: the use case is technique review (hand/instrument
-  coordination), not color-critical diagnostic imaging, and nobody's
-  flagged it as a problem. Revisit only if that changes.
+  `BalanceWhiteAuto` handling anywhere in `ids_camera.py`. Originally
+  deliberately not planned here (the use case is technique review, not
+  color-critical diagnostic imaging), but revisited and actually planned as
+  part of a broader camera-configuration pass — see the 2026-08-26 entry
+  below.
 - **Session-length/stall-timeout/disk-margin constants**
   (`TARGET_SESSION_MINUTES`, `DEFAULT_STALL_TIMEOUT_S`,
   `REQUIRED_SPACE_MULTIPLIER` in `kiosk.py`) are already constructor
@@ -405,9 +406,15 @@ instead of trying to heuristically detect its absence at runtime.
 
 ### Status
 
-Not built — explicitly deferred ("at some point," not now). Tracked here,
-including the 2026-08-25 calibration-UX refinement above, so none of this
-design needs to be re-derived when it's picked up.
+**Built 2026-08-25** — see DECISIONS.md's "Built the exposure/gain
+calibration feature" entry for what actually landed, including the
+`exposure_calibration.py` split (for unit-testability without the IDS peak
+SDK) and the one part of this that's still unverified: the
+`ExposureTime`/`Gain` node accessor names, since this dev machine has no
+`ids_peak` installed to check them against `vendor/ids_peak_api.txt` or
+real hardware. Confirming those, the same way `_converge_auto_exposure()`
+already was via `tools/smoke_test_camera.py`, is the one remaining step
+before trusting this in a real session.
 
 ---
 
@@ -691,3 +698,120 @@ That's superseded — it's now driven silently, with its own verification
 layered on. See DECISIONS.md's 2026-08-25 "Silent IDS peak install, with
 verification Kinexis doesn't have" entry for the reversal and what was
 actually built.
+
+---
+
+## 2026-08-26 — Vignette-aware metering, white balance, acquisition fps cap, backlight compensation (planned, not built)
+
+### Context
+
+Follow-up to the exposure/gain calibration work above, from a broader
+"what else should be configured for the best experience, short of fancy
+calibration tools" discussion. Four concrete, scoped items surfaced:
+
+1. `auto_calibrate()` measures whole-frame median brightness — but
+   slit-lamp/BIO video coupled through an eyepiece/beam-splitter likely
+   shows a circular illuminated image surrounded by true black
+   (unconfirmed against real footage, but common for this kind of optical
+   coupling), which skews that measurement dark and causes
+   over-brightening. Fixed by a centered crop before measuring — also just
+   ordinary center-weighted metering practice regardless of whether a
+   vignette is actually present, so it's a safe default either way.
+2. White balance is uncorrected everywhere (see the revised bullet in the
+   2026-08-18 entry above). Two cases depending on hardware, both handled:
+   a camera with `BalanceWhiteAuto` gets it fully automatically (folded
+   into the same convergence pass as exposure/gain); a camera without it
+   (the likely case for the slit lamp) gets a manual software calibration
+   path mirroring the exposure/gain one exactly — a technician holds a
+   neutral gray/white target (a real photography white-balance card or
+   PTFE sheet, **not** 3D-printed filament, which isn't spectrally flat or
+   diffuse enough to trust as a reference) in the fixed optical path,
+   clicks Auto White-Balance in `settings.py`'s Preview dialog, and the
+   result persists to `config.json`.
+3. Neither camera's own acquisition rate was capped — `recorder.py`'s
+   `_tick()`/`_drain_latest()` already discards anything a camera captures
+   faster than `recording.fps` with zero benefit, so free-running at
+   native ~58-60fps burns exactly the tight USB bandwidth margin
+   CLAUDE.md's Hardware section flags, for nothing. `SETUP.md` already
+   tells a technician this fact as manual troubleshooting guidance;
+   nothing in code enforced it.
+4. The third-person UVC camera had no backlight compensation, which
+   could matter if a student sits with a bright window/light behind them.
+
+(Black balance — the shadow-end analog of white balance — was raised and
+considered, then dropped: it turned out to be conflated with backlight
+compensation above, not a separate thing actually wanted.)
+
+### Built
+
+All four items above landed together. Summary (see `DECISIONS.md`'s
+"Built the vignette/white-balance/fps-cap/backlight-compensation
+follow-ups" entry for the full account once it's written):
+
+- `exposure_calibration.py` gained `center_crop()` (used by both
+  `auto_calibrate()` and the new `auto_white_balance()`),
+  `channel_medians()`, `is_white_balanced()`, `next_balance_ratios()` —
+  all pure, SDK-free, directly unit-tested.
+- `ids_camera.py`'s exposure/gain-specific convergence loop
+  (`_converge_auto_exposure()`) was generalized into
+  `_converge_auto_nodes(node_names)`, since `BalanceWhiteAuto` needed the
+  identical Once-then-poll-until-Off-then-lock shape a third time — one
+  combined pass instead of a second, separately-polled loop.
+  `needs_manual_white_balance()`/`auto_white_balance()`/the manual
+  `get_/set_red_balance_ratio()`/`get_/set_blue_balance_ratio()` pair
+  mirror the exposure/gain accessors exactly. `_apply_frame_rate_cap()`
+  sets `AcquisitionFrameRate` (gated by `AcquisitionFrameRateEnable` where
+  present), best-effort and clamped to what the camera can currently do.
+- `config.py`'s `InstrumentConfig` gained optional
+  `red_balance_ratio`/`blue_balance_ratio` fields, validated as a pair
+  (exactly one present is a `ConfigError` — `BalanceWhiteAuto=Once`
+  converges both together, there's no partial manual white balance).
+- `settings.py`'s `PreviewDialog` shows red/blue balance-ratio sliders and
+  an Auto White-Balance button whenever `needs_manual_white_balance()` is
+  true — a **separate** control block and status label from
+  exposure/gain's, not merged, since a camera can plausibly need both at
+  once and a shared status label would have one calibration's message
+  clobber the other's.
+- `uvc_camera.py` gained `_apply_frame_rate_cap()` (`cv2.CAP_PROP_FPS`,
+  logs a warning rather than failing on a mismatch) and backlight
+  compensation (`cv2.CAP_PROP_BACKLIGHT`, set before the existing
+  autofocus/auto-exposure warmup so that warmup benefits from it too).
+  `_lock_autofocus_and_exposure()` renamed to `_configure_capture()`
+  since it now does more than autofocus/exposure.
+- `app.py` threads `cfg.recording.fps` into both instrument and
+  third-person camera construction as `target_fps`, and the two new
+  instrument config fields into `IdsCamera`. `settings.py`'s Preview
+  cameras deliberately never receive `target_fps` — Preview is
+  single-camera and technician-supervised, so the bandwidth concern the
+  cap exists for never applies there.
+
+### Unverified, flagged explicitly rather than assumed
+
+Same constraint the exposure/gain feature shipped under: this dev machine
+has no `ids_peak` installed and no `vendor/ids_peak_api.txt` dump to check
+node names against. Specifically unverified pending a hardware smoke test:
+
+- `BalanceWhiteAuto`, and the `BalanceRatioSelector`/`BalanceRatio`
+  selector+value pair (standard GenICam SFNC pattern, not confirmed
+  against either real camera).
+- `AcquisitionFrameRateEnable` gating `AcquisitionFrameRate` — a real
+  GenICam SFNC variation across camera families; whichever camera doesn't
+  need the enable node should still work since the code tolerates either
+  shape.
+- Whether `AcquisitionFrameRate` can be set *after* `AcquisitionStart` the
+  way `ExposureAuto`/`GainAuto` already are (confirmed working
+  post-start), or whether it needs to be set before streaming begins —
+  more directly reconfigures stream timing than a pure value node does.
+  If hardware testing shows it must happen earlier, move the call before
+  `data_stream.StartAcquisition()` in `_open()`.
+- The `_converge_auto_nodes()` generalization itself is a refactor of
+  previously-hardware-verified control flow (exposure/gain), not purely
+  additive — re-running `tools/smoke_test_camera.py` against both real
+  cameras is warranted even though per-axis semantics didn't change.
+- The `0.5` center-crop fraction in `center_crop()`'s default is a
+  starting guess, not a measurement against real slit-lamp/BIO footage.
+
+`cv2.CAP_PROP_BACKLIGHT`/`CAP_PROP_FPS`/`CAP_PROP_AUTO_WB` are, by
+contrast, confirmed to exist on this dev machine (cv2 is installed here) —
+lower risk than anything IDS-specific, though their real-device *effect*
+still isn't verified.

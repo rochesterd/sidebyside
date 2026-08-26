@@ -204,3 +204,7 @@ Re-run `settings.py` any time a camera is replaced or a setting needs to
 change — it's a normal, repeatable tool, not a one-shot installer.
 Restart `app.py` afterward; Save does not hot-reload a running kiosk
 session.
+
+Instrument cameras have no autofocus — once focus looks right in Preview,
+physically secure/tighten the lens focus ring so it can't drift during a
+session.
