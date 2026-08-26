@@ -815,3 +815,121 @@ node names against. Specifically unverified pending a hardware smoke test:
 contrast, confirmed to exist on this dev machine (cv2 is installed here) —
 lower risk than anything IDS-specific, though their real-device *effect*
 still isn't verified.
+
+---
+
+## 2026-08-26 — `Net2860Camera` brightness/gain control (surveyed, not decided)
+
+Raised while investigating why the older Vantage Plus BIO's captured frames
+were dim/green in low light (see `DECISIONS.md`'s two `Net2860Camera`
+entries) — confirmed to be ordinary light starvation (CCD noise floor,
+skewed green by the Bayer filter's 2x green photosites), not a hardware
+fault, once a bright light was used. Not acted on: whether the vendor
+DirectShow filter exposes `IAMVideoProcAmp` (the standard DirectShow
+interface for brightness/gain/exposure, distinct from `IAMStreamConfig`,
+which `DECISIONS.md` already ruled out for frame-rate control on this
+camera) is unknown — never checked. If it does, `net2860_helper.py` could
+expose `settings.py`-driven controls mirroring the IDS cameras' manual
+calibration path (see the 2026-08-18 entry above) rather than requiring a
+bright external light source every time. Candidate for whenever this
+camera is revisited — e.g. alongside packaging (`DECISIONS.md`'s
+"What's still NOT done" note on the wiring entry).
+
+---
+
+## 2026-08-26 — Health-check tool and installer cleanup scope surveyed, not acted on (yet)
+
+Surfaced during a "what would benefit the app" brainstorm while waiting for
+hardware room access. Recorded so neither is re-derived from scratch later;
+neither is committed work.
+
+- **A technician-facing "Doctor"/health-check tool** — one pass
+  consolidating diagnostics that already exist but are scattered and
+  reactive: an `IdsPeakAlreadyInstalled()`-equivalent SDK version check
+  (today buried in `packaging/sidebyside.iss`, install-time only),
+  `config.py`'s validation (today only fires when `app.exe` happens to
+  launch), `settings.py`'s per-camera "not connected" detection (today only
+  visible if a technician opens it), `kiosk.py`'s disk-space preflight
+  (today only runs right before Start). A single glanceable report instead
+  of hunting across four surfaces. Specifically liked: a green/yellow/red
+  status indicator (seen in other tools) summarizing overall health at a
+  glance. **Shelved for now** — judged possibly overboard for this app's
+  current scale; revisit if the diagnostic-hunting friction becomes a real
+  recurring problem, not preemptively. If built, should stay
+  diagnosis-only (no silent auto-fix), matching CLAUDE.md's "loud and
+  early" philosophy — the one plausible exception being an explicit,
+  technician-clicked "re-run the IDS peak install" button, since that only
+  re-exposes what `InstallIdsPeakSilently()` already does once, safely, on
+  demand.
+- **The default Inno Setup uninstaller's actual scope was never verified
+  or written down.** It only removes what `[Files]` explicitly copied
+  under `{app}` — today that means it has no awareness of
+  `%ProgramData%\sidebyside\config.json`, `%PUBLIC%\Documents\sidebyside\
+  sessions\`, or the separately-installed IDS peak SDK. Leaving recordings
+  and the IDS SDK untouched is almost certainly correct behavior, but right
+  now that's an accident of what's absent from `[Files]`, not a tested,
+  documented guarantee — worth confirming explicitly given CLAUDE.md's
+  stance that recordings are irreplaceable. Real open item, unlike the
+  shelved tool above — just not yet acted on.
+
+---
+
+## 2026-08-26 — Recorder/Viewer split under consideration (architecture, not decided)
+
+### Context
+
+Surfaced from the same "what would benefit the app" session above, in
+response to a specific question: does the current single-composite-file
+model actually serve the app's purpose best? Today `recorder.py` composites
+both cameras' frames in real time into one `composite.mkv` → `composite.mp4`
+per session — the layout (side-by-side) is permanently baked in at capture
+time, and there's no way to later view a session any other way, or extract
+just one camera's stream, without re-deriving it from the composite.
+
+### The idea
+
+Split the app into a **Recorder** (captures and preserves each camera's
+stream separately, synchronized but not pre-composited) and a **Viewer**
+(reads a recorded session and lays it out on demand — side-by-side,
+picture-in-picture, single-camera, whatever's useful for reviewing a
+specific moment). Two stated motivations:
+
+- **Flexible review.** A student (or instructor) could choose how to watch
+  a session after the fact, rather than being locked into whatever layout
+  was chosen at record time.
+- **Future integration.** If sidebyside is ever asked to feed recordings
+  into Canvas (NECO's LMS, used for sharing media with students) or another
+  external system, having each camera's stream separately addressable is a
+  fundamentally better starting point than trying to extract one view back
+  out of an already-composited file. Not a specific present request —
+  explicitly about not painting the architecture into a corner if it
+  becomes one.
+
+### Why this is a real architectural fork, not a small feature
+
+- `BaseCamera`/`Frame`'s per-frame monotonic timestamps already exist
+  specifically so consumers don't assume nominal frame timing (CLAUDE.md's
+  Architecture section) — exactly the raw material a Viewer-side
+  synchronization step would need, which suggests this pivot is more
+  feasible than it might look at first glance, not something needing new
+  capture-side plumbing from scratch.
+- It's still a real change in what gets recorded and stored: `recorder.py`
+  would need to preserve two separately-decodable streams (today it
+  discards each camera's individual frame once it's composited) and
+  `session.json` would need to carry whatever sync data a Viewer needs to
+  re-align them, not just frame/drop counts as it does today. Storage
+  footprint per session likely grows — two full streams instead of one
+  already-downscaled, letterboxed composite.
+- Every layout function in `compositor.py` (`side_by_side`,
+  `picture_in_picture`) already exists and is aspect-preserving/letterboxed
+  — a Viewer wouldn't need new layout math, just a different place to call
+  it from (at watch time against two decoded streams, instead of at
+  capture time against two live `BaseCamera` feeds).
+
+### Status
+
+**Under consideration, not decided.** No design work started. Directly
+affects the priority of in-app playback/session-history (surfaced in the
+same conversation) — deliberately not building those against today's
+single-file model if this split might reshape what "a recorded session"
+even means. Revisit together before starting either.
