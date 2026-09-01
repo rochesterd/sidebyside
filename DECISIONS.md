@@ -2142,3 +2142,114 @@ into a standalone exe, so a clinic install built via `PACKAGING.md`'s
 current process still needs a 32-bit Python present, which it doesn't
 provide. Explicitly the next, separate step (per the user: wire in and
 confirm it works first, then decide on packaging).
+
+---
+
+## 2026-09-01 — settings.py Preview leaked the IDS device when closed via Esc
+
+**Decided:** `PreviewDialog` stops its camera from a slot connected to the
+`finished` signal (plus an explicit teardown on the `__init__` control-build
+failure path), not only from `closeEvent`.
+
+**Why:** `PreviewDialog` runs modally via `.exec()`. `QDialog.reject()` --
+which the Esc key triggers directly -- calls `done()`/`hide()` without ever
+delivering a `QCloseEvent`, so a `closeEvent`-only teardown never ran
+`camera.stop()`. Because `_on_preview_clicked` parents the dialog, the
+leaked `IdsCamera` then stayed alive holding the IDS device open for the
+rest of the settings session, and every subsequent Preview on that row
+failed with `GC_ERR_RESOURCE_IN_USE` ("Module IDS/... is open already").
+Only a full restart of `settings.py` recovered it. A second variant of the
+same leak: `start()` succeeds, then one of the calibration-control builders
+(which touch IDS nodes this codebase flags as unverified) raises inside
+`__init__`, propagating out before the dialog is ever shown or closed.
+
+`finished` fires for `accept()`, `reject()`, Esc and the window X alike, so
+it covers every way `.exec()` can return. `_shutdown()` is idempotent
+(reached from both `finished` and `closeEvent`) and tolerates being called
+before `self.timer` exists.
+
+**Rejected:** `WA_DeleteOnClose` -- `_on_preview_clicked` reads
+`dialog.final_*` after `.exec()` returns, which would be use-after-free.
+Overriding `reject()`/`done()` -- narrower than connecting `finished`, and
+easy to miss a path.
+
+**Tests:** `test_settings.py` gained `test_reject_stops_the_camera` and
+`test_camera_stops_when_building_calibration_controls_raises`.
+
+---
+
+## 2026-09-01 — slit lamp has no white-balance nodes at all; `needs_manual_white_balance()` must check
+
+**Decided:** `IdsCamera.needs_manual_white_balance()` returns True only when
+the camera has no `BalanceWhiteAuto` **and** does expose the manual
+`BalanceRatioSelector`/`BalanceRatio` nodes.
+
+**Why:** Hardware-surfaced once the Preview device-leak fix (above) let
+execution reach this path on the real slit lamp. The slit lamp via the uEye
+Transport Layer's basic feature set exposes *neither* `BalanceWhiteAuto`
+*nor* `BalanceRatioSelector` -- it has no white balance to control at all,
+the same practical situation as the Keeler (which has working auto). The
+old check keyed purely on `BalanceWhiteAuto` being absent, so it returned
+True and `settings.py`'s `_build_white_balance_controls()` then crashed
+with `NotFoundException` on `FindNode("BalanceRatioSelector")`, taking down
+the whole Preview dialog.
+
+This mirrors what `needs_manual_calibration()` already gets right for
+exposure/gain by luck -- the slit lamp *does* expose `ExposureTime`/`Gain`,
+so that path was fine; white balance was the one axis where the manual
+fallback nodes are also missing.
+
+**Still not hardware-verified:** the manual `BalanceRatio` read/write path
+itself (`get_/set_red_balance_ratio()` etc.) -- no attached camera exercises
+it, since the only one that lacks `BalanceWhiteAuto` also lacks
+`BalanceRatio`. If a future camera has that combination, re-check against
+`tools/smoke_test_camera.py`.
+
+---
+
+## 2026-09-01 — Device-model rotation presets
+
+**Decided:** The Keeler Vantage Plus Digital BIO's camera mounts inverted,
+so frames need a 180° rotation. That rotation is keyed on the IDS **model
+name** in `device_presets.py` (`rotation_for_model()`), not set per-install
+in `config.json`. `IdsCamera._open()` resolves it once the model is known
+(`descriptor.ModelName()`); `BaseCamera._run()` applies it to every frame
+before queueing, so recorder, preview and kiosk all agree. A `config.json`
+`instruments.<role>.rotation` (0 or 180) overrides the preset as an escape
+hatch, but there is **no `settings.py` UI for it** yet.
+
+**Why keyed on model, not config:** every unit of that Keeler product ships
+the camera in the same orientation -- it's a property of the hardware
+model, not something that varies between clinics or that a technician
+should have to discover and type. Confirmed model strings on real hardware:
+BIO camera reports `U3-327xCP-C`, slit lamp reports `UI325xCP-C`, so the
+`"U3-327"` substring token hits the former only. Verified end to end: the
+BIO camera resolves `rotation=180` and delivers contiguous 2048x1536
+frames; the slit lamp resolves `0`.
+
+**Why 0/180 only (no 90/270):** a 90/270 rotation makes frames no longer
+match the camera's reported `.resolution`, which `recorder.py`/`kiosk.py`
+use to size the recording canvas -- supporting it would mean making
+`BaseCamera.resolution` rotation-aware across all four subclasses. No
+instrument needs it. `camera.ALLOWED_ROTATIONS` and
+`config._parse_optional_rotation()` both enforce this.
+
+**Why a config override at all:** cheap (a dataclass field + one parser),
+and it's the escape hatch if a preset is ever wrong or a clinic has a
+non-standard mounting, without a code change. `rotation: 0` explicitly
+survives as 0 (not None) precisely so it can cancel a preset.
+
+**Rejected:** device-side `ReverseX`/`ReverseY` GenICam nodes -- 180° needs
+both, which shifts the Bayer phase, and this dev machine has no
+`vendor/ids_peak_api.txt` to confirm the sensor compensates. Software
+rotation is one contiguous-array copy per frame (~9MB on the BIO camera,
+well under a frame interval) and provably correct.
+
+**Not done:** `settings.py` still has the technician pick a camera from a
+free dropdown and type a label. The better shape -- a category dropdown of
+known-compatible devices, each carrying its own presets -- is a real
+redesign, written up in ROADMAP.md.
+
+**Tests:** new `test_device_presets.py` (lookup logic) and `test_camera.py`
+(the `BaseCamera` rotation mechanic, via a fixed-frame fake and a real
+`SyntheticCamera`); `test_config.py` gained 5 rotation cases.

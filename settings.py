@@ -195,6 +195,11 @@ class PreviewDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Preview – {title}")
         self._camera = camera
+        # Stop the camera on *any* dialog exit, not just closeEvent: the Esc
+        # key routes through QDialog.reject() with no QCloseEvent, which
+        # would otherwise leak the open IDS device. See DECISIONS.md's
+        # 2026-09-01 entry.
+        self.finished.connect(self._shutdown)
         self.calibration_supported = False
         self.white_balance_supported = False
         self.final_exposure_time_us = initial_exposure_time_us
@@ -231,13 +236,21 @@ class PreviewDialog(QDialog):
         except Exception as exc:
             self.status_label.setText(f"Failed to start: {exc}")
 
-        if self.calibration_supported:
-            self._build_exposure_gain_controls(layout, initial_exposure_time_us, initial_gain)
-        layout.addWidget(self.calibration_status_label)
+        # A raise partway through building the calibration controls would
+        # propagate out of __init__ before the dialog is ever shown or
+        # closed, leaking the just-started camera -- tear it down
+        # explicitly, then let the error surface. See DECISIONS.md.
+        try:
+            if self.calibration_supported:
+                self._build_exposure_gain_controls(layout, initial_exposure_time_us, initial_gain)
+            layout.addWidget(self.calibration_status_label)
 
-        if self.white_balance_supported:
-            self._build_white_balance_controls(layout, initial_red_balance_ratio, initial_blue_balance_ratio)
-        layout.addWidget(self.white_balance_status_label)
+            if self.white_balance_supported:
+                self._build_white_balance_controls(layout, initial_red_balance_ratio, initial_blue_balance_ratio)
+            layout.addWidget(self.white_balance_status_label)
+        except Exception:
+            self._shutdown()
+            raise
 
         self.setLayout(layout)
 
@@ -432,9 +445,18 @@ class PreviewDialog(QDialog):
         self.status_label.setText(f"{w}x{h}")
         self.video_label.setPixmap(bgr_to_pixmap(frame.image))
 
-    def closeEvent(self, event) -> None:
-        self.timer.stop()
+    def _shutdown(self, *_args) -> None:
+        """Stop the preview timer and the camera. Idempotent -- reached from
+        both the finished signal and closeEvent, and tolerant of being
+        called before self.timer exists (an __init__ failure path). The
+        camera's own stop() no-ops if it never started."""
+        timer = getattr(self, "timer", None)
+        if timer is not None:
+            timer.stop()
         self._camera.stop()
+
+    def closeEvent(self, event) -> None:
+        self._shutdown()
         super().closeEvent(event)
 
 

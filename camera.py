@@ -15,6 +15,12 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Only dimension-preserving rotations: a 90/270 would make frames no longer
+# match the camera's reported `.resolution`, which recorder.py/kiosk.py use
+# to size the recording canvas. No instrument needs 90/270 -- see
+# DECISIONS.md's "Device-model rotation presets" entry.
+ALLOWED_ROTATIONS = (0, 180)
+
 
 @dataclass
 class Frame:
@@ -31,7 +37,7 @@ class BaseCamera(ABC):
     (image, timestamp, index) triple or None if no frame was available.
     """
 
-    def __init__(self, queue_size: int = 2, label: str | None = None):
+    def __init__(self, queue_size: int = 2, label: str | None = None, rotation: int | None = 0):
         self._queue: queue.Queue[Frame] = queue.Queue(maxsize=queue_size)
         self._latest_lock = threading.Lock()
         self._latest: Frame | None = None
@@ -42,6 +48,15 @@ class BaseCamera(ABC):
         # wouldn't. Falls back to the class name if a subclass doesn't pass
         # one.
         self.label = label or type(self).__name__
+        # Degrees to rotate every captured frame before it's queued, so
+        # recorder/preview/kiosk all see it the same way. None means "not
+        # decided yet" -- a subclass (IdsCamera) may resolve it from a
+        # device-model preset in _open(), before the capture thread starts.
+        # Validated here for an explicit value; a None left for _open() to
+        # fill must be validated there too.
+        if rotation is not None and rotation not in ALLOWED_ROTATIONS:
+            raise ValueError(f"rotation must be one of {ALLOWED_ROTATIONS} or None, got {rotation!r}")
+        self._rotation = rotation
 
     @abstractmethod
     def _open(self) -> None:
@@ -112,6 +127,11 @@ class BaseCamera(ABC):
             if result is None:
                 continue
             image, timestamp, index = result
+            if self._rotation == 180:
+                # Equivalent to np.rot90(image, 2); made contiguous so
+                # downstream cv2/PyAV consumers don't trip over the
+                # negative strides a reversed view carries.
+                image = np.ascontiguousarray(image[::-1, ::-1])
             frame = Frame(image=image, timestamp=timestamp, index=index)
 
             with self._latest_lock:

@@ -435,6 +435,10 @@ def _make_camera(
         red_balance_ratio=inst.red_balance_ratio,
         blue_balance_ratio=inst.blue_balance_ratio,
         target_fps=target_fps,
+        # None (the common case) lets IdsCamera pick the device-model preset
+        # -- e.g. the Keeler BIO camera mounts inverted. A config.json
+        # `rotation` overrides that. See device_presets.py.
+        rotation=inst.rotation,
     )
 
 

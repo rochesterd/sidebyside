@@ -295,6 +295,51 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(self.path)
 
+    def test_missing_rotation_defaults_to_none(self):
+        self._write(VALID)
+        cfg = load_config(self.path)
+
+        self.assertIsNone(cfg.instruments["bio"].rotation)
+
+    def test_rotation_is_parsed_when_present(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"]["rotation"] = 180
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["bio"].rotation, 180)
+
+    def test_rotation_zero_is_allowed_and_kept(self):
+        # 0 is meaningful: it overrides a device-model preset that would
+        # otherwise rotate (device_presets.py), so it must survive as 0,
+        # not collapse to None.
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"]["rotation"] = 0
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["bio"].rotation, 0)
+
+    def test_unsupported_rotation_raises(self):
+        for bad in (90, 270, 45, "180", True):
+            with self.subTest(bad=bad):
+                data = json.loads(json.dumps(VALID))
+                data["instruments"]["bio"]["rotation"] = bad
+                self._write(data)
+
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+    def test_net2860_instrument_rejects_rotation(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "rotation": 180}
+        self._write(data)
+
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
     def test_missing_sessions_dir_defaults_to_none(self):
         self._write(VALID)
         cfg = load_config(self.path)

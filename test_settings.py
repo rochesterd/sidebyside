@@ -388,6 +388,32 @@ class PreviewDialogTest(unittest.TestCase):
             dialog.close()
         self.assertIsNone(camera._thread)  # stopped by closeEvent
 
+    def test_reject_stops_the_camera(self):
+        # Esc / reject() calls QDialog.done() without a QCloseEvent, so a
+        # closeEvent-only teardown would leak the open camera (and, for a
+        # real IdsCamera, hold the device -> GC_ERR_RESOURCE_IN_USE on the
+        # next Preview). The finished signal must cover this path.
+        from settings import PreviewDialog
+
+        camera = SyntheticCamera(160, 120, fps=30)
+        dialog = PreviewDialog(camera, "Test")
+        self.assertIsNotNone(camera._thread)  # started
+        dialog.reject()
+        self.assertIsNone(camera._thread)  # stopped via the finished signal
+
+    def test_camera_stops_when_building_calibration_controls_raises(self):
+        # start() succeeds, then a control builder raises before the dialog
+        # is ever shown/closed -- the camera must still be released.
+        from settings import PreviewDialog
+
+        camera = SyntheticCamera(160, 120, fps=30)
+        camera.needs_manual_calibration = lambda: True
+        camera.exposure_time_range_us = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+
+        with self.assertRaises(RuntimeError):
+            PreviewDialog(camera, "Test")
+        self.assertIsNone(camera._thread)  # released despite the raise
+
     def test_camera_without_needs_manual_calibration_shows_no_calibration_controls(self):
         from settings import PreviewDialog
 

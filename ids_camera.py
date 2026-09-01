@@ -65,6 +65,7 @@ from ids_peak import ids_peak
 from ids_peak_ipl import ids_peak_ipl
 
 from camera import BaseCamera
+from device_presets import rotation_for_model
 from exposure_calibration import (
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_TARGET_MEDIAN,
@@ -167,9 +168,15 @@ class IdsCamera(BaseCamera):
         red_balance_ratio: float | None = None,
         blue_balance_ratio: float | None = None,
         target_fps: float | None = None,
+        rotation: int | None = None,
     ):
-        super().__init__(queue_size=queue_size, label=serial)
+        super().__init__(queue_size=queue_size, label=serial, rotation=rotation)
         self._serial = serial
+        # None (the default) means "resolve from the device-model preset in
+        # _open()" -- e.g. the Keeler BIO camera always mounts inverted. An
+        # explicit value from config.json's `rotation` (0 or 180) is passed
+        # through instead and wins over the preset. See device_presets.py.
+        self._model_name: str | None = None
         # Per-instrument calibrated values from config.json (InstrumentConfig's
         # optional exposure_time_us/gain/red_balance_ratio/blue_balance_ratio
         # fields) -- see ROADMAP.md's "In-app exposure/gain calibration" entry
@@ -214,6 +221,12 @@ class IdsCamera(BaseCamera):
             self._device = self._open_device()
             self._remote_device = self._device.RemoteDevice()
             self._node_map = self._remote_device.NodeMaps()[0]
+
+            # Resolve a not-yet-decided rotation from the device model now
+            # that we know it (self._model_name is set by _open_device()).
+            # An explicit config value was already validated in __init__.
+            if self._rotation is None:
+                self._rotation = rotation_for_model(self._model_name)
 
             self._width = int(self._node_map.FindNode("Width").Value())
             self._height = int(self._node_map.FindNode("Height").Value())
@@ -358,15 +371,28 @@ class IdsCamera(BaseCamera):
         return not has_auto_exposure and not has_auto_gain
 
     def needs_manual_white_balance(self) -> bool:
-        """True when this camera has no BalanceWhiteAuto -- the case
-        settings.py's PreviewDialog shows red/blue balance-ratio sliders
-        and the Auto White-Balance button for. A camera with working
-        BalanceWhiteAuto converges on its own every session (folded into
-        _converge_auto_nodes()) and has nothing for a technician to
-        calibrate. Must be called after start().
+        """True when this camera has no BalanceWhiteAuto *and* does expose
+        the manual BalanceRatioSelector/BalanceRatio nodes to fall back on
+        -- the case settings.py's PreviewDialog shows red/blue balance-ratio
+        sliders and the Auto White-Balance button for. Must be called after
+        start().
+
+        Two cameras report False, for opposite reasons:
+        - a camera with working BalanceWhiteAuto (the Keeler) converges on
+          its own every session, folded into _converge_auto_nodes(), with
+          nothing for a technician to calibrate;
+        - a camera whose transport layer exposes neither the auto node nor
+          the manual BalanceRatio nodes (the slit lamp via the uEye
+          Transport Layer's basic feature set -- see this module's
+          docstring) has no white balance to control at all. Reporting True
+          there just makes _build_white_balance_controls() crash on the
+          missing BalanceRatioSelector node.
         """
-        node = self._node_map.TryFindNode("BalanceWhiteAuto")
-        return not (node is not None and node.IsAvailable())
+        auto_node = self._node_map.TryFindNode("BalanceWhiteAuto")
+        if auto_node is not None and auto_node.IsAvailable():
+            return False
+        manual_node = self._node_map.TryFindNode("BalanceRatioSelector")
+        return manual_node is not None and manual_node.IsAvailable()
 
     def _ensure_manual_exposure(self) -> None:
         node = self._node_map.TryFindNode("ExposureAuto")
@@ -626,6 +652,9 @@ class IdsCamera(BaseCamera):
         descriptors = device_manager.Devices()
         for descriptor in descriptors:
             if descriptor.SerialNumber() == self._serial:
+                # Stashed for rotation_for_model() in _open(); ModelName()
+                # is the same accessor list_ids_devices() already uses.
+                self._model_name = descriptor.ModelName()
                 return descriptor.OpenDevice(ids_peak.DeviceAccessType_Control)
         raise IdsCameraNotFoundError(
             f"no IDS device with serial {self._serial!r} found "

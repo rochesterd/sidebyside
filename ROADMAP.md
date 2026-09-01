@@ -933,3 +933,55 @@ affects the priority of in-app playback/session-history (surfaced in the
 same conversation) — deliberately not building those against today's
 single-file model if this split might reshape what "a recorded session"
 even means. Revisit together before starting either.
+
+---
+
+## 2026-09-01 — settings.py: pick from known-compatible devices with presets, not a free dropdown + typed label
+
+### Context
+
+Surfaced while fixing the BIO camera showing upside down (see DECISIONS.md's
+"Device-model rotation presets" entry). That fix keys a 180° rotation on the
+IDS model name in `device_presets.py` and applies it automatically. It works,
+but it exposed a gap in `settings.py`: the technician still picks a camera
+from a free-form dropdown of whatever's attached and hand-types a label. The
+program has model-specific knowledge (this rotation today; plausibly more
+later) that the setup UI doesn't surface at all.
+
+### The idea
+
+Restructure `settings.py`'s per-role selection around **known device
+profiles** rather than raw enumeration:
+
+- Each instrument role offers a dropdown of *compatible device profiles*
+  (e.g. "Keeler Vantage Plus Digital BIO", "Haag-Streit BI 900 slit lamp"),
+  drawn from `SUPPORTED_HARDWARE.md`'s confirmed list, matched against
+  what's actually attached.
+- Selecting a profile pulls in its presets (rotation, sensible default
+  label, and any future per-model quirks) instead of the technician
+  supplying them piecemeal.
+- An "other / unlisted" path stays, falling back to today's raw
+  dropdown + manual label, so an unrecognized-but-working camera isn't
+  locked out.
+
+### Why it's a real change, not a tweak
+
+- `device_presets.py` today is a single rotation lookup. This would grow it
+  into the actual device-profile registry (identity match rules, default
+  label, quirk set) and make it the thing `settings.py` renders from —
+  overlapping the already-"complete" 2026-08-17 "Device compatibility &
+  camera setup system" work, which deliberately chose the lean free-dropdown
+  shape.
+- `config.json`'s `instruments.<role>` shape may want a `profile` key
+  alongside `serial`, so `app.py` can re-resolve presets at load time
+  rather than only `IdsCamera._open()` doing it by model string.
+- Interacts with `settings.py`'s existing per-role calibration state
+  (exposure/gain/white-balance) — a profile could ship starting points for
+  those too.
+
+### Status
+
+**Not started, not designed.** Recorded now so the rotation-preset fix
+isn't mistaken for the finished shape. The `config.json` `rotation`
+override and `device_presets.rotation_for_model()` are the minimum that
+solves the immediate BIO problem; this is the fuller direction.

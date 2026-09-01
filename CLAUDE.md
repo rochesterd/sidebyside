@@ -54,7 +54,7 @@ see `SUPPORTED_HARDWARE.md`.
 | Instrument | Camera | Interface | Notes |
 |---|---|---|---|
 | Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, ~60fps, legacy uEye family — needs the uEye Transport Layer |
-| Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak |
+| Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak. Camera mounts inverted in the headset — `device_presets.py` rotates it 180° automatically. |
 | Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Identified by VID/PID, set in `config.json` via `settings.py`; see DECISIONS.md for the identification strategy and the single-device fallback. Any UVC-compliant webcam is expected to work, not just this model. |
 
 The two instrument cameras are machine vision cameras, not webcams: no
@@ -118,11 +118,12 @@ a UI poll loop can stall the display waiting on a queue.
 
 | File | Role |
 |---|---|
-| `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). |
+| `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). Also owns the per-frame `rotation` (0/180 only — `ALLOWED_ROTATIONS`) applied in `_run()` before a frame is queued, so every consumer sees the same orientation. |
+| `device_presets.py` | Pure-stdlib per-model camera quirks that aren't device-discoverable and don't vary by install — today just `rotation_for_model()` (the Keeler BIO camera mounts inverted → 180). `IdsCamera._open()` consults it; a `config.json` `rotation` overrides it. See DECISIONS.md's "Device-model rotation presets" entry and ROADMAP.md's device-profiles entry. |
 | `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
 | `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Two identification modes: `device` (a literal DirectShow index, used by `settings.py`'s Preview) and `vid_pid` (resolved to an index at `start()` time via `uvc_enumeration.resolve_device()`, used by `app.py`'s real runtime path — see DECISIONS.md for why resolution happens there, not at construction). `Frame.index` is self-counted, not source-reported. |
 | `uvc_enumeration.py` | `list_uvc_devices()` — index/name/VID:PID for every attached UVC device, in `cv2.CAP_DSHOW`'s own open order, via `pygrabber`'s DirectShow internals. `resolve_device()` — single-device-fallback/ambiguity logic turning a configured `vid_pid` into one `UvcDeviceInfo`. |
-| `ids_camera.py` | `IdsCamera` — `BaseCamera` for the two IDS peak GenICam cameras, opened by serial number. `list_ids_devices()` — serial/model for every currently-attached IDS device, for `settings.py`'s instrument dropdowns. |
+| `ids_camera.py` | `IdsCamera` — `BaseCamera` for the two IDS peak GenICam cameras, opened by serial number. `_open()` also resolves an unset `rotation` from `device_presets.rotation_for_model()` via the descriptor's `ModelName()`. `list_ids_devices()` — serial/model for every currently-attached IDS device, for `settings.py`'s instrument dropdowns. |
 | `net2860_camera.py` | `Net2860Camera` — `BaseCamera` for the older Vantage Plus BIO's NET GmbH KS722OUP camera, a `kind: "net2860"` alternative to `kind: "ids"` for the `bio` instrument role (not a new role — see DECISIONS.md). Never imports `comtypes`/`pygrabber` itself; manages `net2860_helper.py` as a 32-bit child process (its vendor DirectShow filter is 32-bit-only COM) and speaks `net2860_protocol.py`'s framed stdout protocol to it. No serial (there's exactly one of this camera) and no exposure/gain/white-balance calibration. |
 | `net2860_helper.py` | 32-bit-only DirectShow capture helper for `net2860_camera.py`, never imported by the main app — only ever run as a subprocess under `.venv32/` (see `setup_net2860_helper.ps1`). `CoCreateInstance`s the vendor filter directly by CLSID (it isn't enumerable) and streams frames continuously via a custom `ISampleGrabberCB` callback. |
 | `net2860_protocol.py` | Pure-stdlib framed wire protocol (`RDY1`/`FRM1`/`ERR1`) shared by `net2860_camera.py` and `net2860_helper.py` across the process boundary. |
@@ -142,7 +143,9 @@ a UI poll loop can stall the display waiting on a queue.
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
 | `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, without real hardware or `.show()`/`.exec()`. |
 | `test_compositor.py` | Correctness tests for `side_by_side`/`picture_in_picture` written after a perf rewrite made the fill logic less obviously correct — see DECISIONS.md. |
-| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization. |
+| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization, `rotation` (0/180 only, rejected for `net2860`). |
+| `test_camera.py` | `BaseCamera`'s subclass-independent behavior — today the `rotation` mechanic (180 = point reflection, dimensions preserved, contiguous output; invalid values rejected at construction), via a fixed-frame fake and a real `SyntheticCamera`. |
+| `test_device_presets.py` | `device_presets.rotation_for_model()` lookup — real model strings, case-insensitive substring match, slit lamp not colliding with the BIO token. |
 | `test_settings.py` | Headless tests for `SettingsWindow`/`DeviceRow` with injected fake enumeration functions (no real hardware or IDS SDK needed): startup pre-population, Save gating (including the same-camera-two-roles conflict check), Rescan, malformed-config warning, Preview wiring. |
 | `test_uvc_camera.py` | Tests for `UvcCamera`'s `device`/`vid_pid` mutual-exclusivity contract, the autofocus/auto-exposure lock, and that resolution failure surfaces from `start()` rather than `__init__`. |
 | `test_net2860_protocol.py` | Real (unmocked) round-trip/error-case tests for `net2860_protocol.py`'s wire format — pure logic, no subprocess or hardware. |
