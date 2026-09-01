@@ -2296,3 +2296,50 @@ the actual through-the-instrument image still needs a look.
 **Tests:** `test_camera.py` / `test_device_presets.py` reworked for the
 four orientations; `test_config.py`'s rotation cases became orientation
 cases.
+
+---
+
+## 2026-09-01 — UVC camera reconnects itself when it drops mid-stream
+
+**Decided:** `UvcCamera._grab()` counts consecutive failed `cv2.VideoCapture.read()`
+calls; after `_RECONNECT_AFTER_FAILURES` (~0.5s at 30fps) it calls
+`_try_reconnect()`, which releases the capture and reopens the device
+(re-resolving the `vid_pid` index if that's the identification mode),
+rate-limited to one attempt per `_RECONNECT_COOLDOWN_S`. The reopen uses
+`_configure_capture(warmup=False)` -- no autofocus/exposure re-warmup,
+since the scene is unchanged and the capture thread can't stall 2s there.
+A failed read below the threshold, and a cooldown wait, each `time.sleep`
+briefly so the capture thread doesn't spin a core while the device is down.
+
+**Why:** reported on real hardware -- an integrated webcam used as the
+third-person camera "randomly cut out" and stayed dead. `cv2.VideoCapture`
+does not recover on its own from a USB power-management suspend, another
+process grabbing the camera, or a brief unplug: `read()` just returns
+`(False, None)` forever. Before this, that left a permanently black
+third-person pane with nothing trying to fix it -- exactly the
+"a replugged camera shows black and needs re-selecting" failure the
+2026-08-11 "purpose-built app rather than OBS" entry says this app exists
+to beat. (The 2026-08-17 "Third-person UVC camera" entry claimed a
+disconnect was "caught by `_grab()` raising" -- it never was; `read()`
+returns a falsy tuple, it doesn't raise. This is that gap actually
+closed.)
+
+**Interaction with `kiosk.py`'s stall detection (unchanged):** a drop that
+self-heals within `DEFAULT_STALL_TIMEOUT_S` (2.0s) during a recording
+leaves `poll_recording()` untouched -- `get_latest().index` resumes
+advancing, the recording keeps going with a short gap in the third-person
+view. A drop that outlasts the reconnect still trips the stall timeout and
+fails the session loudly, which is the right call for a camera that's
+genuinely gone. `Frame.index` (self-counted) is deliberately *not* reset on
+reconnect, so it stays monotonic and `recorder.py` doesn't miscount the
+pause as a burst of drops.
+
+**Scope:** `UvcCamera` only. `IdsCamera` has its own acquisition model
+(`WaitForFinishedBuffer` timeouts, the `ids_peak.Library` lifecycle) and no
+reported reconnect problem; not touched.
+
+**Tests:** `test_uvc_camera.py` gained `UvcCameraReconnectTest` (5 cases:
+sub-threshold failures don't reopen, sustained failure reopens exactly once
+within the cooldown, a successful reopen restores frames and resets the
+counter, a failed reopen is swallowed and retried, reconnect bails when
+stopping) plus a `warmup=False` case.

@@ -14,9 +14,18 @@ import unittest
 from unittest.mock import MagicMock, call, patch
 
 import cv2
+import numpy as np
 
-from uvc_camera import _AUTOEXPOSURE_WARMUP_FRAMES, UvcCamera
+from uvc_camera import _AUTOEXPOSURE_WARMUP_FRAMES, _RECONNECT_AFTER_FAILURES, UvcCamera
 from uvc_enumeration import UvcDeviceResolutionError
+
+
+def _cap(*, opened=True, read=(True, None)):
+    cap = MagicMock()
+    cap.isOpened.return_value = opened
+    cap.get.return_value = 640  # width/height queries
+    cap.read.return_value = read
+    return cap
 
 
 class UvcCameraConstructionTest(unittest.TestCase):
@@ -81,6 +90,81 @@ class UvcCameraAutofocusExposureLockTest(unittest.TestCase):
         cap.set.return_value = False  # cv2's own signal for "unsupported control"
 
         camera._configure_capture(cap)  # must not raise
+
+    def test_warmup_false_skips_the_read_loop_but_still_locks_controls(self):
+        camera = UvcCamera(device=0)
+        cap = MagicMock()
+
+        camera._configure_capture(cap, warmup=False)
+
+        cap.read.assert_not_called()
+        cap.set.assert_has_calls(
+            [call(cv2.CAP_PROP_AUTOFOCUS, 0), call(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)]
+        )
+
+
+class UvcCameraReconnectTest(unittest.TestCase):
+    """A UVC device that stops delivering frames mid-stream must be reopened
+    automatically -- see uvc_camera.py's _try_reconnect and DECISIONS.md's
+    "UVC camera reconnects itself" entry.
+    """
+
+    def test_a_few_failed_reads_do_not_trigger_a_reopen(self):
+        camera = UvcCamera(device=0)
+        dead = _cap(read=(False, None))
+        with patch("uvc_camera.time.sleep"), patch("uvc_camera.cv2.VideoCapture", return_value=dead) as vc:
+            camera._open()
+            vc.reset_mock()
+            for _ in range(_RECONNECT_AFTER_FAILURES - 1):
+                self.assertIsNone(camera._grab())
+            vc.assert_not_called()
+
+    def test_sustained_failure_triggers_exactly_one_reopen_within_the_cooldown(self):
+        camera = UvcCamera(device=0)
+        dead = _cap(read=(False, None))
+        with patch("uvc_camera.time.sleep"), patch("uvc_camera.time.monotonic", return_value=1000.0), patch(
+            "uvc_camera.cv2.VideoCapture", return_value=dead
+        ) as vc:
+            camera._open()
+            vc.reset_mock()
+            for _ in range(_RECONNECT_AFTER_FAILURES + 40):
+                camera._grab()
+            vc.assert_called_once()  # rate-limited by _RECONNECT_COOLDOWN_S
+
+    def test_reopen_restores_the_stream_and_resets_the_failure_count(self):
+        camera = UvcCamera(device=0)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        caps = [_cap(read=(False, None)), _cap(read=(True, frame))]
+        with patch("uvc_camera.time.sleep"), patch("uvc_camera.time.monotonic", return_value=1000.0), patch(
+            "uvc_camera.cv2.VideoCapture", side_effect=lambda *a, **k: caps.pop(0)
+        ):
+            camera._open()  # takes the dead cap
+            for _ in range(_RECONNECT_AFTER_FAILURES):
+                camera._grab()  # crosses the threshold, reopens onto the live cap
+            result = camera._grab()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(camera._consecutive_failures, 0)
+
+    def test_reopen_failure_is_swallowed_and_retried_not_raised(self):
+        camera = UvcCamera(device=0)
+        caps = [_cap(read=(False, None)), _cap(opened=False), _cap(opened=False)]
+        with patch("uvc_camera.time.sleep"), patch("uvc_camera.cv2.VideoCapture", side_effect=lambda *a, **k: caps.pop(0) if caps else _cap(opened=False)):
+            camera._open()
+            for _ in range(_RECONNECT_AFTER_FAILURES + 5):
+                self.assertIsNone(camera._grab())  # device still gone, never raises
+        self.assertIsNone(camera._cap)
+
+    def test_reconnect_bails_out_when_stopping(self):
+        camera = UvcCamera(device=0)
+        dead = _cap(read=(False, None))
+        with patch("uvc_camera.time.sleep"), patch("uvc_camera.cv2.VideoCapture", return_value=dead) as vc:
+            camera._open()
+            camera._stop_event.set()
+            vc.reset_mock()
+            for _ in range(_RECONNECT_AFTER_FAILURES + 5):
+                camera._grab()
+            vc.assert_not_called()
 
 
 class UvcCameraFrameRateCapTest(unittest.TestCase):
