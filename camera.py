@@ -15,11 +15,37 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Only dimension-preserving rotations: a 90/270 would make frames no longer
-# match the camera's reported `.resolution`, which recorder.py/kiosk.py use
-# to size the recording canvas. No instrument needs 90/270 -- see
-# DECISIONS.md's "Device-model rotation presets" entry.
-ALLOWED_ROTATIONS = (0, 180)
+# Dimension-preserving orientation fixes for a camera whose sensor is
+# mounted rotated, or whose instrument optics mirror the image (the BIO
+# does). This is the full Klein-four group of symmetries that keep width
+# and height: identity, 180deg rotation, and the two axis flips. 90/270
+# rotation is deliberately excluded -- it would make frames no longer match
+# the camera's reported `.resolution`, which recorder.py/kiosk.py use to
+# size the recording canvas. See DECISIONS.md's rotation/orientation
+# entries.
+ORIENTATION_NONE = "none"
+ORIENTATION_ROTATE_180 = "rotate_180"
+ORIENTATION_FLIP_HORIZONTAL = "flip_horizontal"  # mirror left<->right
+ORIENTATION_FLIP_VERTICAL = "flip_vertical"  # mirror top<->bottom
+VALID_ORIENTATIONS = (
+    ORIENTATION_NONE,
+    ORIENTATION_ROTATE_180,
+    ORIENTATION_FLIP_HORIZONTAL,
+    ORIENTATION_FLIP_VERTICAL,
+)
+
+
+def apply_orientation(image: np.ndarray, orientation: str) -> np.ndarray:
+    """Return `image` transformed for `orientation` (one of
+    VALID_ORIENTATIONS). The result may be a non-contiguous view; the
+    caller makes it contiguous if a downstream consumer needs that."""
+    if orientation == ORIENTATION_ROTATE_180:
+        return image[::-1, ::-1]
+    if orientation == ORIENTATION_FLIP_VERTICAL:
+        return image[::-1, :]
+    if orientation == ORIENTATION_FLIP_HORIZONTAL:
+        return image[:, ::-1]
+    return image
 
 
 @dataclass
@@ -37,7 +63,7 @@ class BaseCamera(ABC):
     (image, timestamp, index) triple or None if no frame was available.
     """
 
-    def __init__(self, queue_size: int = 2, label: str | None = None, rotation: int | None = 0):
+    def __init__(self, queue_size: int = 2, label: str | None = None, orientation: str | None = ORIENTATION_NONE):
         self._queue: queue.Queue[Frame] = queue.Queue(maxsize=queue_size)
         self._latest_lock = threading.Lock()
         self._latest: Frame | None = None
@@ -48,15 +74,15 @@ class BaseCamera(ABC):
         # wouldn't. Falls back to the class name if a subclass doesn't pass
         # one.
         self.label = label or type(self).__name__
-        # Degrees to rotate every captured frame before it's queued, so
-        # recorder/preview/kiosk all see it the same way. None means "not
-        # decided yet" -- a subclass (IdsCamera) may resolve it from a
-        # device-model preset in _open(), before the capture thread starts.
-        # Validated here for an explicit value; a None left for _open() to
-        # fill must be validated there too.
-        if rotation is not None and rotation not in ALLOWED_ROTATIONS:
-            raise ValueError(f"rotation must be one of {ALLOWED_ROTATIONS} or None, got {rotation!r}")
-        self._rotation = rotation
+        # Orientation fix applied to every captured frame before it's
+        # queued, so recorder/preview/kiosk all see it the same way. None
+        # means "not decided yet" -- a subclass (IdsCamera) resolves it from
+        # a device-model preset in _open(), before the capture thread
+        # starts. Validated here for an explicit value; a None left for
+        # _open() to fill must be validated there too.
+        if orientation is not None and orientation not in VALID_ORIENTATIONS:
+            raise ValueError(f"orientation must be one of {VALID_ORIENTATIONS} or None, got {orientation!r}")
+        self._orientation = orientation
 
     @abstractmethod
     def _open(self) -> None:
@@ -127,11 +153,10 @@ class BaseCamera(ABC):
             if result is None:
                 continue
             image, timestamp, index = result
-            if self._rotation == 180:
-                # Equivalent to np.rot90(image, 2); made contiguous so
-                # downstream cv2/PyAV consumers don't trip over the
-                # negative strides a reversed view carries.
-                image = np.ascontiguousarray(image[::-1, ::-1])
+            if self._orientation and self._orientation != ORIENTATION_NONE:
+                # Made contiguous so downstream cv2/PyAV consumers don't
+                # trip over the negative strides a reversed view carries.
+                image = np.ascontiguousarray(apply_orientation(image, self._orientation))
             frame = Frame(image=image, timestamp=timestamp, index=index)
 
             with self._latest_lock:

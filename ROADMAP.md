@@ -940,13 +940,14 @@ even means. Revisit together before starting either.
 
 ### Context
 
-Surfaced while fixing the BIO camera showing upside down (see DECISIONS.md's
-"Device-model rotation presets" entry). That fix keys a 180° rotation on the
-IDS model name in `device_presets.py` and applies it automatically. It works,
-but it exposed a gap in `settings.py`: the technician still picks a camera
-from a free-form dropdown of whatever's attached and hand-types a label. The
-program has model-specific knowledge (this rotation today; plausibly more
-later) that the setup UI doesn't surface at all.
+Surfaced while fixing the BIO camera image coming in flipped (see
+DECISIONS.md's two "Device-model rotation presets" entries). That fix keys
+an orientation correction on the IDS model name in `device_presets.py` and
+applies it automatically. It works, but it exposed a gap in `settings.py`:
+the technician still picks a camera from a free-form dropdown of whatever's
+attached and hand-types a label. The program has model-specific knowledge
+(this orientation today; plausibly more later) that the setup UI doesn't
+surface at all.
 
 ### The idea
 
@@ -957,7 +958,7 @@ profiles** rather than raw enumeration:
   (e.g. "Keeler Vantage Plus Digital BIO", "Haag-Streit BI 900 slit lamp"),
   drawn from `SUPPORTED_HARDWARE.md`'s confirmed list, matched against
   what's actually attached.
-- Selecting a profile pulls in its presets (rotation, sensible default
+- Selecting a profile pulls in its presets (orientation, sensible default
   label, and any future per-model quirks) instead of the technician
   supplying them piecemeal.
 - An "other / unlisted" path stays, falling back to today's raw
@@ -966,8 +967,8 @@ profiles** rather than raw enumeration:
 
 ### Why it's a real change, not a tweak
 
-- `device_presets.py` today is a single rotation lookup. This would grow it
-  into the actual device-profile registry (identity match rules, default
+- `device_presets.py` today is a single orientation lookup. This would grow
+  it into the actual device-profile registry (identity match rules, default
   label, quirk set) and make it the thing `settings.py` renders from —
   overlapping the already-"complete" 2026-08-17 "Device compatibility &
   camera setup system" work, which deliberately chose the lean free-dropdown
@@ -981,7 +982,7 @@ profiles** rather than raw enumeration:
 
 ### Status
 
-**Not started, not designed.** Recorded now so the rotation-preset fix
-isn't mistaken for the finished shape. The `config.json` `rotation`
-override and `device_presets.rotation_for_model()` are the minimum that
+**Not started, not designed.** Recorded now so the orientation-preset fix
+isn't mistaken for the finished shape. The `config.json` `orientation`
+override and `device_presets.orientation_for_model()` are the minimum that
 solves the immediate BIO problem; this is the fuller direction.

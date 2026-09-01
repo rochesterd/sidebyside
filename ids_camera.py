@@ -65,7 +65,7 @@ from ids_peak import ids_peak
 from ids_peak_ipl import ids_peak_ipl
 
 from camera import BaseCamera
-from device_presets import rotation_for_model
+from device_presets import orientation_for_model
 from exposure_calibration import (
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_TARGET_MEDIAN,
@@ -168,14 +168,15 @@ class IdsCamera(BaseCamera):
         red_balance_ratio: float | None = None,
         blue_balance_ratio: float | None = None,
         target_fps: float | None = None,
-        rotation: int | None = None,
+        orientation: str | None = None,
     ):
-        super().__init__(queue_size=queue_size, label=serial, rotation=rotation)
+        super().__init__(queue_size=queue_size, label=serial, orientation=orientation)
         self._serial = serial
         # None (the default) means "resolve from the device-model preset in
-        # _open()" -- e.g. the Keeler BIO camera always mounts inverted. An
-        # explicit value from config.json's `rotation` (0 or 180) is passed
-        # through instead and wins over the preset. See device_presets.py.
+        # _open()" -- e.g. the Keeler BIO camera delivers a vertically-
+        # flipped image. An explicit value from config.json's `orientation`
+        # is passed through instead and wins over the preset. See
+        # device_presets.py.
         self._model_name: str | None = None
         # Per-instrument calibrated values from config.json (InstrumentConfig's
         # optional exposure_time_us/gain/red_balance_ratio/blue_balance_ratio
@@ -222,11 +223,12 @@ class IdsCamera(BaseCamera):
             self._remote_device = self._device.RemoteDevice()
             self._node_map = self._remote_device.NodeMaps()[0]
 
-            # Resolve a not-yet-decided rotation from the device model now
-            # that we know it (self._model_name is set by _open_device()).
-            # An explicit config value was already validated in __init__.
-            if self._rotation is None:
-                self._rotation = rotation_for_model(self._model_name)
+            # Resolve a not-yet-decided orientation from the device model
+            # now that we know it (self._model_name is set by
+            # _open_device()). An explicit config value was already
+            # validated in __init__.
+            if self._orientation is None:
+                self._orientation = orientation_for_model(self._model_name)
 
             self._width = int(self._node_map.FindNode("Width").Value())
             self._height = int(self._node_map.FindNode("Height").Value())
@@ -652,7 +654,7 @@ class IdsCamera(BaseCamera):
         descriptors = device_manager.Devices()
         for descriptor in descriptors:
             if descriptor.SerialNumber() == self._serial:
-                # Stashed for rotation_for_model() in _open(); ModelName()
+                # Stashed for orientation_for_model() in _open(); ModelName()
                 # is the same accessor list_ids_devices() already uses.
                 self._model_name = descriptor.ModelName()
                 return descriptor.OpenDevice(ids_peak.DeviceAccessType_Control)

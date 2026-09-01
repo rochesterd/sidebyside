@@ -295,46 +295,46 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(self.path)
 
-    def test_missing_rotation_defaults_to_none(self):
+    def test_missing_orientation_defaults_to_none(self):
         self._write(VALID)
         cfg = load_config(self.path)
 
-        self.assertIsNone(cfg.instruments["bio"].rotation)
+        self.assertIsNone(cfg.instruments["bio"].orientation)
 
-    def test_rotation_is_parsed_when_present(self):
+    def test_orientation_is_parsed_when_present(self):
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"]["rotation"] = 180
+        data["instruments"]["bio"]["orientation"] = "flip_vertical"
         self._write(data)
 
         cfg = load_config(self.path)
 
-        self.assertEqual(cfg.instruments["bio"].rotation, 180)
+        self.assertEqual(cfg.instruments["bio"].orientation, "flip_vertical")
 
-    def test_rotation_zero_is_allowed_and_kept(self):
-        # 0 is meaningful: it overrides a device-model preset that would
-        # otherwise rotate (device_presets.py), so it must survive as 0,
-        # not collapse to None.
+    def test_orientation_none_string_is_allowed_and_kept(self):
+        # "none" is meaningful: it overrides a device-model preset that
+        # would otherwise transform (device_presets.py), so it must survive
+        # as "none", not collapse to Python None.
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"]["rotation"] = 0
+        data["instruments"]["bio"]["orientation"] = "none"
         self._write(data)
 
         cfg = load_config(self.path)
 
-        self.assertEqual(cfg.instruments["bio"].rotation, 0)
+        self.assertEqual(cfg.instruments["bio"].orientation, "none")
 
-    def test_unsupported_rotation_raises(self):
-        for bad in (90, 270, 45, "180", True):
+    def test_unsupported_orientation_raises(self):
+        for bad in ("upside_down", "rotate_90", 180, "", True):
             with self.subTest(bad=bad):
                 data = json.loads(json.dumps(VALID))
-                data["instruments"]["bio"]["rotation"] = bad
+                data["instruments"]["bio"]["orientation"] = bad
                 self._write(data)
 
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
-    def test_net2860_instrument_rejects_rotation(self):
+    def test_net2860_instrument_rejects_orientation(self):
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "rotation": 180}
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "orientation": "flip_vertical"}
         self._write(data)
 
         with self.assertRaises(ConfigError):

@@ -88,12 +88,13 @@ class InstrumentConfig:
     red_balance_ratio: float | None = None
     blue_balance_ratio: float | None = None
     # Optional escape hatch overriding device_presets.py's per-model default
-    # (e.g. the Keeler BIO camera always mounts inverted). 0 or 180 only --
-    # see camera.py's ALLOWED_ROTATIONS. None means "use the model preset."
-    # There's no settings.py UI for this yet; it's hand-set for a
-    # non-standard mounting. See DECISIONS.md's "Device-model rotation
-    # presets" entry.
-    rotation: int | None = None
+    # (e.g. the Keeler BIO camera delivers a vertically-flipped image). One
+    # of camera.VALID_ORIENTATIONS ("none"/"rotate_180"/"flip_horizontal"/
+    # "flip_vertical"); None means "use the model preset." There's no
+    # settings.py UI for this yet; it's hand-set for a non-standard
+    # mounting. See DECISIONS.md's "Device-model rotation presets" entry
+    # and its orientation follow-up.
+    orientation: str | None = None
 
 
 @dataclass
@@ -177,7 +178,7 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         # instead of producing a config.json that looks configured but
         # isn't.
         unexpected = {
-            "serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio", "rotation"
+            "serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio", "orientation"
         } & entry.keys()
         if unexpected:
             raise ConfigError(
@@ -206,7 +207,7 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
             f"white balance. {_FIX_HINT}"
         )
 
-    rotation = _parse_optional_rotation(path, f"instruments.{key}.rotation", entry.get("rotation"))
+    orientation = _parse_optional_orientation(path, f"instruments.{key}.orientation", entry.get("orientation"))
 
     return InstrumentConfig(
         kind=kind,
@@ -216,7 +217,7 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         gain=gain,
         red_balance_ratio=red_balance_ratio,
         blue_balance_ratio=blue_balance_ratio,
-        rotation=rotation,
+        orientation=orientation,
     )
 
 
@@ -228,14 +229,21 @@ def _parse_optional_positive_number(path: Path, field_name: str, value: object) 
     return float(value)
 
 
-def _parse_optional_rotation(path: Path, field_name: str, value: object) -> int | None:
-    # 0 and 180 only -- camera.py's ALLOWED_ROTATIONS. 90/270 would desync
-    # frames from the camera's reported .resolution (canvas sizing).
+_VALID_ORIENTATIONS = ("none", "rotate_180", "flip_horizontal", "flip_vertical")
+
+
+def _parse_optional_orientation(path: Path, field_name: str, value: object) -> str | None:
+    # Mirrors camera.VALID_ORIENTATIONS (kept as a literal here so config.py
+    # stays import-light -- it deliberately doesn't import camera.py). All
+    # four are dimension-preserving; 90/270 rotation is excluded because it
+    # would desync frames from the camera's reported .resolution.
     if value is None:
         return None
-    if value not in (0, 180) or isinstance(value, bool):
-        raise ConfigError(f"{path}: {field_name} must be 0 or 180. {_FIX_HINT}")
-    return int(value)
+    if value not in _VALID_ORIENTATIONS:
+        raise ConfigError(
+            f"{path}: {field_name} must be one of {', '.join(_VALID_ORIENTATIONS)}. {_FIX_HINT}"
+        )
+    return value
 
 
 def _parse_third_person(path: Path, entry: dict) -> ThirdPersonConfig:

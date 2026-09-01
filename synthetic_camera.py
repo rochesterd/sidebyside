@@ -10,7 +10,7 @@ import time
 import cv2
 import numpy as np
 
-from camera import BaseCamera
+from camera import BaseCamera, ORIENTATION_NONE
 
 SWEEP_PERIOD_S = 2.0
 
@@ -25,7 +25,7 @@ class SyntheticCamera(BaseCamera):
         latency: float = 0.0,
         drop_rate: float = 0.0,
         queue_size: int = 2,
-        rotation: int | None = 0,
+        orientation: str | None = ORIENTATION_NONE,
     ):
         """
         width, height: frame resolution.
@@ -35,7 +35,7 @@ class SyntheticCamera(BaseCamera):
         drop_rate: probability in [0, 1] that a captured frame is discarded,
             simulating an unreliable camera.
         """
-        super().__init__(queue_size=queue_size, label=name, rotation=rotation)
+        super().__init__(queue_size=queue_size, label=name, orientation=orientation)
         self._width = width
         self._height = height
         self._name = name

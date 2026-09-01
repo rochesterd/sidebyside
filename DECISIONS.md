@@ -2253,3 +2253,46 @@ redesign, written up in ROADMAP.md.
 **Tests:** new `test_device_presets.py` (lookup logic) and `test_camera.py`
 (the `BaseCamera` rotation mechanic, via a fixed-frame fake and a real
 `SyntheticCamera`); `test_config.py` gained 5 rotation cases.
+
+---
+
+## 2026-09-01 — Device-model presets: generalized "rotation" to "orientation" (BIO image is mirrored, not rotated)
+
+**Supersedes the mechanic in the "Device-model rotation presets" entry
+above** (the model-keyed-preset rationale and the 0/90/270 exclusion still
+stand). On real hardware the Keeler BIO image, after the 180° rotation that
+entry applied, was still wrong: correct top-to-bottom but mirrored
+left-to-right. The BIO's instrument optics mirror the image; the camera
+isn't physically rotated. Composing the applied 180° with the needed
+horizontal mirror, the actual correct fix is a **pure vertical flip**
+(`image[::-1, :]`) -- which is exactly what `net2860_helper.py` already
+does (`np.flip(axis=0)`) for the older BIO camera. Same instrument, same
+fix.
+
+**Decided:** `camera.py` now carries an `orientation` (one of
+`VALID_ORIENTATIONS`: `"none"` / `"rotate_180"` / `"flip_horizontal"` /
+`"flip_vertical"`) instead of a `rotation` int -- the full Klein-four group
+of dimension-preserving symmetries, since a mounting/optics quirk can be
+any of them, not just 180°. `apply_orientation()` is the one place the
+transform is defined. `device_presets.orientation_for_model()` maps
+`U3-327x` → `"flip_vertical"`. `config.json`'s override field is renamed
+`rotation` → `orientation` and takes the same four strings.
+
+**Why a full rename, not `rotation` + a new `flip` field:** two fields
+would be redundant (`rotate_180` == both flips) and so ambiguous when they
+disagree. One enum over the closed group is unambiguous and still just a
+string in config. Nothing was deployed on the old `rotation` field (no
+clinic config, not in `config.example.json`), so a clean rename costs
+nothing.
+
+**Not yet hardware-verified:** the IDS cameras dropped off USB enumeration
+during packaging (a force-killed frozen `app.exe` left the transport layer
+wedged -- needs a replug) before the `flip_vertical` result could be seen
+through the BIO. The transform math is unit-tested
+(`test_camera.test_apply_orientation_composition_matches_the_group`) and
+the model→orientation mapping is confirmed against the real model string;
+the actual through-the-instrument image still needs a look.
+
+**Tests:** `test_camera.py` / `test_device_presets.py` reworked for the
+four orientations; `test_config.py`'s rotation cases became orientation
+cases.
