@@ -934,6 +934,208 @@ same conversation) — deliberately not building those against today's
 single-file model if this split might reshape what "a recorded session"
 even means. Revisit together before starting either.
 
+**Update 2026-09-02:** decided and designed — see the next entry.
+
+---
+
+## 2026-09-02 — Recorder/Viewer split: design (decided, phased; in-app, not a fork)
+
+Resolves the 2026-08-26 entry above. Decided in conversation on
+2026-09-02, with four calls made up front:
+
+| Question | Decision |
+|---|---|
+| What a session writes | **Two raw streams only** — one file per camera at native resolution. No live composite. A single side-by-side file is produced on demand by Export. |
+| Where the Viewer lives | **Both**: an in-kiosk "Watch" screen *and* a standalone `viewer.exe`, sharing one viewer module. Same repo, same installer — not a fork. |
+| Stream timing | **True per-camera timestamps** (variable frame rate), both stamped on one shared clock so alignment is by construction. |
+| Audience | **Students, self-review.** Play/pause, scrub, layout picker, Export. Nothing that can damage a recording. |
+
+### What changes about "a recorded session"
+
+A session directory becomes:
+
+```
+<sessions_dir>/<YYYY-MM-DD_HHMM>/
+  instrument.mp4         # whichever instrument was recorded; native res, VFR
+  third_person.mp4       # native res, VFR
+  session.json           # format_version 2 -- the index the Viewer reads
+  [<stream>.mkv]         # only survives if that stream's MP4 failed verification
+```
+
+Fixed filenames by *role* (`instrument` / `third_person`), not by which
+instrument was in use — decided 2026-09-02 over `slit_lamp.mp4`/`bio.mp4`:
+the Viewer and Export never have to consult the manifest to find the files,
+and every session folder has the same shape. Which instrument it was, and
+its display label, live in `session.json`.
+
+**`session.json` v2:**
+
+```json
+{
+  "format_version": 2,
+  "session_start_utc": "...",
+  "instrument": "slit_lamp",
+  "clock": { "origin_monotonic": 12345.000 },
+  "streams": {
+    "instrument":   { "file": "instrument.mp4", "label": "BI900",
+                      "width": 1600, "height": 1200,
+                      "frame_count": 1234, "dropped_frames": 3,
+                      "rate_limited_frames": 0,
+                      "first_timestamp": 12345.678,
+                      "offset_s": 0.0, "verified": true },
+    "third_person": { "file": "third_person.mp4", "label": "third-person camera",
+                      "...": "..." }
+  }
+}
+```
+
+- Every frame's PTS in every stream is `timestamp - clock.origin_monotonic`.
+  Two frames with the same PTS in different files were grabbed at the
+  same instant. **That is the whole sync story** — no frame-count
+  lockstep, no sidecar, no offset search at playback.
+- `offset_s` is the long-promised inter-camera latency correction
+  (DECISIONS.md 2026-08-11, designed but never built) finally given a
+  home: a per-stream constant the Viewer subtracts at alignment time.
+  Written as 0.0 for now; the measurement tooling and config plumbing are
+  a follow-up, not part of this work.
+- `first_timestamp` is diagnostic (how long after Start each camera
+  delivered); alignment does not use it.
+- `rate_limited_frames` counts frames the recorder declined because they
+  arrived faster than `recording.fps` — distinct from `dropped_frames`
+  (source-side gaps in `Frame.index`).
+- No backward compatibility with the pre-split `composite.mp4` layout:
+  decided 2026-09-02 — nothing in that format is in circulation, so the
+  Viewer reads `format_version: 2` only and refuses anything else loudly.
+
+### Recorder
+
+`Recorder` becomes a thin coordinator over one **`_StreamWriter` per
+camera**, each with its own thread, PyAV container, and encoder:
+
+- Drains its camera's queue with `read()` (every frame, in order — the
+  drop-detecting API per CLAUDE.md), stamps `pts = int((ts - origin) *
+  1000)` on a `time_base` of 1/1000, and encodes. A frame whose PTS is
+  not strictly greater than the last is bumped by 1 ms (never silently
+  dropped).
+- Applies a recorder-side minimum inter-frame interval of `1/recording.fps`
+  (counted as `rate_limited_frames`). The camera-side caps
+  (`IdsCamera._apply_frame_rate_cap`, `UvcCamera`'s `CAP_PROP_FPS`) are
+  best-effort; this is the guarantee.
+- Encoder options add `g = recording.fps` — a keyframe every
+  `recording.fps` *frames*: ≤1 s of media for a full-rate stream,
+  proportionally longer for a slower one (the ~11 fps slit lamp: ~2.7 s)
+  but always ≤30 frames of decode-forward after a seek, which is cheap.
+  Today's default GOP (~250 frames) would make every scrub decode up to
+  ~8 s forward from the previous keyframe; this is the seek-feel
+  tradeoff, at a few percent of file size.
+- **Both** `stream.time_base` **and** `stream.codec_context.time_base`
+  must be set to 1/1000. Confirmed in a feasibility run against the
+  pinned PyAV 18.0.0: `add_stream(..., rate=fps)` alone leaves the
+  encoder at 1/fps, so ms PTS get rescaled to 1/30 ticks, two jittered
+  ~33 ms-apart frames collapse into one tick, DTS goes non-monotonic, and
+  the MP4 muxer rejects the remux with EINVAL (MKV tolerates it, which is
+  why it would only surface at the remux step). With both timebases
+  pinned: exact PTS round-trip through MKV→MP4 on both an 11 fps and a
+  30 fps stream, cross-stream alignment within one slow-frame period,
+  seek landing ≤ t within one GOP.
+- `stop()` per stream: flush → close MKV → remux to MP4 → verify (the
+  same `_mp4_verifies()` check from the 2026-09-01 decision) → delete MKV
+  or keep it and flag `verified: false`. Then `session.json`.
+- No canvas, no `draw_timer` burned in — streams stay clean for Export and
+  for anything downstream. `Recorder`'s `width`/`height` params go away.
+- Independent threads mean a slow encode on one stream cannot starve the
+  other's queue.
+
+`kiosk.py` is almost untouched: stall detection watches
+`get_latest().index` per camera and never looked inside the recorder;
+the disk preflight's sum-of-widths × max-height estimate is still the
+right proxy for total pixels/sec. `app.py`'s post-session summary and the
+`test_kiosk.py` assertions on `session_info["composite"]` move to the v2
+shape.
+
+### Playback engine (`session_reader.py`, no Qt)
+
+- `Session.load(dir)` — parses `session.json` (v2 only), resolves stream
+  files, reports duration (max last-PTS across streams) and labels.
+- `SessionPlayer` — one PyAV decoder cursor per stream. Core operation:
+  *advance to media time `t`*: decode packets until the next frame's PTS
+  would exceed `t`, keep the last one at or before `t`. H.264 P-frames
+  mean every packet still gets decoded, but only the frame actually shown
+  pays for `to_ndarray()` + compositing — so if display falls behind, it
+  skips presentation, not decoding, and the clock stays honest.
+- Seek: `container.seek()` to the keyframe at or before `t`, then advance
+  as above. With 1 s GOPs that is bounded and scrub feels immediate.
+- A slower stream (the slit lamp at ~11 fps beside a 30 fps third-person)
+  simply holds its last frame, exactly as it was captured. Nothing
+  interpolates.
+
+### Viewer (`viewer.py`: `ViewerWindow`, plus a `main()`)
+
+One PySide6 window, driven by a 30 Hz timer mapping wall-clock-since-Play
+to media time and pulling a frame pair from `SessionPlayer`:
+
+- Video area; Play/Pause; scrub slider; `mm:ss / mm:ss`.
+- Layout dropdown: **Side by side** · **Instrument only** · **Third-person
+  only** · **Picture in picture** — each a `compositor.py` call already
+  written, now made at watch time with `out_size` = the display area (the
+  compositor scales into panes directly, no full-res intermediate).
+- **Export** — renders the chosen layout to a single MP4 at
+  `recording.fps` (steps media time, pulls each pair through the same
+  engine, composites at native size, encodes crf 23 / ultrafast, as
+  today's composite was). Runs in a worker thread with a progress bar;
+  writes `<layout>.mp4` beside the streams; never overwrites or modifies
+  a stream. This is today's `composite.mp4`, produced on demand instead
+  of on every recording.
+- Student-proof: no delete, no rename, no settings.
+
+Two front ends, one class:
+
+- **In-kiosk:** after Stop, the summary gains a **Watch** button (also
+  after a partial/ERROR session — the partial MP4s are still playable).
+  A **Past recordings** button on the idle screen opens a plain list
+  (date, instrument label, duration; newest first) → Watch. The kiosk's
+  own preview timer pauses while a viewer is open (CPU); cameras keep
+  running (restarting an instrument camera costs seconds and re-enters
+  the device-busy class of failures). Recording controls are disabled
+  while a viewer is open.
+- **`viewer.exe`:** `viewer.py main()` — opens a session dir passed on
+  the command line, else the Past-recordings list rooted at
+  `config.json`'s `sessions_dir` (or the frozen default). Gets a Desktop
+  shortcut: unlike `settings.exe`, students *are* its audience.
+
+### What the 2026-08-11 "Composite live" decision was protecting, and where each guarantee goes
+
+| Original goal | Now |
+|---|---|
+| Two views synchronized by construction, no drift | Shared-clock PTS at grab time. Stronger, not weaker: it survives a slow camera instead of duplicating its frames into a fixed-rate composite. |
+| Student watches immediately, nothing to wait for | **Watch** opens the session the moment Stop finishes; no render. |
+| No post step that can fail | Watching needs none. Export is optional and produces a *new* file; a failure there leaves the streams untouched. The only post step that remains (MKV→MP4 remux + verify) already existed. |
+| The composite is the deliverable | The *session* is the deliverable; the composite is one export of it. What a student hands to an instructor or an LMS is either the two clean streams or a one-click export. |
+
+### Explicitly not in scope now
+
+Latency-offset measurement/config (field reserved). Instructor tools
+(frame-step, markers, A/B). Multi-session compare. Any change to
+`preview.py` (dev tool) or `settings.py`. Audio (none is captured today
+either).
+
+### Phases
+
+1. **Recorder writes two VFR streams + `session.json` v2.** `_StreamWriter`;
+   per-stream verify/delete; v2 manifest; kiosk/app summary; `test_recorder.py`
+   rewritten around two decoded outputs (frame counts, PTS monotonic and
+   on the shared clock, rate-limit accounting, verify-fail keeps MKV).
+2. **Playback engine + `ViewerWindow` + in-kiosk Watch.** `session_reader.py`
+   tested by recording real `SyntheticCamera` sessions and reading them
+   back (PTS alignment across streams, seek lands ≤ t, non-v2 refused);
+   Watch after Stop.
+3. **Export + Past recordings list.**
+4. **`viewer.exe`** — `packaging/viewer.spec`, `.iss` files + Desktop/Start
+   shortcuts, `PACKAGING.md`; rebuild and install-test.
+
+Phases 1 and 2 land together before anything is packaged, so the app is
+never shipped in a state where a session has no side-by-side view.
+
 ---
 
 ## 2026-09-01 — settings.py: pick from known-compatible devices with presets, not a free dropdown + typed label
