@@ -1130,11 +1130,57 @@ either).
    back (PTS alignment across streams, seek lands ≤ t, non-v2 refused);
    Watch after Stop.
 3. **Export + Past recordings list.**
-4. **`viewer.exe`** — `packaging/viewer.spec`, `.iss` files + Desktop/Start
-   shortcuts, `PACKAGING.md`; rebuild and install-test.
+4. **Packaging: two installers** — see below.
 
 Phases 1 and 2 land together before anything is packaged, so the app is
 never shipped in a state where a session has no side-by-side view.
+
+### Phase 4: two installers, not one
+
+Revised 2026-09-02, after the in-app-not-a-fork call above: the Viewer
+still ships *inside* the clinic app, but it **also** gets its own
+standalone installer, because the machine that reviews a recording often
+isn't the machine that made it.
+
+| | `sidebyside-setup.exe` (clinic) | `sidebyside-viewer-setup.exe` (review) |
+|---|---|---|
+| Contents | `app.exe`, `settings.exe`, `viewer.exe` | `viewer.exe` only |
+| IDS peak SDK | bundled + silently installed (~356 MB) | **none** |
+| Size | ~490 MB | tens of MB |
+| Privileges | admin (Program Files, camera drivers) | **per-user**, no admin |
+| Installs to | `{autopf}\sidebyside` | `{localappdata}\sidebyside-viewer` |
+| Shortcuts | Desktop: `app.exe`; Start: all three | Desktop + Start: `viewer.exe` |
+| Audience | the clinic room machine | a student's or instructor's own laptop |
+
+**Why a separate installer rather than telling people to run the full
+one:** a student reviewing at home has no cameras, usually no admin
+rights, and no reason to install 356 MB of machine-vision SDK and kernel
+drivers. Requiring that is the kind of friction that ends with nobody
+reviewing anything. The viewer's dependency graph is already clean —
+`viewer.py` → `session_reader.py` → `recorder.py` (constants) → `av`,
+`camera`, plus `compositor`/`qt_image`/`config`. Nothing reaches
+`ids_camera.py`, so `ids_peak` never enters the build; `viewer.spec`
+should assert that with an explicit `excludes` rather than relying on it.
+
+**Both installers must coexist on one machine.** Distinct `AppId` and
+`DefaultDirName`, so installing the review build on the clinic machine
+(or vice versa) doesn't uninstall or overwrite the other.
+
+**Blocking prerequisite, in phase 3:** the standalone viewer cannot
+assume `config.json` exists, and cannot assume recordings live under
+`%PUBLIC%\Documents\sidebyside\sessions` — on a review machine they'll
+have been copied to a USB stick, a Downloads folder, anywhere. So the
+Past-recordings screen needs an explicit **"Open a recording folder…"**
+browse alongside the default-location list, and the viewer must degrade
+gracefully to "nothing configured, pick a folder" rather than erroring.
+`viewer.py`'s `_default_sessions_dir()` already tolerates a missing
+config; the UI is what's missing.
+
+**Small refactor worth doing with this:** `session_reader.py` currently
+imports `SESSION_FORMAT_VERSION`/`INSTRUMENT_STREAM`/`THIRD_PERSON_STREAM`
+from `recorder.py` — the *reader* depending on the *writer*, which reads
+oddly and drags the encoder path into a viewer-only build for three
+constants. Move them to a small `session_format.py` both import.
 
 ---
 
