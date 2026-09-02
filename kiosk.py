@@ -35,12 +35,14 @@ logger = logging.getLogger(__name__)
 #   bytes/sec = bits/sec / 8                      ~= 830 KB/s
 #   10 minutes = bytes/sec * 600                  ~= 498 MB
 #
-# Recorder.stop() keeps both composite.mkv and composite.mp4 (the remux
-# doesn't delete the source, on purpose - see DECISIONS.md), so a completed
-# 10-minute session actually occupies about *two* copies of that estimate
-# on disk. That's where "2x" comes from below: it isn't a safety margin
-# stacked on top, it's what one session literally needs once both files
-# exist. See DECISIONS.md for the full reasoning and chosen thresholds.
+# During finalization Recorder.stop() briefly has both composite.mkv (the
+# interruption-safe capture copy) and the freshly-remuxed composite.mp4 on
+# disk at full size, before it verifies the MP4 and deletes the MKV -- so
+# the *peak* a single session needs is about two copies of that estimate,
+# even though a completed session settles back to one. That's where "2x"
+# comes from below: it isn't a safety margin stacked on top, it's the
+# transient peak one session hits. See DECISIONS.md for the full reasoning
+# and chosen thresholds.
 BITS_PER_PIXEL_ESTIMATE = 0.08
 TARGET_SESSION_MINUTES = 10.0
 REQUIRED_SPACE_MULTIPLIER = 2.0

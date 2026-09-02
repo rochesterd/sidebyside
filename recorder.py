@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 
 import av
@@ -18,6 +19,16 @@ from camera import BaseCamera, Frame
 from compositor import draw_timer, side_by_side
 
 logger = logging.getLogger(__name__)
+
+# Frames to actually decode from the head of the remuxed MP4 when verifying
+# it before deleting the interim MKV -- enough to prove the leading keyframe
+# survived the remux (the failure mode DECISIONS.md's packet-filter entry
+# describes: valid headers, decodes zero frames). ~0.5s at 30fps.
+_MP4_VERIFY_DECODE_FRAMES = 15
+# How many video packets the remuxed MP4 may be short of what was encoded
+# before verification fails it -- a couple of frames of muxer edge-effect
+# slack, same tolerance test_recorder.py uses decoding the output.
+_MP4_VERIFY_PACKET_SLACK = 2
 
 
 @dataclass
@@ -91,6 +102,10 @@ class Recorder:
         self.session_dir: Path | None = None
         self.mkv_path: Path | None = None
         self.mp4_path: Path | None = None
+        # Set in stop(): True once composite.mp4 has been decoded-checked and
+        # the interim composite.mkv deleted; False means the MKV was kept
+        # because the MP4 didn't verify (see _finalize_outputs()).
+        self.mp4_verified = False
         self._container = None
         self._stream = None
         self._start_wall: datetime | None = None
@@ -157,6 +172,7 @@ class Recorder:
 
         self.mp4_path = self.session_dir / "composite.mp4"
         self._remux_to_mp4(self.mkv_path, self.mp4_path)
+        self._finalize_outputs()
 
         session_info = self._build_session_info()
         with open(self.session_dir / "session.json", "w") as f:
@@ -235,6 +251,70 @@ class Recorder:
         self._container.mux(packets)
         self._frame_count += 1
 
+    def _finalize_outputs(self) -> None:
+        """The MKV exists only as the interruption-safe copy during capture
+        (see CLAUDE.md: an interrupted MKV is still playable, an interrupted
+        MP4 is lost). Once stop() has produced composite.mp4 and it checks
+        out, the MKV is redundant -- the remux is a stream copy, so the MP4
+        holds byte-identical video -- and keeping it just doubles what every
+        session costs on disk. Delete it, but only after verifying the MP4,
+        and never delete both: if verification fails, the MKV stays as the
+        recoverable copy and session.json records mp4_verified=false.
+        """
+        if self._mp4_verifies(self.mp4_path):
+            self.mp4_verified = True
+            self.mkv_path.unlink()
+            logger.info(
+                "session_dir=%s: composite.mp4 verified (%d frames); removed interim composite.mkv",
+                self.session_dir,
+                self._frame_count,
+            )
+        else:
+            self.mp4_verified = False
+            logger.error(
+                "session_dir=%s: composite.mp4 did not verify; keeping composite.mkv as the recoverable copy",
+                self.session_dir,
+            )
+
+    def _mp4_verifies(self, mp4_path: Path) -> bool:
+        """True if the remuxed MP4 is safe to treat as the sole copy: its
+        first frames actually decode (catches the dropped-leading-keyframe
+        failure in DECISIONS.md's packet-filter entry -- valid headers, zero
+        decodable frames) and it carries essentially all the video packets
+        that were encoded (catches gross truncation). Both checks are cheap
+        -- a partial decode and a demux-only packet count, not a full
+        decode pass a waiting student would feel.
+        """
+        if self._frame_count == 0:
+            return False  # nothing was recorded -- no basis to verify, so don't drop the MKV
+        try:
+            with av.open(str(mp4_path)) as container:
+                stream = container.streams.video[0]
+                packets = sum(1 for packet in container.demux(stream) if packet.size)
+            with av.open(str(mp4_path)) as container:
+                stream = container.streams.video[0]
+                decoded = sum(1 for _ in islice(container.decode(stream), _MP4_VERIFY_DECODE_FRAMES))
+        except Exception as exc:
+            logger.error("session_dir=%s: composite.mp4 verification errored: %s", self.session_dir, exc)
+            return False
+
+        if decoded == 0:
+            logger.error(
+                "session_dir=%s: composite.mp4 decoded 0 frames from its first %d packets",
+                self.session_dir,
+                _MP4_VERIFY_DECODE_FRAMES,
+            )
+            return False
+        if packets < self._frame_count - _MP4_VERIFY_PACKET_SLACK:
+            logger.error(
+                "session_dir=%s: composite.mp4 has %d video packets, expected ~%d",
+                self.session_dir,
+                packets,
+                self._frame_count,
+            )
+            return False
+        return True
+
     @staticmethod
     def _remux_to_mp4(mkv_path: Path, mp4_path: Path) -> None:
         input_ = av.open(str(mkv_path))
@@ -257,10 +337,14 @@ class Recorder:
     def _build_session_info(self) -> dict:
         return {
             "session_start_utc": self._start_wall.isoformat(),
-            "output_files": {
-                "mkv": self.mkv_path.name,
-                "mp4": self.mp4_path.name,
-            },
+            # composite.mkv is absent once the MP4 verified and it was
+            # deleted; present alongside the MP4 when verification failed.
+            "output_files": (
+                {"mp4": self.mp4_path.name}
+                if self.mp4_verified
+                else {"mkv": self.mkv_path.name, "mp4": self.mp4_path.name}
+            ),
+            "mp4_verified": self.mp4_verified,
             "composite": {
                 "width": self.width,
                 "height": self.height,

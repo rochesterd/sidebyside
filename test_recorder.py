@@ -8,6 +8,7 @@ import json
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import av
 
@@ -48,6 +49,13 @@ class TestRecorder(unittest.TestCase):
             mp4_path = recorder.session_dir / "composite.mp4"
             self.assertTrue(mp4_path.exists())
             self.assertGreater(mp4_path.stat().st_size, 0)
+
+            # A verified MP4 means the interim MKV is deleted -- see
+            # DECISIONS.md's "Delete composite.mkv after the MP4 is
+            # verified" entry.
+            self.assertFalse((recorder.session_dir / "composite.mkv").exists())
+            self.assertTrue(session_info["mp4_verified"])
+            self.assertEqual(session_info["output_files"], {"mp4": "composite.mp4"})
 
             session_json_path = recorder.session_dir / "session.json"
             self.assertTrue(session_json_path.exists())
@@ -107,6 +115,67 @@ class TestRecorder(unittest.TestCase):
                 camera_b.stop()
 
             self.assertGreater(session_info["cameras"]["camera_a"]["dropped_frames"], 0)
+
+    def test_mkv_is_kept_when_the_mp4_fails_verification(self):
+        """If the remuxed MP4 doesn't check out, stop() must keep both files
+        -- the MKV is the recoverable copy -- and say so in session.json.
+        Never delete both (CLAUDE.md: recordings are irreplaceable).
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            camera_a = SyntheticCamera(160, 120, name="cam-a", fps=30)
+            camera_b = SyntheticCamera(160, 120, name="cam-b", fps=30)
+            camera_a.start()
+            camera_b.start()
+            try:
+                recorder = Recorder(
+                    camera_a, camera_b, name_a="cam-a", name_b="cam-b",
+                    output_root=tmp_root, width=160, height=120, fps=30, preset="ultrafast",
+                )
+                recorder.start()
+                time.sleep(2)
+                with patch.object(Recorder, "_mp4_verifies", return_value=False):
+                    session_info = recorder.stop()
+            finally:
+                camera_a.stop()
+                camera_b.stop()
+
+            self.assertTrue((recorder.session_dir / "composite.mkv").exists())
+            self.assertTrue((recorder.session_dir / "composite.mp4").exists())
+            self.assertFalse(session_info["mp4_verified"])
+            self.assertEqual(
+                session_info["output_files"], {"mkv": "composite.mkv", "mp4": "composite.mp4"}
+            )
+
+    def test_mp4_verifies_rejects_a_truncated_file(self):
+        """_mp4_verifies() must fail a file that's missing most of its
+        packets, so a botched remux never triggers the MKV deletion.
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            camera_a = SyntheticCamera(160, 120, name="cam-a", fps=30)
+            camera_b = SyntheticCamera(160, 120, name="cam-b", fps=30)
+            camera_a.start()
+            camera_b.start()
+            try:
+                recorder = Recorder(
+                    camera_a, camera_b, name_a="cam-a", name_b="cam-b",
+                    output_root=tmp_root, width=160, height=120, fps=30, preset="ultrafast",
+                )
+                recorder.start()
+                time.sleep(3)
+                session_info = recorder.stop()
+            finally:
+                camera_a.stop()
+                camera_b.stop()
+
+            # The real MP4 verified and the MKV is gone; truncate a copy and
+            # confirm the check rejects it.
+            good_mp4 = recorder.session_dir / "composite.mp4"
+            truncated = recorder.session_dir / "truncated.mp4"
+            data = good_mp4.read_bytes()
+            truncated.write_bytes(data[: len(data) // 4])
+
+            self.assertTrue(session_info["mp4_verified"])
+            self.assertFalse(recorder._mp4_verifies(truncated))
 
 
 if __name__ == "__main__":

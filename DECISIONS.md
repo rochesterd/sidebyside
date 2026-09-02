@@ -2343,3 +2343,47 @@ sub-threshold failures don't reopen, sustained failure reopens exactly once
 within the cooldown, a successful reopen restores frames and resets the
 counter, a failed reopen is swallowed and retried, reconnect bails when
 stopping) plus a `warmup=False` case.
+
+---
+
+## 2026-09-01 — Delete composite.mkv after the MP4 is verified (not "keep both")
+
+**Supersedes** the "keeps both `composite.mkv` and `composite.mp4` after
+`stop()`" behavior noted in the 2026-08-11 disk-preflight entry.
+
+**Decided:** `Recorder.stop()` now deletes `composite.mkv` once it has
+remuxed `composite.mp4` **and** verified that MP4 decodes. Verification
+(`_mp4_verifies()`): decode the first ~15 frames (must yield >0 -- catches
+the dropped-leading-keyframe failure from the "PyAV remux filters on empty
+packets" entry: valid headers, zero decodable frames) and demux-count the
+video packets (must be within 2 of what was encoded -- catches gross
+truncation). Both checks are cheap; no full decode pass a waiting student
+would feel. If verification fails, **both files are kept** and
+`session.json` records `mp4_verified: false` plus `composite.mkv` in
+`output_files`.
+
+**Why:** the MKV exists only as the interruption-safe copy *during*
+capture (an interrupted MKV is still playable, an interrupted MP4 is
+lost). The remux is a stream copy, so after a clean stop the MP4 holds
+byte-identical video and the MKV is pure redundancy -- and it's not small:
+keeping it doubled every session's footprint on disk, on a kiosk that
+records ~500 MB/session unattended all day. The 2026-08-11 "Composite
+live" entry already classes the raw/interim files as "debugging artifact...
+nothing depends on them," so this isn't reversing a principle, just
+stopping paying 2x storage for a file whose job is done.
+
+**Never deletes both:** the irreplaceable-data rule (CLAUDE.md) means a
+failed verification must leave *something* playable. The MKV is the
+fallback, and the failure is loud (logged ERROR, surfaced in
+`session.json`).
+
+**Disk preflight (`kiosk.py`) unchanged at 2x:** during finalization both
+files still briefly coexist at full size (remux writes the MP4 before the
+MKV is deleted), so the transient *peak* one session needs is still ~2x
+the estimate, even though a completed session now settles to 1x. Comment
+updated; `REQUIRED_SPACE_MULTIPLIER` not touched.
+
+**Tests:** `test_recorder.py`'s happy-path test now asserts the MKV is
+gone, `mp4_verified` is true, and `output_files` has no `mkv`; a new test
+forces `_mp4_verifies()` false and asserts both files survive and
+`session.json` says so.

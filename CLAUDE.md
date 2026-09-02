@@ -176,13 +176,20 @@ technician picked somewhere else via `settings.py`'s Browse field — see
 "Distribute a frozen-exe installer" entry for why this needs to be
 technician-choosable rather than fixed:
 
-- `composite.mkv` — written live during capture. Interruption-safe.
-- `composite.mp4` — remuxed from the MKV once `stop()` is called. No
-  re-encode, so this step is fast but depends on the MKV having closed
-  cleanly.
+- `composite.mkv` — written live during capture. Interruption-safe. Exists
+  only as the crash-safe copy: `stop()` deletes it once `composite.mp4` is
+  produced *and* verified (see below), so a completed session keeps just
+  the MP4. It stays only when verification fails.
+- `composite.mp4` — remuxed (stream copy, no re-encode) from the MKV once
+  `stop()` is called, then verified: its first frames must actually decode
+  (the dropped-keyframe failure in DECISIONS.md's packet-filter entry) and
+  its packet count must match what was encoded. Verified → the MKV is
+  deleted; not verified → both files kept and `session.json` says so.
 - `session.json` — camera names, resolutions, each camera's first-frame
-  timestamp, per-camera and composite frame counts, and per-camera
-  dropped-frame counts (computed from gaps in `Frame.index`, not estimated).
+  timestamp, per-camera and composite frame counts, per-camera
+  dropped-frame counts (computed from gaps in `Frame.index`, not
+  estimated), `output_files` (whether `composite.mkv` survived), and
+  `mp4_verified`.
 
 The default relative `sessions/` path is gitignored. Nothing under
 `sessions_dir` is a build artifact of source control; it's the actual
@@ -236,10 +243,11 @@ something to regenerate.
   exposure time, not by anything a device query would reveal. See
   `DECISIONS.md`'s "config-driven recording fps, device-derived canvas
   size" entry.
-- Record to MKV during capture, remux to MP4 afterward. An interrupted MKV
-  is still playable; an interrupted MP4 is lost. When remuxing, filter
-  packets on `packet.size == 0`, not `packet.dts is None` — see
-  `DECISIONS.md`.
+- Record to MKV during capture, remux to MP4 afterward, then verify the
+  MP4 and delete the MKV — never delete both (a failed verification keeps
+  the MKV). An interrupted MKV is still playable; an interrupted MP4 is
+  lost. When remuxing, filter packets on `packet.size == 0`, not
+  `packet.dts is None` — see `DECISIONS.md`.
 - Prefer dropping frames over blocking a capture thread. A blocked capture
   thread stalls the device.
 - When a decision has a non-obvious reason behind it, add an entry to
