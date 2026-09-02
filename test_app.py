@@ -10,8 +10,10 @@ so this stays headless.
 
 from __future__ import annotations
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtGui import QCloseEvent
@@ -188,6 +190,92 @@ class TestCloseLockdown(unittest.TestCase):
         finally:
             third_person.stop()
             instruments["slit_lamp"].stop()
+
+
+class TestWatchButton(unittest.TestCase):
+    """The Watch button opens the just-finished session in the viewer --
+    see ROADMAP.md's Recorder/Viewer split entry. open_session is patched
+    out: what matters here is the gating and that the live preview is
+    paused around it, not the viewer itself (test_viewer.py covers that).
+    """
+
+    def _window(self, tmp_root: str) -> tuple[KioskWindow, SyntheticCamera, SyntheticCamera]:
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument = SyntheticCamera(160, 120, fps=30)
+        window = KioskWindow(third_person, {"slit_lamp": instrument}, output_root=tmp_root)
+        return window, third_person, instrument
+
+    def test_disabled_until_a_session_has_been_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                window._sync_ui(window.controller.poll_preflight())
+                self.assertFalse(window.watch_button.isEnabled())
+
+                window.controller.last_session_dir = Path(tmp_root) / "2026-01-01_1200"
+                window._sync_ui(window.controller.poll_preflight())
+                self.assertTrue(window.watch_button.isEnabled())
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_disabled_while_recording(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                window.controller.last_session_dir = Path(tmp_root) / "2026-01-01_1200"
+                window.controller.state = State.RECORDING
+                window._sync_ui()
+                self.assertFalse(window.watch_button.isEnabled())
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_clicking_opens_the_session_and_restarts_the_preview(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                session_dir = Path(tmp_root) / "2026-01-01_1200"
+                window.controller.last_session_dir = session_dir
+
+                with patch("app.open_session") as mock_open:
+                    # The live preview must be paused while the modal
+                    # viewer is up, and restarted afterwards.
+                    mock_open.side_effect = lambda *a, **k: self.assertFalse(
+                        window.preview_timer.isActive()
+                    )
+                    window._on_watch_clicked()
+
+                mock_open.assert_called_once()
+                self.assertEqual(mock_open.call_args.args[0], session_dir)
+                self.assertTrue(window.preview_timer.isActive())
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_preview_restarts_even_if_the_viewer_raises(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                window.controller.last_session_dir = Path(tmp_root) / "2026-01-01_1200"
+                with patch("app.open_session", side_effect=RuntimeError("boom")):
+                    with self.assertRaises(RuntimeError):
+                        window._on_watch_clicked()
+                self.assertTrue(window.preview_timer.isActive())
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_does_nothing_when_no_session_has_been_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                with patch("app.open_session") as mock_open:
+                    window._on_watch_clicked()
+                mock_open.assert_not_called()
+            finally:
+                third_person.stop()
+                instrument.stop()
 
 
 class TestMissingConfigStartup(unittest.TestCase):

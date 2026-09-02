@@ -46,6 +46,7 @@ from kiosk import KioskController, PreflightStatus, State
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
 from uvc_camera import UvcCamera
+from viewer import open_session
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +190,22 @@ class KioskWindow(QMainWindow):
         self.summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.summary_label.setWordWrap(True)
 
+        # Watching is the point of recording -- the student reviews what
+        # they just did while the muscle memory is fresh. Nothing is
+        # rendered to make this possible; the viewer lays the session's two
+        # streams out live. See ROADMAP.md's Recorder/Viewer split entry.
+        self.watch_button = QPushButton("Watch")
+        self.watch_button.setMinimumHeight(40)
+        self.watch_button.setEnabled(False)
+        self.watch_button.clicked.connect(self._on_watch_clicked)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
+
+        summary_row = QHBoxLayout()
+        summary_row.addWidget(self.summary_label, stretch=1)
+        summary_row.addWidget(self.watch_button)
 
         layout = QVBoxLayout()
         layout.addWidget(self.error_banner)
@@ -199,7 +213,7 @@ class KioskWindow(QMainWindow):
         layout.addLayout(picker)
         layout.addLayout(buttons)
         layout.addWidget(self.status_label)
-        layout.addWidget(self.summary_label)
+        layout.addLayout(summary_row)
 
         central = QWidget()
         central.setLayout(layout)
@@ -284,6 +298,20 @@ class KioskWindow(QMainWindow):
         self._sync_ui()
         self.summary_label.setText(self._format_summary("Session complete", session_info))
 
+    def _on_watch_clicked(self) -> None:
+        session_dir = self.controller.last_session_dir
+        if session_dir is None or self.controller.state == State.RECORDING:
+            return
+        # The cameras keep running: restarting an instrument camera costs
+        # seconds and re-enters the device-busy class of failures (see
+        # DECISIONS.md's settings.py Preview entry). Only the live preview
+        # pauses -- there's no point compositing behind a modal window.
+        self.preview_timer.stop()
+        try:
+            open_session(session_dir, parent=self)
+        finally:
+            self.preview_timer.start(int(1000 / PREVIEW_FPS))
+
     def _update_preview(self) -> None:
         frame_tp = self.third_person_camera.get_latest()
         if frame_tp is None:
@@ -314,6 +342,9 @@ class KioskWindow(QMainWindow):
         for key, button in self._instrument_buttons.items():
             button.setEnabled(state != State.RECORDING)
             button.setChecked(key == self._desired_instrument)
+        self.watch_button.setEnabled(
+            state != State.RECORDING and self.controller.last_session_dir is not None
+        )
 
         if state == State.RECORDING:
             self.status_label.setText("Recording...")

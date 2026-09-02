@@ -48,6 +48,24 @@ def _fit_into_pane(
     cv2.resize(image, (new_w, new_h), dst=dst[y_off : y_off + new_h, x_off : x_off + new_w], interpolation=interp)
 
 
+def fit_into_canvas(
+    image: np.ndarray,
+    out_size: tuple[int, int],
+    background: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """One image letterboxed into a canvas of `out_size` (width, height).
+
+    The single-camera counterpart to side_by_side/picture_in_picture, for
+    viewer.py's "instrument only" / "third-person only" layouts -- so every
+    layout mode goes through the same aspect-preserving fit rather than
+    letting Qt stretch a raw frame.
+    """
+    out_w, out_h = out_size
+    canvas = np.empty((out_h, out_w, 3), dtype=np.uint8)
+    _fit_into_pane(image, canvas, background)
+    return canvas
+
+
 def side_by_side(
     left: np.ndarray,
     right: np.ndarray,

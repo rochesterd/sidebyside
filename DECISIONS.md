@@ -2535,3 +2535,69 @@ per-stream counts and flags an unverified stream.
 **Tests:** `test_recorder.py` rewritten around two decoded outputs (5
 cases); `test_kiosk.py`'s two session assertions moved to the v2 shape.
 Full suite 219.
+
+---
+
+## 2026-09-02 - Recorder/Viewer split, phase 2: playback engine and Viewer
+
+**Decided:** `session_reader.py` (no Qt) reads a session back;
+`viewer.py`'s `ViewerDialog` is a thin PySide6 shell over it, opened
+modally from a new Watch button in the kiosk and runnable standalone.
+Phases 1 and 2 land together, so the app is never in a state where a
+session has no side-by-side view. Phases 3 (Export, Past recordings) and
+4 (`viewer.exe` packaging) remain.
+
+**Alignment is by timestamp, and only by timestamp.** Each stream keeps a
+decode cursor; presenting media time `t` means "advance each cursor to the
+last frame at or before `t`". Because the recorder wrote PTS as
+`grab time - clock origin`, that yields frames genuinely captured at the
+same instant, with no frame pairing, sidecar or offset search. Confirmed
+visually on an 11fps-instrument/30fps-third-person recording: at t=2.0s
+the panes show instrument frame 21 (t=1.910s) beside third-person frame 59
+(t=1.967s) -- 57ms apart, bounded by the slow camera's own ~91ms frame
+period, and the frame *numbers* are unrelated, as they should be.
+
+**Decoding and presenting are separate.** Advancing past several frames
+still decodes each one (H.264 P-frames leave no choice) but only the frame
+actually shown pays for `to_ndarray()`. So a UI that falls behind skips
+presentation, not decoding, and media time never drifts from wall-clock.
+`ViewerDialog._tick()` computes `t` from wall-clock elapsed since Play
+rather than accumulating per-tick increments, for the same reason.
+
+**A stream shows its first frame for any `t` before it, rather than
+black.** Found by a test failing at t=0: the recorder discards frames
+captured before the session origin, so stream 0 is a few ms in, and the
+two cameras don't deliver their first frame at the same instant. Black
+would misrepresent a camera that was running the whole time.
+
+**`any(cursor.advance_to(t) for ...)` was a real bug**, caught by the same
+test run: `any()` short-circuits, so every stream after the first one that
+moved never advanced -- one pane playing, the other frozen. Now a list
+comprehension. Worth recording because the generator form reads as
+obviously correct.
+
+**`ViewerDialog` is a `QDialog`, not a `QMainWindow`**, so `app.py` can
+`.exec()` it modally (which is what disables the kiosk's own controls
+while it's up) and `main()` can still show it standalone. Teardown hangs
+off the `finished` signal, not `closeEvent` -- Esc routes through
+`QDialog.reject()`, which delivers no `QCloseEvent`, and this dialog holds
+open PyAV decoders. Exactly the leak the "settings.py Preview leaked the
+IDS device" entry above describes, applied preemptively this time, with a
+test driving `reject()` specifically.
+
+**Watch pauses the live preview but not the cameras.** Restarting an
+instrument camera costs seconds and re-enters the device-busy class of
+failures; there's no comparable cost to skipping preview compositing
+behind a modal window. `app.py` restarts the preview timer in a `finally`,
+so a viewer that raises can't leave the kiosk with a dead preview.
+
+**Also added:** `compositor.fit_into_canvas()` -- the single-image
+counterpart to `side_by_side`/`picture_in_picture`, so the viewer's
+"instrument only" / "third-person only" modes get the same
+aspect-preserving letterbox rather than letting Qt stretch a raw frame.
+
+**Tests:** new `test_session_reader.py` (12) and `test_viewer.py` (12),
+both against real recorded sessions rather than mocked PyAV -- what's
+worth testing is whether alignment actually holds across two
+independently-encoded files, which a mock can't tell us. `test_app.py`
+gained 5 Watch-button cases. Full suite 248.
