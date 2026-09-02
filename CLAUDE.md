@@ -131,10 +131,11 @@ a UI poll loop can stall the display waiting on a queue.
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
 | `qt_image.py` | `bgr_to_pixmap()` — the one BGR-ndarray-to-`QPixmap` conversion, shared by every window that shows a live camera feed (`app.py`, `preview.py`, `settings.py`). |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
-| `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, writes `session.json`. Uses `read()`. |
+| `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, verifies the MP4 then deletes the MKV (keeps both if it doesn't verify), writes `session.json`. Uses `read()`. |
+| `retention.py` | Opt-in cleanup of old recording sessions, run once by `app.py` at startup. Age sweep (`max_age_days`, always) + low-disk capacity pass (`min_free_gb`/`protect_days`, only when free space is low). Never touches a non-session folder, a session missing `session.json`, or the newest session. Absent `retention` config → never called. Imports only stdlib + `config.py`. See DECISIONS.md's "Automatic cleanup of old recordings" entry. |
 | `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
 | `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — today's minimal shape of "protect the student from mistakes," not a fixed ceiling (see "Who uses it"). Picker disables once recording starts. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
-| `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
+| `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, a recordings-folder picker, an opt-in "Automatically delete old recordings" group (see `retention.py`), Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
 | `setup.ps1` | Bootstraps a **developer's** machine for working on source: venv + `requirements.txt` + `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. Not part of any path a clinic machine goes through — see `PACKAGING.md`/ROADMAP.md's "Distribute a frozen-exe installer" entry. |
 | `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. Same developer-only scope as `setup.ps1`. |
 | `packaging/app.spec`, `packaging/settings.spec` | PyInstaller specs freezing `app.py`/`settings.py` into standalone `app.exe`/`settings.exe` — no Python, venv, or `pip install` needed on the machine that runs them. See `PACKAGING.md`. |
@@ -143,7 +144,8 @@ a UI poll loop can stall the display waiting on a queue.
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
 | `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, without real hardware or `.show()`/`.exec()`. |
 | `test_compositor.py` | Correctness tests for `side_by_side`/`picture_in_picture` written after a perf rewrite made the fill logic less obviously correct — see DECISIONS.md. |
-| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization, `orientation` (the four `VALID_ORIENTATIONS` strings, rejected for `net2860`). |
+| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization, `orientation` (the four `VALID_ORIENTATIONS` strings, rejected for `net2860`), `retention` (age-only, capacity pass, both-or-neither, `protect_days ≤ max_age_days`). |
+| `test_retention.py` | Tests for `retention.apply_retention` against real temp session folders (only disk-usage and per-session size stubbed): age sweep, newest-session / incomplete-session / non-session-folder protection, capacity pass oldest-first and its `protect_days` floor / target-not-met reporting / no-op paths. |
 | `test_camera.py` | `BaseCamera`'s subclass-independent behavior — today the `orientation` mechanic (each of the four transforms checked pixel-wise, dimensions preserved, contiguous output, group composition; invalid values rejected at construction), via a fixed-frame fake and a real `SyntheticCamera`. |
 | `test_device_presets.py` | `device_presets.orientation_for_model()` lookup — real model strings, case-insensitive substring match, slit lamp not colliding with the BIO token. |
 | `test_settings.py` | Headless tests for `SettingsWindow`/`DeviceRow` with injected fake enumeration functions (no real hardware or IDS SDK needed): startup pre-population, Save gating (including the same-camera-two-roles conflict check), Rescan, malformed-config warning, Preview wiring. |
@@ -195,6 +197,12 @@ The default relative `sessions/` path is gitignored. Nothing under
 `sessions_dir` is a build artifact of source control; it's the actual
 deliverable handed to a student, so treat contents under it as data, not
 something to regenerate.
+
+Old sessions are pruned only if a technician opted in via `config.json`'s
+`retention` section (`settings.py` → "Automatically delete old
+recordings") — off by default. `retention.py` runs one pass at `app.py`
+startup: an age sweep plus a low-disk capacity pass, never touching the
+newest session or one still missing its `session.json`.
 
 ## Environment
 

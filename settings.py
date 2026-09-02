@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -148,6 +150,12 @@ def _uvc_candidates(devices: list[UvcDeviceInfo]) -> list[RowCandidate]:
         for d in devices
     ]
 
+
+# Pre-filled defaults for the (opt-in, unchecked-by-default) recordings-
+# cleanup group -- see retention.py / config.RetentionConfig.
+_DEFAULT_MAX_AGE_DAYS = 30
+_DEFAULT_MIN_FREE_GB = 20
+_DEFAULT_PROTECT_DAYS = 7
 
 _GAIN_SLIDER_SCALE = 10  # QSlider is integer-only; gain is a small float (e.g. 1.0-24.0)
 # BalanceRatio's real range is unverified (no hardware to check against --
@@ -718,6 +726,8 @@ class SettingsWindow(QMainWindow):
         sessions_dir_row.addWidget(self.sessions_dir_edit)
         sessions_dir_row.addWidget(self.sessions_dir_browse_button)
 
+        self.retention_group = self._build_retention_group()
+
         layout = QVBoxLayout()
         layout.addWidget(self.warning_label)
         layout.addWidget(self.conflict_label)
@@ -725,6 +735,7 @@ class SettingsWindow(QMainWindow):
             layout.addWidget(row)
             row.changed.connect(self._update_save_enabled)
         layout.addLayout(sessions_dir_row)
+        layout.addWidget(self.retention_group)
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.rescan_button)
@@ -741,6 +752,65 @@ class SettingsWindow(QMainWindow):
 
     def _all_rows(self) -> list[DeviceRow]:
         return [*self._instrument_rows.values(), self._third_person_row]
+
+    def _build_retention_group(self) -> QGroupBox:
+        """Opt-in recordings cleanup (see retention.py). A checkable group:
+        unchecked -> no `retention` key is written and the app never cleans
+        up. Checked -> both passes are configured together (age sweep +
+        low-disk capacity pass), which keeps this UI and config.py's
+        both-or-neither validation simple; an age-only policy is still
+        possible by hand-editing config.json.
+        """
+        group = QGroupBox("Automatically delete old recordings")
+        group.setCheckable(True)
+        group.setChecked(False)
+
+        self.retention_age_spin = QSpinBox()
+        self.retention_age_spin.setRange(1, 3650)
+        self.retention_age_spin.setValue(_DEFAULT_MAX_AGE_DAYS)
+        self.retention_age_spin.setSuffix(" days")
+
+        self.retention_free_spin = QSpinBox()
+        self.retention_free_spin.setRange(1, 100_000)
+        self.retention_free_spin.setValue(_DEFAULT_MIN_FREE_GB)
+        self.retention_free_spin.setSuffix(" GB")
+
+        self.retention_protect_spin = QSpinBox()
+        self.retention_protect_spin.setRange(1, 3650)
+        self.retention_protect_spin.setValue(_DEFAULT_PROTECT_DAYS)
+        self.retention_protect_spin.setSuffix(" days")
+        # protect_days can't exceed max_age_days (config.py rejects it).
+        self.retention_age_spin.valueChanged.connect(
+            lambda value: self.retention_protect_spin.setMaximum(value)
+        )
+        self.retention_protect_spin.setMaximum(self.retention_age_spin.value())
+
+        age_row = QHBoxLayout()
+        age_row.addWidget(QLabel("Delete recordings older than"))
+        age_row.addWidget(self.retention_age_spin)
+        age_row.addStretch()
+
+        capacity_row = QHBoxLayout()
+        capacity_row.addWidget(QLabel("When free disk space is below"))
+        capacity_row.addWidget(self.retention_free_spin)
+        capacity_row.addWidget(QLabel(", delete older recordings too, but keep the last"))
+        capacity_row.addWidget(self.retention_protect_spin)
+        capacity_row.addStretch()
+
+        inner = QVBoxLayout()
+        inner.addLayout(age_row)
+        inner.addLayout(capacity_row)
+        group.setLayout(inner)
+        return group
+
+    def _retention_data(self) -> dict | None:
+        if not self.retention_group.isChecked():
+            return None
+        return {
+            "max_age_days": self.retention_age_spin.value(),
+            "min_free_gb": self.retention_free_spin.value(),
+            "protect_days": self.retention_protect_spin.value(),
+        }
 
     def _load_existing_config(self) -> None:
         if not self.config_path.exists():
@@ -765,6 +835,13 @@ class SettingsWindow(QMainWindow):
         self._third_person_row.set_pending_selection(cfg.third_person.vid_pid)
         if cfg.sessions_dir is not None:
             self.sessions_dir_edit.setText(str(cfg.sessions_dir))
+        if cfg.retention is not None:
+            self.retention_group.setChecked(True)
+            self.retention_age_spin.setValue(cfg.retention.max_age_days)  # sets protect_spin's max first
+            if cfg.retention.min_free_gb is not None:
+                self.retention_free_spin.setValue(int(cfg.retention.min_free_gb))
+            if cfg.retention.protect_days is not None:
+                self.retention_protect_spin.setValue(cfg.retention.protect_days)
 
     def rescan(self) -> None:
         ids_devices, ids_status = self._safe_list_ids_devices()
@@ -851,6 +928,9 @@ class SettingsWindow(QMainWindow):
             },
             "sessions_dir": self.sessions_dir_edit.text(),
         }
+        retention = self._retention_data()
+        if retention is not None:
+            data["retention"] = retention
         self.config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.status_label.setText(f"Saved to {self.config_path}. Restart app.py to apply.")
         self.warning_label.hide()

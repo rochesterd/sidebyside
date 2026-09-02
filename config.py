@@ -113,6 +113,22 @@ class RecordingConfig:
 
 
 @dataclass
+class RetentionConfig:
+    """Opt-in cleanup of old recording sessions -- see retention.py and
+    DECISIONS.md's "Automatic cleanup of old recordings" entry. Absent from
+    config.json entirely means disabled.
+
+    `max_age_days` drives the unconditional age sweep. `min_free_gb` /
+    `protect_days` (set together or not at all) add the low-disk capacity
+    pass: when free space is below `min_free_gb`, delete the oldest sessions
+    -- but never one younger than `protect_days` -- until it recovers.
+    """
+    max_age_days: int
+    min_free_gb: float | None = None
+    protect_days: int | None = None
+
+
+@dataclass
 class AppConfig:
     instruments: dict[str, InstrumentConfig]
     third_person: ThirdPersonConfig
@@ -122,6 +138,8 @@ class AppConfig:
     # and for the same reason: every config.json written before this field
     # existed is still valid.
     sessions_dir: Path | None = None
+    # None means "no automatic cleanup" -- see RetentionConfig.
+    retention: RetentionConfig | None = None
 
 
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
@@ -149,9 +167,14 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
 
     recording = _parse_recording(path, raw.get("recording"))
     sessions_dir = _parse_sessions_dir(path, raw.get("sessions_dir"))
+    retention = _parse_retention(path, raw.get("retention"))
 
     return AppConfig(
-        instruments=instruments, third_person=third_person, recording=recording, sessions_dir=sessions_dir
+        instruments=instruments,
+        third_person=third_person,
+        recording=recording,
+        sessions_dir=sessions_dir,
+        retention=retention,
     )
 
 
@@ -295,3 +318,42 @@ def _parse_sessions_dir(path: Path, entry: object) -> Path | None:
     if not isinstance(entry, str) or not entry:
         raise ConfigError(f"{path}: 'sessions_dir' must be a non-empty string. {_FIX_HINT}")
     return Path(entry)
+
+
+def _positive_int(path: Path, field_name: str, value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"{path}: {field_name} must be a positive integer. {_FIX_HINT}")
+    return value
+
+
+def _parse_retention(path: Path, entry: object) -> "RetentionConfig | None":
+    # Optional and opt-in: absent means no automatic cleanup at all (the
+    # default). Present means a technician has deliberately set a retention
+    # policy -- see retention.py and DECISIONS.md's "Automatic cleanup of
+    # old recordings" entry.
+    if entry is None:
+        return None
+    if not isinstance(entry, dict):
+        raise ConfigError(f"{path}: 'retention' must be an object. {_FIX_HINT}")
+
+    max_age_days = _positive_int(path, "retention.max_age_days", entry.get("max_age_days"))
+
+    min_free_gb = entry.get("min_free_gb")
+    protect_days = entry.get("protect_days")
+    if (min_free_gb is None) != (protect_days is None):
+        raise ConfigError(
+            f"{path}: retention must set both min_free_gb and protect_days, or neither -- "
+            f"protect_days bounds how far back the low-disk pass is allowed to delete. {_FIX_HINT}"
+        )
+    if min_free_gb is not None:
+        if not isinstance(min_free_gb, (int, float)) or isinstance(min_free_gb, bool) or min_free_gb <= 0:
+            raise ConfigError(f"{path}: retention.min_free_gb must be a positive number. {_FIX_HINT}")
+        protect_days = _positive_int(path, "retention.protect_days", protect_days)
+        if protect_days > max_age_days:
+            raise ConfigError(
+                f"{path}: retention.protect_days ({protect_days}) must not exceed "
+                f"max_age_days ({max_age_days}). {_FIX_HINT}"
+            )
+        min_free_gb = float(min_free_gb)
+
+    return RetentionConfig(max_age_days=max_age_days, min_free_gb=min_free_gb, protect_days=protect_days)

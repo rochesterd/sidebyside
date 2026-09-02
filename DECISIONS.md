@@ -2387,3 +2387,65 @@ updated; `REQUIRED_SPACE_MULTIPLIER` not touched.
 gone, `mp4_verified` is true, and `output_files` has no `mkv`; a new test
 forces `_mp4_verifies()` false and asserts both files survive and
 `session.json` says so.
+
+---
+
+## 2026-09-01 — Automatic cleanup of old recordings (opt-in, age sweep + low-disk pass)
+
+**Decided:** New `retention.py`, run once by `app.py` at startup (never on
+the recording timer, never against an in-progress session). Driven entirely
+by an opt-in `retention` section in `config.json` -- absent means no
+cleanup at all, which stays the default. Configured via `settings.py`'s
+"Automatically delete old recordings" group (a checkable `QGroupBox`,
+unchecked by default).
+
+Two passes:
+1. **Age sweep** (`max_age_days`, always runs): delete every *completed*
+   session older than N days, regardless of free space.
+2. **Capacity pass** (`min_free_gb` + `protect_days`, set together or not
+   at all; only runs when free space is actually below `min_free_gb`):
+   delete the oldest completed sessions -- oldest first, but never one
+   younger than `protect_days` -- until free space recovers. If it can't
+   recover without crossing `protect_days`, it stops and
+   `RetentionResult.capacity_target_met` is False; `app.py` logs a warning
+   and `kiosk.py`'s existing disk preflight takes over (Start disabled,
+   loud status). Deleting this week's recordings to keep a kiosk running is
+   a human's call, not this module's.
+
+**Never deleted, either pass:** a folder that isn't a well-formed
+`YYYY-MM-DD_HHMM[_N]` session dir (something a technician put there); a
+session with no `session.json` (in progress, or a *failed* session a
+technician should review -- deliberately not auto-cleaned even though
+that's the junk you'd most want gone); the single newest completed
+session, whatever its age.
+
+**Why opt-in, not a conservative default-on:** recordings are the
+irreplaceable deliverable (CLAUDE.md), the retrieval step is manual, and
+there's no "retrieved" marker in a session folder. A full disk today is
+already a *safe* failure (preflight disables Start, nothing corrupts), so
+this trades an occasional "tech has to clear space" for a standing risk of
+auto-deleting an un-retrieved recording. That trade is the institution's
+to opt into with a policy, not something shipped hot.
+
+**Why "both" passes rather than one:** age-only removes recordings even
+when there's plenty of room; capacity-only lets a burst of long sessions
+blow past a sensible keep-window before the disk-pressure trigger fires.
+Together: a predictable steady-state window, with a pressure valve that can
+reach past it when genuinely necessary, floored by `protect_days`.
+
+**Config validation (`config.py`):** `max_age_days` required positive int;
+`min_free_gb`/`protect_days` both-or-neither (like `red/blue_balance_ratio`);
+`protect_days <= max_age_days`. `settings.py` always writes all three when
+the group is checked (an age-only policy needs a hand-edit) -- keeps both
+the UI and the validation simple.
+
+**Failure isolation:** `app.py` wraps the whole pass in try/except and
+logs -- a cleanup bug must never stop the kiosk starting. `retention.py`
+itself swallows a per-session delete/size error and moves on.
+
+**Tests:** new `test_retention.py` (10 cases: age sweep incl.
+newest-session and incomplete-session protection, non-session folders
+ignored, minute-collision suffixes recognised, capacity pass oldest-first /
+protect-days floor / target-not-met / no-op when space is fine / skipped
+when unconfigured, missing dir no-op). `test_config.py` +8, `test_settings.py`
++4. Full suite 218.
