@@ -16,7 +16,8 @@ from unittest.mock import patch
 
 import av
 
-from recorder import INSTRUMENT_STREAM, THIRD_PERSON_STREAM, Recorder, _mp4_verifies
+from recorder import Recorder, _mp4_verifies
+from session_format import INSTRUMENT_STREAM, THIRD_PERSON_STREAM
 from synthetic_camera import SyntheticCamera
 
 FPS = 30

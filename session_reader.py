@@ -24,7 +24,12 @@ from pathlib import Path
 import av
 import numpy as np
 
-from recorder import INSTRUMENT_STREAM, SESSION_FORMAT_VERSION, THIRD_PERSON_STREAM
+from session_format import (
+    INSTRUMENT_STREAM,
+    MANIFEST_NAME,
+    SESSION_FORMAT_VERSION,
+    THIRD_PERSON_STREAM,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +46,7 @@ class StreamInfo:
     label: str
     width: int
     height: int
+    duration_s: float
     frame_count: int
     dropped_frames: int
     verified: bool
@@ -57,6 +63,10 @@ class Session:
     instrument_key: str
     session_start_utc: str
     streams: dict[str, StreamInfo]
+    # From the manifest, so a session list can show durations without
+    # opening any video. SessionPlayer re-derives this from the containers
+    # themselves, which is authoritative for playback.
+    duration_s: float = 0.0
 
     @property
     def instrument(self) -> StreamInfo | None:
@@ -69,9 +79,9 @@ class Session:
     @classmethod
     def load(cls, session_dir: Path | str) -> "Session":
         session_dir = Path(session_dir)
-        manifest_path = session_dir / "session.json"
+        manifest_path = session_dir / MANIFEST_NAME
         if not manifest_path.is_file():
-            raise SessionError(f"{session_dir} has no session.json - not a recorded session.")
+            raise SessionError(f"{session_dir} has no {MANIFEST_NAME} - not a recorded session.")
         try:
             raw = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -103,6 +113,7 @@ class Session:
                 label=entry.get("label") or role,
                 width=int(entry.get("width", 0)),
                 height=int(entry.get("height", 0)),
+                duration_s=float(entry.get("duration_s", 0.0)),
                 frame_count=int(entry.get("frame_count", 0)),
                 dropped_frames=int(entry.get("dropped_frames", 0)),
                 verified=bool(entry.get("verified", False)),
@@ -114,6 +125,7 @@ class Session:
             instrument_key=raw.get("instrument", INSTRUMENT_STREAM),
             session_start_utc=raw.get("session_start_utc", ""),
             streams=streams,
+            duration_s=float(raw.get("duration_s", 0.0)),
         )
 
 

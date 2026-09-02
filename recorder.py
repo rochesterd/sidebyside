@@ -32,12 +32,14 @@ from pathlib import Path
 import av
 
 from camera import BaseCamera, Frame
+from session_format import (
+    INSTRUMENT_STREAM,
+    MANIFEST_NAME,
+    SESSION_FORMAT_VERSION,
+    THIRD_PERSON_STREAM,
+)
 
 logger = logging.getLogger(__name__)
-
-SESSION_FORMAT_VERSION = 2
-INSTRUMENT_STREAM = "instrument"
-THIRD_PERSON_STREAM = "third_person"
 
 # Millisecond PTS. Both the container stream *and* the encoder context
 # must use this -- see DECISIONS.md: with only the stream set, PyAV leaves
@@ -273,12 +275,19 @@ class _StreamWriter:
 
     # --- manifest ----------------------------------------------------------
 
+    @property
+    def duration_s(self) -> float:
+        """Media time of the last frame written. Recorded in the manifest so
+        a session list can show durations without opening every video."""
+        return max(0.0, self._last_pts / 1000.0)
+
     def info(self) -> dict:
         data = {
             "file": self.mp4_path.name,
             "label": self.label,
             "width": self.width,
             "height": self.height,
+            "duration_s": round(self.duration_s, 3),
             "frame_count": self.frame_count,
             "dropped_frames": self.dropped,
             "rate_limited_frames": self.rate_limited,
@@ -368,7 +377,7 @@ class Recorder:
             writer.finalize()
 
         session_info = self._build_session_info()
-        with open(self.session_dir / "session.json", "w", encoding="utf-8") as f:
+        with open(self.session_dir / MANIFEST_NAME, "w", encoding="utf-8") as f:
             json.dump(session_info, f, indent=2)
         return session_info
 
@@ -391,5 +400,6 @@ class Recorder:
             # in different files were grabbed at the same instant.
             "clock": {"origin_monotonic": self._origin_monotonic},
             "fps": self.fps,
+            "duration_s": round(max((w.duration_s for w in self._writers), default=0.0), 3),
             "streams": {writer.role: writer.info() for writer in self._writers},
         }

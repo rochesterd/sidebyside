@@ -13,7 +13,8 @@ import time
 import unittest
 from pathlib import Path
 
-from recorder import INSTRUMENT_STREAM, THIRD_PERSON_STREAM, Recorder
+from recorder import Recorder
+from session_format import INSTRUMENT_STREAM, THIRD_PERSON_STREAM
 from session_reader import Session, SessionError, SessionPlayer, list_sessions
 from synthetic_camera import SyntheticCamera
 

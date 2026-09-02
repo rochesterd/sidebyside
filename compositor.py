@@ -1,9 +1,42 @@
-"""Helpers for laying out one or two BGR images into a single canvas."""
+"""Helpers for laying out one or two BGR images into a single canvas.
+
+Also owns `compose_layout()`, the one place that decides which stream goes
+where for a given layout mode. viewer.py renders the screen through it and
+session_export.py renders the exported file through it, so what a student
+sees is what they get -- they can't diverge.
+"""
 
 from __future__ import annotations
 
 import cv2
 import numpy as np
+
+from session_format import INSTRUMENT_STREAM, THIRD_PERSON_STREAM
+
+LAYOUT_SIDE_BY_SIDE = "side_by_side"
+LAYOUT_PICTURE_IN_PICTURE = "picture_in_picture"
+LAYOUT_INSTRUMENT = "instrument"
+LAYOUT_THIRD_PERSON = "third_person"
+
+# Order matters: this is also the order the viewer's layout dropdown uses.
+LAYOUT_MODES = (
+    LAYOUT_SIDE_BY_SIDE,
+    LAYOUT_PICTURE_IN_PICTURE,
+    LAYOUT_INSTRUMENT,
+    LAYOUT_THIRD_PERSON,
+)
+
+LAYOUT_TITLES = {
+    LAYOUT_SIDE_BY_SIDE: "Side by side",
+    LAYOUT_PICTURE_IN_PICTURE: "Picture in picture",
+    LAYOUT_INSTRUMENT: "{instrument} only",
+    LAYOUT_THIRD_PERSON: "{third_person} only",
+}
+
+# A (0, 0, 3) placeholder, not a real image -- _fit_into_pane treats a
+# zero-sized source as "fill this pane with the background", which is what
+# a stream with no frame at this instant should look like.
+_EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
 
 
 def _fast_fill(canvas: np.ndarray, color: tuple[int, int, int]) -> None:
@@ -143,6 +176,35 @@ def picture_in_picture(
             thickness=border_thickness,
         )
     return canvas
+
+
+def compose_layout(
+    images: dict[str, np.ndarray | None],
+    layout: str,
+    out_size: tuple[int, int],
+    background: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """Lay a session's per-role frames out into one canvas.
+
+    `images` is keyed by stream role; a missing or None entry renders as
+    background rather than failing, since one camera can legitimately have
+    no frame at a given instant. An unknown `layout` falls back to
+    side-by-side -- a viewer should show *something* rather than raise.
+    """
+    instrument = images.get(INSTRUMENT_STREAM)
+    third_person = images.get(THIRD_PERSON_STREAM)
+    if instrument is None:
+        instrument = _EMPTY_IMAGE
+    if third_person is None:
+        third_person = _EMPTY_IMAGE
+
+    if layout == LAYOUT_INSTRUMENT:
+        return fit_into_canvas(instrument, out_size, background)
+    if layout == LAYOUT_THIRD_PERSON:
+        return fit_into_canvas(third_person, out_size, background)
+    if layout == LAYOUT_PICTURE_IN_PICTURE:
+        return picture_in_picture(instrument, third_person, out_size=out_size, background=background)
+    return side_by_side(instrument, third_person, out_size=out_size, background=background)
 
 
 def draw_timer(

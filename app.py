@@ -46,7 +46,7 @@ from kiosk import KioskController, PreflightStatus, State
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
 from uvc_camera import UvcCamera
-from viewer import open_session
+from viewer import browse_sessions, open_session
 
 logger = logging.getLogger(__name__)
 
@@ -199,12 +199,20 @@ class KioskWindow(QMainWindow):
         self.watch_button.setEnabled(False)
         self.watch_button.clicked.connect(self._on_watch_clicked)
 
+        # Reaching an earlier session matters as much as the one just
+        # finished: a student may come back to review, or want to export a
+        # file from last week's attempt.
+        self.past_button = QPushButton("Past recordings")
+        self.past_button.setMinimumHeight(40)
+        self.past_button.clicked.connect(self._on_past_recordings_clicked)
+
         buttons = QHBoxLayout()
         buttons.addWidget(self.start_button)
         buttons.addWidget(self.stop_button)
 
         summary_row = QHBoxLayout()
         summary_row.addWidget(self.summary_label, stretch=1)
+        summary_row.addWidget(self.past_button)
         summary_row.addWidget(self.watch_button)
 
         layout = QVBoxLayout()
@@ -302,13 +310,27 @@ class KioskWindow(QMainWindow):
         session_dir = self.controller.last_session_dir
         if session_dir is None or self.controller.state == State.RECORDING:
             return
-        # The cameras keep running: restarting an instrument camera costs
-        # seconds and re-enters the device-busy class of failures (see
-        # DECISIONS.md's settings.py Preview entry). Only the live preview
-        # pauses -- there's no point compositing behind a modal window.
+        self._with_preview_paused(lambda: open_session(session_dir, parent=self))
+
+    def _on_past_recordings_clicked(self) -> None:
+        if self.controller.state == State.RECORDING:
+            return
+        self._with_preview_paused(
+            lambda: browse_sessions(self.controller.output_root, parent=self)
+        )
+
+    def _with_preview_paused(self, action) -> None:
+        """Run a modal viewer with the live preview paused.
+
+        The cameras keep running: restarting an instrument camera costs
+        seconds and re-enters the device-busy class of failures (see
+        DECISIONS.md's settings.py Preview entry). Only the preview pauses
+        -- there's no point compositing behind a modal window. The restart
+        is in a finally so a viewer that raises can't leave a dead pane.
+        """
         self.preview_timer.stop()
         try:
-            open_session(session_dir, parent=self)
+            action()
         finally:
             self.preview_timer.start(int(1000 / PREVIEW_FPS))
 
@@ -345,6 +367,7 @@ class KioskWindow(QMainWindow):
         self.watch_button.setEnabled(
             state != State.RECORDING and self.controller.last_session_dir is not None
         )
+        self.past_button.setEnabled(state != State.RECORDING)
 
         if state == State.RECORDING:
             self.status_label.setText("Recording...")

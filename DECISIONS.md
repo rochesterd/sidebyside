@@ -2601,3 +2601,70 @@ both against real recorded sessions rather than mocked PyAV -- what's
 worth testing is whether alignment actually holds across two
 independently-encoded files, which a mock can't tell us. `test_app.py`
 gained 5 Watch-button cases. Full suite 248.
+
+---
+
+## 2026-09-02 - Recorder/Viewer split, phase 3: Export and the recordings picker
+
+**Decided:** `session_export.py` renders a session's streams into one
+constant-frame-rate MP4 in the chosen layout, on demand; `viewer.py` gains
+an Export button (worker thread, cancellable progress dialog) and a
+`SessionPickerDialog`; `app.py` gains a Past recordings button. This is
+the last of the app-side work -- only packaging (phase 4) remains.
+
+**Export is constant-frame-rate, unlike the streams it reads.** The
+session files are VFR to preserve each camera's true cadence. An export is
+one file for sharing or an LMS, where broad player compatibility matters
+more, so it samples media time at a fixed `fps`. Both facts can be true at
+once precisely because the session keeps the real timing and the export is
+derived.
+
+**`compose_layout()` lives in `compositor.py`, used by both the viewer and
+the exporter.** Layout selection was about to exist twice -- once for the
+screen, once for the file -- which is exactly how "the export doesn't
+match what I was looking at" bugs happen. One function, two callers.
+
+**Export writes `<name>.partial.mp4` and moves it into place.** A
+cancelled or crashed export must not leave something that looks like a
+finished file; the rename is the commit point. The partial keeps the real
+suffix rather than being `<name>.mp4.partial` because PyAV infers the
+container format from the extension -- found immediately, as 10 failing
+tests.
+
+**Export refuses to write over one of the session's own stream files**
+(`ValueError`), since the save dialog defaults into the session folder and
+`instrument.mp4` is one keystroke away from a plausible export name. The
+recording is irreplaceable; the export is not.
+
+**"No outcome" is reported as unfinished, not as success.** If the export
+thread outlives the join timeout, the viewer says so and names the file to
+check, rather than claiming either result. A student being told "saved"
+when nothing was is worse than being told to look.
+
+**`duration_s` added to the manifest** (per stream and overall). The
+picker shows each recording's length, and doing that by opening two video
+files per row would make a term's worth of sessions feel slow.
+`SessionPlayer` still derives duration from the containers themselves,
+which stays authoritative for playback.
+
+**The picker has an explicit "Open a recording folder..." browse**, and
+takes being pointed straight at a single session folder as a pick rather
+than an empty list. This is a phase-4 prerequisite surfacing early: the
+standalone viewer runs on machines with no `config.json`, where recordings
+have been copied to a USB stick or Downloads (see ROADMAP.md's "Phase 4:
+two installers").
+
+**Also:** `session_format.py` now holds the three shared format constants,
+so `session_reader.py`/`session_export.py` no longer import the *writer*
+for its vocabulary -- which read oddly and dragged the encoder path into a
+viewer-only build. `app.py`'s two viewer buttons share
+`_with_preview_paused()`, which restarts the preview in a `finally`.
+
+**Verified end to end** on two mismatched-rate recordings: the picker
+lists both newest-first with labels and durations straight from the
+manifests, and a side-by-side export of the 5s session produced a real
+2240x1200, 151-frame MP4 with the session folder untouched.
+
+**Tests:** new `test_session_export.py` (12); `test_viewer.py` +11
+(export wiring, picker); `test_app.py` +2 (Past recordings). Full suite
+273.
