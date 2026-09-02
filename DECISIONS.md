@@ -2668,3 +2668,58 @@ manifests, and a side-by-side export of the 5s session produced a real
 **Tests:** new `test_session_export.py` (12); `test_viewer.py` +11
 (export wiring, picker); `test_app.py` +2 (Past recordings). Full suite
 273.
+
+---
+
+## 2026-09-02 - Recorder/Viewer split, phase 4: two installers
+
+**Decided:** the build produces `sidebyside-setup.exe` (clinic: app +
+settings + bundled IDS peak, admin, Program Files) and
+`sidebyside-viewer-setup.exe` (review: `viewer.exe` only, no IDS peak,
+per-user under `%LOCALAPPDATA%`, no admin). New `packaging/viewer.spec`
+and `packaging/sidebyside-viewer.iss`; `PACKAGING.md` gains a "Two
+installers" table and a step 6. Completes the Recorder/Viewer split.
+
+**Why a second installer rather than "just run the full one":** the
+machine that reviews a recording usually isn't the machine that made it.
+A student reviewing at home has no cameras, often no admin rights, and no
+reason to install 356MB of machine-vision SDK and kernel drivers.
+Measured result: **92 MB vs 513 MB**. That difference is whether
+reviewing happens at all.
+
+**The clinic installer needed no change.** `app.py` imports `viewer.py`,
+so `app.exe` already contains the viewer and Watch / Past recordings work
+from inside the kiosk. Shipping a separate `viewer.exe` there would have
+added a second full PySide6+OpenCV+PyAV tree -- hundreds of MB -- for a
+capability that machine already has. Its `[Files]`/`[Icons]` are
+untouched.
+
+**`viewer.spec`'s `excludes` is an assertion, not a size optimisation.**
+Naming `ids_peak`/`ids_peak_ipl`/`pygrabber`/`comtypes` means a future
+edit that makes the viewer reach something camera-facing fails the build
+loudly, rather than silently gaining a dependency the review machine
+cannot satisfy. Verified on this build: the frozen `viewer.exe` contains
+none of `recorder`, `camera`, `kiosk`, `ids_camera` or `uvc_camera` --
+cleaner than planned, because phase 3's `session_format.py` refactor had
+already removed the last reader-imports-writer edge.
+
+**Per-user install, `PrivilegesRequired=lowest`:** nothing in the viewer
+writes outside the user's profile and there are no drivers, so requiring
+admin would be friction with no purpose -- and students frequently don't
+have it on their own machines. It gets a Desktop shortcut, unlike
+`settings.exe`: students *are* this program's audience.
+
+**Distinct `AppId` on the viewer installer only.** `sidebyside.iss`
+deliberately leaves `AppId` implicit (Inno derives it from `AppName`);
+adding one now would stop existing clinic installs being recognised as
+upgradable. The viewer installer sets `AppId=sidebyside-viewer`
+explicitly so the separation is deliberate and documented rather than an
+accident of differing `AppName`s.
+
+**Verified on the build machine:** `viewer.exe <session folder>` plays
+it; `viewer.exe` with no arguments logs "no usable config.json ... using
+the default recordings folder" and shows the picker rather than erroring
+-- the correct review-machine path, since there is legitimately no
+config there. **Not yet verified:** installing
+`sidebyside-viewer-setup.exe` on a machine that has never had sidebyside
+on it (PACKAGING.md step 6's checklist).

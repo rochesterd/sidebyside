@@ -1135,12 +1135,31 @@ either).
 Phases 1 and 2 land together before anything is packaged, so the app is
 never shipped in a state where a session has no side-by-side view.
 
-### Phase 4: two installers, not one
+### Phase 4: two installers, not one — **built 2026-09-02**
 
 Revised 2026-09-02, after the in-app-not-a-fork call above: the Viewer
 still ships *inside* the clinic app, but it **also** gets its own
 standalone installer, because the machine that reviews a recording often
 isn't the machine that made it.
+
+**Built and verified on the build machine.** `sidebyside-viewer-setup.exe`
+came out at **92 MB** against the clinic installer's 513 MB. Two things
+went better than planned:
+
+- The clinic installer needed **no change at all**. Since `app.py` imports
+  `viewer.py`, `app.exe` already contains the viewer — Watch and Past
+  recordings work from inside the kiosk — so shipping a separate
+  `viewer.exe` there would have added hundreds of MB for no new
+  capability. Its `[Files]`/`[Icons]` are untouched.
+- The viewer build is *cleaner* than this entry predicted. Phase 3's
+  `session_format.py` refactor removed the last reader→writer dependency,
+  so the frozen `viewer.exe` contains none of `recorder`, `camera`,
+  `kiosk`, `ids_camera` or `uvc_camera` — not just no `ids_peak`.
+
+Still outstanding: an install test of `sidebyside-viewer-setup.exe` on a
+machine that has never had sidebyside on it (see PACKAGING.md step 6's
+checklist — especially that "Open a recording folder…" finds a session
+copied from a USB stick, which is the path that actually matters there).
 
 | | `sidebyside-setup.exe` (clinic) | `sidebyside-viewer-setup.exe` (review) |
 |---|---|---|

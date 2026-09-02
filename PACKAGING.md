@@ -1,10 +1,11 @@
 # PACKAGING.md
 
-How to build the distributable clinic-machine installer. This is a
-**developer-only** procedure — a technician setting up a clinic machine
-never does any of this, they just run the `.exe` this produces. See
-CLAUDE.md's "Who uses it" and ROADMAP.md's "Distribute a frozen-exe
-installer, not a Python source bootstrap" entry for why this exists.
+How to build sidebyside's two distributable installers — the clinic-machine
+one and the viewer-only one (see "Two installers" below). This is a
+**developer-only** procedure — nobody installing sidebyside does any of
+this, they just run the `.exe` it produces. See CLAUDE.md's "Who uses it"
+and ROADMAP.md's "Distribute a frozen-exe installer, not a Python source
+bootstrap" and "Phase 4: two installers" entries for why these exist.
 
 For setting up a *development* machine to work on sidebyside's source
 instead, see `SETUP.md` — that's a different audience and a different
@@ -29,14 +30,37 @@ a separate Windows tool): `winget install --id JRSoftware.InnoSetup -e`,
 or download from https://jrsoftware.org. Its command-line compiler,
 `ISCC.exe`, installs to `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`.
 
-## 2. Freeze `app.py` and `settings.py`
+## Two installers
+
+This procedure produces **two** distributables, for two different
+machines. See `ROADMAP.md`'s "Phase 4: two installers" entry for why.
+
+| | `sidebyside-setup.exe` | `sidebyside-viewer-setup.exe` |
+|---|---|---|
+| For | the clinic room machine | a student's or instructor's own laptop |
+| Contains | `app.exe`, `settings.exe` | `viewer.exe` |
+| IDS peak SDK | bundled, installed silently | none |
+| Size | ~490 MB | ~90 MB |
+| Privileges | admin | none (per-user) |
+| Steps below | 2, 3, 4, 5 | 2, 6 |
+
+The clinic installer deliberately does **not** ship `viewer.exe`:
+`app.exe` already contains the viewer (Watch and Past recordings work
+from inside the kiosk), so a second full PySide6+OpenCV+PyAV tree would
+add hundreds of MB for no capability that machine lacks.
+
+## 2. Freeze the entry points
 
 ```powershell
 python -m PyInstaller --distpath packaging\dist --workpath packaging\build packaging\app.spec
 python -m PyInstaller --distpath packaging\dist --workpath packaging\build packaging\settings.spec
+python -m PyInstaller --distpath packaging\dist --workpath packaging\build packaging\viewer.spec
 ```
 
-Both specs are checked into git (`packaging/*.spec`) — this isn't a
+(Only `viewer.spec` is needed for the viewer-only installer; only the
+other two for the clinic one.)
+
+All three specs are checked into git (`packaging/*.spec`) — this isn't a
 from-scratch step, just replaying a known-working build. See
 `DECISIONS.md`'s entry on this for what was actually verified and why
 no hidden-imports/`--collect-all` overrides were needed. If a future IDS
@@ -44,10 +68,23 @@ peak SDK or dependency version bump breaks the build, start by reading
 the PyInstaller warnings file it writes to `packaging/build/<name>/
 warn-<name>.txt`.
 
+`viewer.spec` lists `ids_peak`, `ids_peak_ipl`, `pygrabber` and
+`comtypes` in `excludes`. That's an assertion, not a size tweak: if a
+future edit makes `viewer.py` reach anything camera-facing, this build
+fails loudly rather than silently gaining an SDK dependency the review
+machine can't satisfy. Confirmed on the 2026-09-02 build — the frozen
+`viewer.exe` contains none of `recorder`, `camera`, `kiosk`,
+`ids_camera` or `uvc_camera`.
+
 **Verify before continuing**, not just "did it build without error":
-run `packaging\dist\app\app.exe --synthetic` and
-`packaging\dist\settings\settings.exe` directly and confirm both
-actually open (no import/DLL errors) before handing them to Inno Setup.
+
+- `packaging\dist\app\app.exe --synthetic` and
+  `packaging\dist\settings\settings.exe` must open with no import/DLL
+  errors.
+- `packaging\dist\viewer\viewer.exe <a session folder>` must play it, and
+  `viewer.exe` with no arguments must show the picker (it logs "no usable
+  config.json … using the default recordings folder" and lists nothing —
+  that's the correct review-machine path, not a failure).
 
 ## 3. Get the IDS peak extended installer into `vendor/`
 
@@ -114,7 +151,7 @@ version's layout. `IdsPeakAlreadyInstalled()`'s post-install re-check in
 `sidebyside.iss` is the safety net if this step gets missed, not a
 substitute for actually doing it.
 
-## 5. Compile the installer
+## 5. Compile the clinic installer
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\sidebyside.iss
@@ -140,3 +177,42 @@ no restart choice, since nothing changed. If the silent install fails or
 can't be verified, the installer shows an explicit error dialog rather
 than continuing silently — confirm that path too by temporarily renaming
 `vendor\ids-peak-response.iss` before a test run.
+
+## 6. Compile the viewer-only installer
+
+Needs only step 2's `viewer.spec` build — no `vendor/` contents, no
+response file, nothing from steps 3–5.
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\sidebyside-viewer.iss
+```
+
+Produces `packaging\installer_output\sidebyside-viewer-setup.exe` (~90 MB
+as of 2026-09-02, against the clinic installer's ~490 MB).
+
+This is what goes to a student or instructor who wants to review
+recordings on their own machine. It installs per-user under
+`%LOCALAPPDATA%\sidebyside-viewer` with `PrivilegesRequired=lowest`, so
+it raises no UAC prompt and needs no admin rights, and it creates a
+Desktop shortcut — unlike `settings.exe`, students *are* this program's
+audience.
+
+**Before handing it to anyone**, install it on a machine that has never
+had sidebyside on it and confirm:
+
+- it installs without prompting for admin,
+- the Desktop shortcut opens the viewer,
+- with no recordings present it shows the picker saying "No recordings in
+  this folder" rather than erroring — a review machine legitimately has
+  no `config.json` and no `%PUBLIC%\Documents\sidebyside\sessions`,
+- **"Open a recording folder…" finds a session copied from elsewhere**
+  (a USB stick, Downloads). This is the path that actually matters on a
+  review machine; the default-folder listing will usually be empty there.
+- playback, the layout picker and Export all work on that copied session.
+
+Both installers use distinct `AppId`s and install locations, so they
+coexist on one machine. Verify that too if you install both: neither
+should uninstall or upgrade over the other. **Do not add an explicit
+`AppId` to `sidebyside.iss`** — it deliberately leaves it implicit (Inno
+derives it from `AppName`), and changing it would stop existing clinic
+installs being recognised as upgradable.
