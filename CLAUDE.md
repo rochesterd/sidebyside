@@ -131,7 +131,7 @@ a UI poll loop can stall the display waiting on a queue.
 | `compositor.py` | `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. |
 | `qt_image.py` | `bgr_to_pixmap()` — the one BGR-ndarray-to-`QPixmap` conversion, shared by every window that shows a live camera feed (`app.py`, `preview.py`, `settings.py`). |
 | `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
-| `recorder.py` | Background-threaded recorder: drains both cameras' queues, composites with `side_by_side`, overlays elapsed time, encodes to MKV via PyAV, remuxes to MP4 on stop, verifies the MP4 then deletes the MKV (keeps both if it doesn't verify), writes `session.json`. Uses `read()`. |
+| `recorder.py` | Records the two cameras as two separate variable-frame-rate files on one shared clock — no compositing. A `_StreamWriter` per camera (own thread, own PyAV encoder) drains with `read()`, stamps ms PTS relative to the session origin, enforces a recorder-side `recording.fps` ceiling, and on stop remuxes MKV→MP4, verifies, and deletes the MKV. Writes `session.json` v2. See ROADMAP.md/DECISIONS.md's "Recorder/Viewer split". |
 | `retention.py` | Opt-in cleanup of old recording sessions, run once by `app.py` at startup. Age sweep (`max_age_days`, always) + low-disk capacity pass (`min_free_gb`/`protect_days`, only when free space is low). Never touches a non-session folder, a session missing `session.json`, or the newest session. Absent `retention` config → never called. Imports only stdlib + `config.py`. See DECISIONS.md's "Automatic cleanup of old recordings" entry. |
 | `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, disk space), stall detection during recording, session summaries. No Qt import. Unit-testable headlessly. |
 | `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: instrument picker, Start button, Stop button — today's minimal shape of "protect the student from mistakes," not a fixed ceiling (see "Who uses it"). Picker disables once recording starts. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
@@ -140,7 +140,7 @@ a UI poll loop can stall the display waiting on a queue.
 | `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. Same developer-only scope as `setup.ps1`. |
 | `packaging/app.spec`, `packaging/settings.spec` | PyInstaller specs freezing `app.py`/`settings.py` into standalone `app.exe`/`settings.exe` — no Python, venv, or `pip install` needed on the machine that runs them. See `PACKAGING.md`. |
 | `packaging/sidebyside.iss` | Inno Setup script building the actual distributable: copies the frozen exes into Program Files, creates `app.exe`'s Desktop/Start-menu shortcut (`settings.exe` gets Start-menu only — never point a student at it, same rule as below) and chain-launches a bundled copy of the IDS peak *extended* installer, interactively, no silent flags. See `PACKAGING.md` and ROADMAP.md's "why extended, not IDS Software Suite + runtime setup" entry. |
-| `test_recorder.py` | Integration test: records 10s from two real `SyntheticCamera` instances and checks the actual decoded MP4 (frame count, duration), not just that a file was written. |
+| `test_recorder.py` | Integration test: records from two real `SyntheticCamera` instances and checks the actual decoded MP4s — frame counts, strictly-increasing ms PTS on the shared clock, both streams spanning the same interval, the `recording.fps` rate limit against a deliberately-faster camera, drop accounting, and that a stream failing verification keeps its MKV. |
 | `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space), a full happy-path session, and a mid-recording stall triggering the error path — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps for the stall test. |
 | `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, without real hardware or `.show()`/`.exec()`. |
 | `test_compositor.py` | Correctness tests for `side_by_side`/`picture_in_picture` written after a perf rewrite made the fill logic less obviously correct — see DECISIONS.md. |
@@ -178,20 +178,30 @@ technician picked somewhere else via `settings.py`'s Browse field — see
 "Distribute a frozen-exe installer" entry for why this needs to be
 technician-choosable rather than fixed:
 
-- `composite.mkv` — written live during capture. Interruption-safe. Exists
-  only as the crash-safe copy: `stop()` deletes it once `composite.mp4` is
-  produced *and* verified (see below), so a completed session keeps just
-  the MP4. It stays only when verification fails.
-- `composite.mp4` — remuxed (stream copy, no re-encode) from the MKV once
-  `stop()` is called, then verified: its first frames must actually decode
-  (the dropped-keyframe failure in DECISIONS.md's packet-filter entry) and
-  its packet count must match what was encoded. Verified → the MKV is
-  deleted; not verified → both files kept and `session.json` says so.
-- `session.json` — camera names, resolutions, each camera's first-frame
-  timestamp, per-camera and composite frame counts, per-camera
-  dropped-frame counts (computed from gaps in `Frame.index`, not
-  estimated), `output_files` (whether `composite.mkv` survived), and
-  `mp4_verified`.
+- `instrument.mp4`, `third_person.mp4` — one file per camera, at that
+  camera's **native resolution**, **variable frame rate**. Nothing is
+  composited at record time. Fixed filenames by *role*, so the Viewer and
+  Export never have to consult the manifest to find them.
+- `session.json` — `format_version: 2`. The manifest the Viewer reads:
+  which instrument was used, the shared clock origin, and per stream its
+  file, label, resolution, frame count, dropped-frame count (gaps in
+  `Frame.index`, not estimated), `rate_limited_frames`, `first_timestamp`,
+  `offset_s`, and `verified`.
+- `<role>.mkv` — written live during capture, interruption-safe; exists
+  only as the crash-safe copy. Each stream's `stop()` remuxes it (stream
+  copy, no re-encode) to `<role>.mp4`, verifies that (first frames must
+  actually decode — the dropped-keyframe failure in DECISIONS.md's
+  packet-filter entry — and packet count must match), then deletes the
+  MKV. A stream that fails verification keeps **both** files and is
+  flagged `verified: false`. Never both deleted.
+
+**Synchronization is by timestamp, not by frame pairing.** Every frame's
+PTS in every stream is `Frame.timestamp - clock.origin_monotonic`, on a
+1/1000 time base. Two frames with equal PTS in different files were
+grabbed at the same instant — that is the whole sync story. A slower
+camera (the slit lamp at ~11fps beside a 30fps third-person) simply has
+fewer frames spanning the same interval; the Viewer holds its last frame
+rather than anything interpolating or duplicating.
 
 The default relative `sessions/` path is gitignored. Nothing under
 `sessions_dir` is a build artifact of source control; it's the actual
@@ -256,6 +266,12 @@ newest session or one still missing its `session.json`.
   the MKV). An interrupted MKV is still playable; an interrupted MP4 is
   lost. When remuxing, filter packets on `packet.size == 0`, not
   `packet.dts is None` — see `DECISIONS.md`.
+- For variable-frame-rate output, set **both** `stream.time_base` and
+  `stream.codec_context.time_base`. Setting only the stream leaves the
+  encoder at 1/fps, silently rescaling ms PTS into 1/fps ticks — two
+  frames ~33ms apart collapse into one tick, DTS goes non-monotonic, and
+  the failure surfaces only at the MP4 remux (MKV tolerates it). See
+  `DECISIONS.md`.
 - Prefer dropping frames over blocking a capture thread. A blocked capture
   thread stalls the device.
 - When a decision has a non-obvious reason behind it, add an entry to

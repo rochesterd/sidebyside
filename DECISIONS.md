@@ -2449,3 +2449,89 @@ ignored, minute-collision suffixes recognised, capacity pass oldest-first /
 protect-days floor / target-not-met / no-op when space is fine / skipped
 when unconfigured, missing dir no-op). `test_config.py` +8, `test_settings.py`
 +4. Full suite 218.
+
+---
+
+## 2026-09-02 - Recorder/Viewer split, phase 1: two VFR streams instead of a live composite
+
+**Decided:** `recorder.py` no longer composites. A session writes
+`instrument.mp4` + `third_person.mp4`, each at its camera's native
+resolution and true variable frame rate, plus a `session.json` with
+`format_version: 2`. `compositor.py` moves from capture time to watch
+time (the Viewer, phase 2). Design and the other three phases are in
+ROADMAP.md's "Recorder/Viewer split: design" entry; the four shaping
+decisions (two raw streams only, Viewer both in-kiosk and standalone,
+true per-camera timestamps, students/self-review) were made in
+conversation on 2026-09-02.
+
+**This supersedes the 2026-08-11 "Composite live, not in post-production"
+entry.** That decision's guarantees are kept, not dropped:
+
+- *Synchronized by construction* -> every frame's PTS is
+  `Frame.timestamp - clock.origin_monotonic` on a 1/1000 time base, so
+  equal PTS in two files means the same instant. Stronger than before: it
+  survives a slow camera instead of duplicating its frames into a
+  fixed-rate composite. Measured on mismatched synthetic cameras (11fps
+  instrument, 30fps third-person, 5s): 56 vs 145 frames spanning the same
+  0.02-5.03s, cross-stream lag at any point 10-49ms, bounded by the slow
+  camera's own frame period. The old model would have stored 145
+  composite frames, duplicating the instrument frame ~2.6x.
+- *Student watches immediately, no render wait* -> the Viewer's Watch
+  button opens the session as-is. Nothing is rendered unless the student
+  asks for a single-file Export.
+- *No post step that can fail* -> watching needs none; the only post step
+  is the MKV->MP4 remux+verify that already existed, now run per stream.
+
+**Why two files rather than keeping the composite too:** three encoders
+would have cost noticeably more CPU and ~2x the disk for a file that the
+Viewer can produce on demand, and the composite is lossy about what was
+captured (it bakes in a layout and duplicates the slower camera).
+
+**`_StreamWriter` per camera, each on its own thread:** a slow encode on
+one stream can't starve the other camera's bounded queue. Each drains
+with `read()` (not `get_latest()`) so gaps in `Frame.index` are still
+real dropped-frame counts, per CLAUDE.md's Architecture section. Writers
+drain their camera's queue at `start()` so a frame captured before the
+session origin isn't clamped to pts 0.
+
+**Recorder-side fps ceiling, counted separately:** a writer skips a frame
+that arrives less than `0.9/fps` after the last one it encoded, counting
+it in `rate_limited_frames` (distinct from `dropped_frames`). The
+camera-side caps (`IdsCamera._apply_frame_rate_cap`, `UvcCamera`'s
+`CAP_PROP_FPS`) are best-effort and a device may ignore them; this is the
+guarantee. The 0.9 slack matters: a camera pacing itself at exactly the
+recording rate jitters a millisecond either way, and a strict `1/fps`
+threshold rejected a random ~half of its frames.
+
+**GOP set to `recording.fps` frames:** libx264's default (~250) would
+make a Viewer scrub decode up to ~8s forward from the previous keyframe.
+At `fps` frames it's <=1s of media for a full-rate stream and always <=30
+frames of decode-forward, for a few percent of file size.
+
+**Both time bases must be pinned to 1/1000** -- `stream.time_base` *and*
+`stream.codec_context.time_base`. Found in a feasibility run against the
+pinned PyAV 18.0.0 before writing any of this: `add_stream(..., rate=fps)`
+leaves the encoder at 1/fps, so ms PTS get rescaled into 1/fps ticks, two
+jittered ~33ms-apart frames collapse into one tick, DTS goes
+non-monotonic, and the MP4 muxer rejects the remux with EINVAL. The MKV
+muxer tolerates it, so this surfaces only at the remux step, and only on
+the faster stream -- exactly the kind of thing that would have looked
+like a random late-stage bug. Also confirmed there: exact PTS round-trip
+through MKV->MP4, and seek landing at or before the target within one GOP.
+
+**No compatibility with the old `composite.mp4` layout.** Decided
+2026-09-02: nothing in that format is in circulation, so there's no
+migration path to maintain and the Viewer will read `format_version: 2`
+only.
+
+**Also changed:** `Recorder`'s `width`/`height` params are gone (no
+canvas). `KioskController` gained `instrument_labels`/`third_person_label`
+so labels land in the manifest, and its `width`/`height` now only feed the
+disk-space estimate -- which is unchanged, since sum-of-widths x
+max-height is still the right proxy for total pixels/sec whether the two
+streams are stacked or separate. `app.py`'s post-session summary reports
+per-stream counts and flags an unverified stream.
+
+**Tests:** `test_recorder.py` rewritten around two decoded outputs (5
+cases); `test_kiosk.py`'s two session assertions moved to the v2 shape.
+Full suite 219.

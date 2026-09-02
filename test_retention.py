@@ -35,7 +35,8 @@ class RetentionTest(unittest.TestCase):
         name = name or start.strftime("%Y-%m-%d_%H%M")
         d = self.sessions / name
         d.mkdir()
-        (d / "composite.mp4").write_bytes(b"x" * 2048)
+        (d / "instrument.mp4").write_bytes(b"x" * 1024)
+        (d / "third_person.mp4").write_bytes(b"x" * 1024)
         if complete:
             (d / "session.json").write_text("{}", encoding="utf-8")
         return d

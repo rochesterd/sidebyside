@@ -127,7 +127,14 @@ class KioskWindow(QMainWindow):
         self.instruments = instruments
         self.instrument_labels = instrument_labels or {key: key for key in instruments}
         self._display_names = {**self.instrument_labels, "third_person": THIRD_PERSON_LABEL}
-        self.controller = KioskController(third_person_camera, instruments, fps=fps, output_root=output_root)
+        self.controller = KioskController(
+            third_person_camera,
+            instruments,
+            instrument_labels=self.instrument_labels,
+            third_person_label=THIRD_PERSON_LABEL,
+            fps=fps,
+            output_root=output_root,
+        )
         self._camera_start_errors: dict[str, str] = {}
         # The instrument the student last picked -- distinct from
         # controller.selected_instrument, which only updates once that
@@ -349,14 +356,14 @@ class KioskWindow(QMainWindow):
             )
 
     def _format_summary(self, headline: str, session_info: dict) -> str:
-        if "error" in session_info and "composite" not in session_info:
+        if "error" in session_info and "streams" not in session_info:
             return f"{headline}, but the output could not be finalized: {session_info['error']}"
 
-        comp = session_info["composite"]
-        parts = [f"{headline}: {comp['frame_count']} frames"]
-        for cam in session_info["cameras"].values():
-            display_name = self._display_names.get(cam["name"], cam["name"])
-            parts.append(f"{display_name}: {cam['frame_count']} frames, {cam['dropped_frames']} dropped")
+        parts = [headline]
+        for role, stream in session_info["streams"].items():
+            label = stream.get("label") or self._display_names.get(role, role)
+            note = "" if stream.get("verified", True) else " (NOT verified - .mkv kept)"
+            parts.append(f"{label}: {stream['frame_count']} frames, {stream['dropped_frames']} dropped{note}")
         if self.controller.last_session_dir is not None:
             parts.append(f"saved to {self.controller.last_session_dir}")
         return "  |  ".join(parts)

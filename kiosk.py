@@ -35,14 +35,18 @@ logger = logging.getLogger(__name__)
 #   bytes/sec = bits/sec / 8                      ~= 830 KB/s
 #   10 minutes = bytes/sec * 600                  ~= 498 MB
 #
-# During finalization Recorder.stop() briefly has both composite.mkv (the
-# interruption-safe capture copy) and the freshly-remuxed composite.mp4 on
-# disk at full size, before it verifies the MP4 and deletes the MKV -- so
-# the *peak* a single session needs is about two copies of that estimate,
-# even though a completed session settles back to one. That's where "2x"
-# comes from below: it isn't a safety margin stacked on top, it's the
-# transient peak one session hits. See DECISIONS.md for the full reasoning
-# and chosen thresholds.
+# A session now writes one file per camera rather than one composite, but
+# the estimate is unchanged: sum-of-widths x max-height is still the right
+# proxy for total pixels/sec across both streams, whether they're stacked
+# into one canvas or written separately.
+#
+# During finalization each stream briefly has both its .mkv (the
+# interruption-safe capture copy) and its freshly-remuxed .mp4 on disk at
+# full size, before verification deletes the .mkv -- so the *peak* a single
+# session needs is about two copies of that estimate, even though a
+# completed session settles back to one. That's where "2x" comes from
+# below: it isn't a safety margin stacked on top, it's the transient peak
+# one session hits. See DECISIONS.md for the full reasoning and thresholds.
 BITS_PER_PIXEL_ESTIMATE = 0.08
 TARGET_SESSION_MINUTES = 10.0
 REQUIRED_SPACE_MULTIPLIER = 2.0
@@ -114,11 +118,14 @@ class KioskController:
         third_person_camera: BaseCamera,
         instruments: dict[str, BaseCamera],
         third_person_name: str = "third_person",
+        # Display labels written into session.json so a session stays
+        # self-describing after a config change -- see recorder.py.
+        instrument_labels: dict[str, str] | None = None,
+        third_person_label: str | None = None,
         output_root: str | Path = "sessions",
-        # None means "derive from the two live cameras' own resolution,"
-        # same as Recorder.start()'s default -- see DECISIONS.md's
-        # "config-driven recording fps" entry. Still overridable (tests
-        # use this to keep synthetic recordings small).
+        # Only feeds the disk-space estimate (_estimated_canvas()); the
+        # recorder no longer has a canvas. None means "derive from the two
+        # live cameras' own resolution". Still overridable for tests.
         width: int | None = None,
         height: int | None = None,
         fps: int = 30,
@@ -138,6 +145,8 @@ class KioskController:
         self.stall_timeout_s = stall_timeout_s
 
         self._third_person_name = third_person_name
+        self._instrument_labels = instrument_labels or {}
+        self._third_person_label = third_person_label
         self._disk_usage_fn = disk_usage_fn
         self._clock = clock
         self._target_minutes = target_minutes
@@ -146,11 +155,10 @@ class KioskController:
             lambda instrument_camera, instrument_name: Recorder(
                 instrument_camera,
                 self.third_person_camera,
-                name_a=instrument_name,
-                name_b=third_person_name,
+                instrument_key=instrument_name,
+                instrument_label=self._instrument_labels.get(instrument_name),
+                third_person_label=self._third_person_label,
                 output_root=str(self.output_root),
-                width=self.width,
-                height=self.height,
                 fps=self.fps,
             )
         )
@@ -327,14 +335,13 @@ class KioskController:
         self.last_session_info = session_info
         self.error_message = None
         self.state = State.IDLE
-        dropped = {
-            cam["name"]: cam["dropped_frames"] for cam in session_info.get("cameras", {}).values()
-        }
+        streams = session_info.get("streams", {})
         logger.info(
-            "recording stopped: session_dir=%s frame_count=%s dropped=%s",
+            "recording stopped: session_dir=%s frames=%s dropped=%s verified=%s",
             self.last_session_dir,
-            session_info.get("composite", {}).get("frame_count"),
-            dropped,
+            {role: s.get("frame_count") for role, s in streams.items()},
+            {role: s.get("dropped_frames") for role, s in streams.items()},
+            {role: s.get("verified") for role, s in streams.items()},
         )
         return session_info
 

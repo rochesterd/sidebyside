@@ -266,16 +266,19 @@ class TestKioskControllerSession(unittest.TestCase):
                 self.assertEqual(controller.state, State.IDLE)
                 self.assertIsNone(controller.error_message)
 
-                self.assertGreater(session_info["composite"]["frame_count"], 0)
-                for cam in session_info["cameras"].values():
-                    self.assertGreaterEqual(cam["frame_count"], 1)
-                    self.assertGreaterEqual(cam["dropped_frames"], 0)
-                names = {cam["name"] for cam in session_info["cameras"].values()}
-                self.assertEqual(names, {"instrument", "third_person"})
+                self.assertEqual(session_info["format_version"], 2)
+                self.assertEqual(session_info["instrument"], "instrument")
+                self.assertEqual(set(session_info["streams"]), {"instrument", "third_person"})
+                for stream in session_info["streams"].values():
+                    self.assertGreaterEqual(stream["frame_count"], 1)
+                    self.assertGreaterEqual(stream["dropped_frames"], 0)
+                    self.assertTrue(stream["verified"])
 
-                mp4_path = controller.last_session_dir / "composite.mp4"
-                self.assertTrue(mp4_path.exists())
-                self.assertGreater(mp4_path.stat().st_size, 0)
+                for role in ("instrument", "third_person"):
+                    mp4_path = controller.last_session_dir / f"{role}.mp4"
+                    self.assertTrue(mp4_path.exists(), role)
+                    self.assertGreater(mp4_path.stat().st_size, 0, role)
+                    self.assertFalse((controller.last_session_dir / f"{role}.mkv").exists(), role)
 
                 # Re-running preflight after the session ends should let
                 # Start become available again.
@@ -324,8 +327,9 @@ class TestKioskControllerSession(unittest.TestCase):
 
                 # The recording must have been stopped cleanly, not abandoned.
                 self.assertIsNotNone(controller.last_session_info)
-                self.assertIn("composite", controller.last_session_info)
-                mp4_path = controller.last_session_dir / "composite.mp4"
+                self.assertIn("streams", controller.last_session_info)
+                # The instrument kept delivering; its partial file is playable.
+                mp4_path = controller.last_session_dir / "instrument.mp4"
                 self.assertTrue(mp4_path.exists())
                 self.assertGreater(mp4_path.stat().st_size, 0)
 

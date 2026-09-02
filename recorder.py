@@ -1,5 +1,21 @@
-"""Records two BaseCamera feeds to a composited MKV (then remuxed to MP4),
-alongside a session.json manifest.
+"""Records two BaseCamera feeds as two separate variable-frame-rate video
+files -- instrument.mp4 and third_person.mp4 -- on one shared clock, plus
+a session.json manifest (format_version 2) that the Viewer reads.
+
+No compositing happens here any more. Each frame is encoded at its
+camera's native resolution with a presentation timestamp equal to its
+grab time minus the session's origin, so a frame at time t in one file
+and a frame at time t in the other were captured at the same instant.
+That timestamp relationship *is* the synchronization; the Viewer lays the
+two out side by side (or however) at watch time. See ROADMAP.md's
+"Recorder/Viewer split: design" entry and DECISIONS.md's entry of the
+same name for why this replaced the live composite.
+
+Each camera gets its own _StreamWriter with its own thread and encoder,
+so a slow encode on one can't starve the other's queue. Writers drain
+their camera with read() -- every frame, in order -- which is what lets
+dropped_frames reflect real gaps in Frame.index (see CLAUDE.md's
+Architecture section on read() vs get_latest()).
 """
 
 from __future__ import annotations
@@ -8,174 +24,351 @@ import json
 import logging
 import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
+from fractions import Fraction
 from itertools import islice
 from pathlib import Path
 
 import av
 
 from camera import BaseCamera, Frame
-from compositor import draw_timer, side_by_side
 
 logger = logging.getLogger(__name__)
 
-# Frames to actually decode from the head of the remuxed MP4 when verifying
-# it before deleting the interim MKV -- enough to prove the leading keyframe
-# survived the remux (the failure mode DECISIONS.md's packet-filter entry
-# describes: valid headers, decodes zero frames). ~0.5s at 30fps.
+SESSION_FORMAT_VERSION = 2
+INSTRUMENT_STREAM = "instrument"
+THIRD_PERSON_STREAM = "third_person"
+
+# Millisecond PTS. Both the container stream *and* the encoder context
+# must use this -- see DECISIONS.md: with only the stream set, PyAV leaves
+# the encoder at 1/fps, ms PTS get rescaled to 1/30 ticks, two ~33ms-apart
+# frames collapse into one tick, DTS goes non-monotonic and the MP4 remux
+# fails with EINVAL (the MKV muxer tolerates it, so it only shows at remux).
+_PTS_TIME_BASE = Fraction(1, 1000)
+
+# Frames to actually decode from the head of a remuxed MP4 when verifying
+# it before deleting the interim MKV -- enough to prove the leading
+# keyframe survived (the failure mode DECISIONS.md's packet-filter entry
+# describes: valid headers, zero decodable frames). ~0.5s at 30fps.
 _MP4_VERIFY_DECODE_FRAMES = 15
-# How many video packets the remuxed MP4 may be short of what was encoded
-# before verification fails it -- a couple of frames of muxer edge-effect
-# slack, same tolerance test_recorder.py uses decoding the output.
+# Video packets the remuxed MP4 may be short of what was encoded before
+# verification fails it -- muxer edge-effect slack.
 _MP4_VERIFY_PACKET_SLACK = 2
 
-
-@dataclass
-class _CameraTrack:
-    name: str
-    camera: BaseCamera
-    last_frame: Frame | None = None
-    last_index: int | None = None
-    received: int = 0
-    dropped: int = 0
-    first_timestamp: float | None = None
-
-    def absorb(self, frame: Frame | None) -> None:
-        if frame is None:
-            return
-        if self.first_timestamp is None:
-            self.first_timestamp = frame.timestamp
-        if self.last_index is not None and frame.index > self.last_index + 1:
-            self.dropped += frame.index - self.last_index - 1
-        self.last_index = frame.index
-        self.last_frame = frame
-        self.received += 1
-
-    @property
-    def frame_count(self) -> int:
-        # Deliberately `received`, not `last_index + 1`: Frame.index is now
-        # the source's own frame sequence number (see BaseCamera._grab) and
-        # can legitimately have gaps or not start at 0, so it no longer
-        # equals a count of frames actually received. See DECISIONS.md.
-        return self.received
+# How long a writer blocks on its camera queue per loop before re-checking
+# its stop flag. Short, so stop() is responsive.
+_READ_TIMEOUT_S = 0.1
+# After a stop request, how many already-queued frames a writer will still
+# absorb. Bounded (not "until empty") because the camera keeps running
+# past the session and refilling its queue -- an unbounded drain against
+# a producer that's faster than the encoder never returns. See
+# DECISIONS.md's "_drain_remaining is one bounded pass" entry.
+_STOP_DRAIN_MAX_FRAMES = 4
+# Tolerance on the recorder-side rate limit: a frame is accepted once
+# 0.9/fps has passed, not a strict 1/fps. A camera pacing itself at
+# exactly the recording rate has jitter of a millisecond or two either
+# way, and a strict threshold would reject a random ~half of its frames.
+# Still limits anything meaningfully faster (a 90fps source at a 30fps
+# target passes ~1 in 3).
+_RATE_LIMIT_SLACK = 0.9
 
 
-class Recorder:
-    """Pulls frames from two cameras' queues, composites them side by side,
-    and encodes the result to MKV, remuxing to MP4 on stop().
+def _mp4_verifies(mp4_path: Path, expected_frames: int) -> bool:
+    """True if a remuxed MP4 is safe to treat as the sole copy of its
+    stream: its first frames actually decode (catches the dropped-leading-
+    keyframe remux failure) and it carries essentially all the packets
+    that were encoded (catches truncation). Cheap -- a partial decode and
+    a demux-only count, not a full decode a waiting student would feel.
     """
+    if expected_frames == 0:
+        return False  # nothing was recorded -- no basis to verify, so don't drop the MKV
+    try:
+        with av.open(str(mp4_path)) as container:
+            stream = container.streams.video[0]
+            packets = sum(1 for packet in container.demux(stream) if packet.size)
+        with av.open(str(mp4_path)) as container:
+            stream = container.streams.video[0]
+            decoded = sum(1 for _ in islice(container.decode(stream), _MP4_VERIFY_DECODE_FRAMES))
+    except Exception as exc:
+        logger.error("%s: verification errored: %s", mp4_path.name, exc)
+        return False
+
+    if decoded == 0:
+        logger.error("%s: decoded 0 frames from its first %d packets", mp4_path.name, _MP4_VERIFY_DECODE_FRAMES)
+        return False
+    if packets < expected_frames - _MP4_VERIFY_PACKET_SLACK:
+        logger.error("%s: has %d video packets, expected ~%d", mp4_path.name, packets, expected_frames)
+        return False
+    return True
+
+
+def _remux_to_mp4(mkv_path: Path, mp4_path: Path) -> None:
+    input_ = av.open(str(mkv_path))
+    output = av.open(str(mp4_path), mode="w")
+    try:
+        in_stream = input_.streams.video[0]
+        out_stream = output.add_stream_from_template(in_stream)
+        for packet in input_.demux(in_stream):
+            # Skip only empty flush packets. Filtering on `packet.dts is
+            # None` instead drops the leading keyframe here and produces
+            # an MP4 that decodes zero frames. See DECISIONS.md.
+            if packet.size == 0:
+                continue
+            packet.stream = out_stream
+            output.mux(packet)
+    finally:
+        output.close()
+        input_.close()
+
+
+class _StreamWriter:
+    """One camera -> one VFR video file, on its own thread."""
 
     def __init__(
         self,
-        camera_a: BaseCamera,
-        camera_b: BaseCamera,
-        name_a: str = "camera_a",
-        name_b: str = "camera_b",
+        role: str,
+        camera: BaseCamera,
+        label: str,
+        session_dir: Path,
+        origin_monotonic: float,
+        fps: int,
+        codec: str,
+        crf: int,
+        preset: str,
+    ):
+        self.role = role
+        self.camera = camera
+        self.label = label
+        self.mkv_path = session_dir / f"{role}.mkv"
+        self.mp4_path = session_dir / f"{role}.mp4"
+        self._origin = origin_monotonic
+        self._fps = fps
+        self._min_interval_s = (1.0 / fps) * _RATE_LIMIT_SLACK if fps > 0 else 0.0
+        self._codec = codec
+        self._crf = crf
+        self._preset = preset
+
+        self.width = 0
+        self.height = 0
+        self.frame_count = 0  # frames actually encoded
+        self.dropped = 0  # gaps in the source's own Frame.index
+        self.rate_limited = 0  # frames declined for arriving faster than fps
+        self.first_timestamp: float | None = None
+        self.mp4_verified = False
+
+        self._last_index: int | None = None
+        self._last_encoded_ts: float | None = None
+        self._last_pts = -1
+        self._container = None
+        self._stream = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+
+    # --- lifecycle ---------------------------------------------------------
+
+    def start(self) -> None:
+        # Cameras are live by the time a real caller reaches here (kiosk.py
+        # only starts a recording from READY), so .resolution is real.
+        self.width, self.height = self.camera.resolution
+
+        self._container = av.open(str(self.mkv_path), mode="w")
+        self._stream = self._container.add_stream(self._codec, rate=self._fps)
+        self._stream.width = self.width
+        self._stream.height = self.height
+        self._stream.pix_fmt = "yuv420p"
+        self._stream.time_base = _PTS_TIME_BASE
+        self._stream.codec_context.time_base = _PTS_TIME_BASE
+        # g = a keyframe every `fps` frames: <=1s of media for a full-rate
+        # stream, proportionally longer for a slower one, but always <=fps
+        # frames of decode-forward after a Viewer seek. libx264's default
+        # (~250) would make every scrub decode up to ~8s forward.
+        self._stream.codec_context.options = {
+            "crf": str(self._crf),
+            "preset": self._preset,
+            "g": str(self._fps),
+        }
+
+        # Discard anything queued from before the session's origin, so the
+        # first encoded frame is genuinely post-Start rather than a stale
+        # frame that would otherwise be clamped to pts 0.
+        while self.camera.read(timeout=0) is not None:
+            pass
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"writer-{self.role}")
+        self._thread.start()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def join(self, timeout: float) -> bool:
+        """True if the writer thread has exited."""
+        if self._thread is None:
+            return True
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    def finalize(self) -> None:
+        """Flush the encoder, close the MKV, remux to MP4, verify, and
+        delete the MKV if it verified. Only call once join() is True --
+        touching the encoder while the writer thread may still be encoding
+        is what produces a silently corrupt file.
+        """
+        self._thread = None
+        for packet in self._stream.encode(None):
+            self._container.mux(packet)
+        self._container.close()
+
+        _remux_to_mp4(self.mkv_path, self.mp4_path)
+
+        if _mp4_verifies(self.mp4_path, self.frame_count):
+            self.mp4_verified = True
+            self.mkv_path.unlink()
+            logger.info("%s: verified (%d frames); removed interim %s", self.mp4_path.name, self.frame_count, self.mkv_path.name)
+        else:
+            self.mp4_verified = False
+            logger.error("%s: did not verify; keeping %s as the recoverable copy", self.mp4_path.name, self.mkv_path.name)
+
+    # --- capture thread ------------------------------------------------------
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            frame = self.camera.read(timeout=_READ_TIMEOUT_S)
+            if frame is not None:
+                self._absorb(frame)
+        for _ in range(_STOP_DRAIN_MAX_FRAMES):
+            frame = self.camera.read(timeout=0)
+            if frame is None:
+                break
+            self._absorb(frame)
+
+    def _absorb(self, frame: Frame) -> None:
+        if self.first_timestamp is None:
+            self.first_timestamp = frame.timestamp
+        if self._last_index is not None and frame.index > self._last_index + 1:
+            self.dropped += frame.index - self._last_index - 1
+        self._last_index = frame.index
+
+        # Recorder-side guarantee of "never faster than fps". The camera-
+        # side caps are best-effort (a device may ignore them); this isn't.
+        if self._last_encoded_ts is not None and frame.timestamp - self._last_encoded_ts < self._min_interval_s:
+            self.rate_limited += 1
+            return
+
+        self._encode(frame)
+        self._last_encoded_ts = frame.timestamp
+
+    def _encode(self, frame: Frame) -> None:
+        pts = int(round((frame.timestamp - self._origin) * 1000))
+        if pts <= self._last_pts:
+            pts = self._last_pts + 1  # bump, never drop: PTS must be strictly increasing
+        self._last_pts = pts
+
+        video_frame = av.VideoFrame.from_ndarray(frame.image, format="bgr24").reformat(format="yuv420p")
+        video_frame.pts = pts
+        video_frame.time_base = _PTS_TIME_BASE
+        for packet in self._stream.encode(video_frame):
+            self._container.mux(packet)
+        self.frame_count += 1
+
+    # --- manifest ----------------------------------------------------------
+
+    def info(self) -> dict:
+        data = {
+            "file": self.mp4_path.name,
+            "label": self.label,
+            "width": self.width,
+            "height": self.height,
+            "frame_count": self.frame_count,
+            "dropped_frames": self.dropped,
+            "rate_limited_frames": self.rate_limited,
+            "first_timestamp": self.first_timestamp,
+            # Reserved for the per-stream inter-camera latency correction
+            # (DECISIONS.md 2026-08-11); the Viewer subtracts this from the
+            # stream's PTS. No measurement tooling yet, so always 0.0.
+            "offset_s": 0.0,
+            "verified": self.mp4_verified,
+        }
+        if not self.mp4_verified:
+            data["mkv"] = self.mkv_path.name
+        return data
+
+
+class Recorder:
+    """Records the selected instrument camera and the third-person camera
+    as two synchronized VFR files in a fresh session directory."""
+
+    def __init__(
+        self,
+        instrument_camera: BaseCamera,
+        third_person_camera: BaseCamera,
+        instrument_key: str,
+        instrument_label: str | None = None,
+        third_person_label: str | None = None,
         output_root: str | Path = "sessions",
-        # None means "derive from the two cameras' own resolution at
-        # start()" -- side by side, not a 1080p split, whatever that adds
-        # up to. See DECISIONS.md's "config-driven recording fps" entry
-        # for why this is auto-derived rather than configured, unlike fps.
-        width: int | None = None,
-        height: int | None = None,
         fps: int = 30,
         codec: str = "libx264",
         crf: int = 23,
         preset: str = "ultrafast",
     ):
-        self.width = width
-        self.height = height
+        self.instrument_camera = instrument_camera
+        self.third_person_camera = third_person_camera
+        self.instrument_key = instrument_key
+        self.instrument_label = instrument_label or instrument_key
+        self.third_person_label = third_person_label or THIRD_PERSON_STREAM
+        self.output_root = Path(output_root)
         self.fps = fps
         self.codec = codec
         self.crf = crf
         self.preset = preset
-        self.output_root = Path(output_root)
-
-        self._track_a = _CameraTrack(name=name_a, camera=camera_a)
-        self._track_b = _CameraTrack(name=name_b, camera=camera_b)
-
-        self._thread: threading.Thread | None = None
-        self._stop_event = threading.Event()
-        self._frame_count = 0
 
         self.session_dir: Path | None = None
-        self.mkv_path: Path | None = None
-        self.mp4_path: Path | None = None
-        # Set in stop(): True once composite.mp4 has been decoded-checked and
-        # the interim composite.mkv deleted; False means the MKV was kept
-        # because the MP4 didn't verify (see _finalize_outputs()).
-        self.mp4_verified = False
-        self._container = None
-        self._stream = None
+        self._writers: list[_StreamWriter] = []
         self._start_wall: datetime | None = None
-        self._start_monotonic: float | None = None
+        self._origin_monotonic: float | None = None
 
     def start(self) -> None:
-        if self.width is None or self.height is None:
-            # Cameras are already live by the time a real caller reaches
-            # here (kiosk.py only calls start_recording() from READY,
-            # which requires both cameras to have delivered a frame), so
-            # .resolution reports the real thing, not a placeholder.
-            a_width, a_height = self._track_a.camera.resolution
-            b_width, b_height = self._track_b.camera.resolution
-            if self.width is None:
-                self.width = a_width + b_width
-            if self.height is None:
-                self.height = max(a_height, b_height)
-
         self.session_dir = self._make_session_dir()
-        self.mkv_path = self.session_dir / "composite.mkv"
-
-        self._container = av.open(str(self.mkv_path), mode="w")
-        self._stream = self._container.add_stream(self.codec, rate=self.fps)
-        self._stream.width = self.width
-        self._stream.height = self.height
-        self._stream.pix_fmt = "yuv420p"
-        self._stream.codec_context.options = {"crf": str(self.crf), "preset": self.preset}
-
         self._start_wall = datetime.now(timezone.utc)
-        self._start_monotonic = time.monotonic()
-        self._frame_count = 0
+        self._origin_monotonic = time.monotonic()
 
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._writers = [
+            _StreamWriter(
+                INSTRUMENT_STREAM, self.instrument_camera, self.instrument_label, self.session_dir,
+                self._origin_monotonic, self.fps, self.codec, self.crf, self.preset,
+            ),
+            _StreamWriter(
+                THIRD_PERSON_STREAM, self.third_person_camera, self.third_person_label, self.session_dir,
+                self._origin_monotonic, self.fps, self.codec, self.crf, self.preset,
+            ),
+        ]
+        for writer in self._writers:
+            writer.start()
 
     def stop(self) -> dict:
-        if self._thread is not None:
-            self._stop_event.set()
-            self._thread.join(timeout=10.0)
-            if self._thread.is_alive():
-                # Loud and early (see CLAUDE.md) rather than proceeding to
-                # flush the encoder from this thread while the capture
-                # thread might still be mid-encode - that race is what
-                # produces a corrupt/short composite.mkv with no warning.
-                # Logged in addition to the raise: a caller catching this
-                # broadly (kiosk.py's _fail() does, to still record a
-                # session summary) would otherwise leave no trace of why.
-                logger.error(
-                    "session_dir=%s: capture thread did not stop within 10s; "
-                    "refusing to finalize the encoder",
-                    self.session_dir,
-                )
-                raise RuntimeError(
-                    "Recorder's capture thread did not stop within 10s; "
-                    "refusing to finalize the encoder while it may still "
-                    "be writing, to avoid a silently corrupt recording."
-                )
-            self._thread = None
+        for writer in self._writers:
+            writer.request_stop()
+        stuck = [writer.role for writer in self._writers if not writer.join(timeout=10.0)]
+        if stuck:
+            # Loud and early (see CLAUDE.md) rather than flushing an encoder
+            # another thread may still be writing to -- that race is what
+            # produces a corrupt/short file with no warning. Logged as well
+            # as raised: kiosk.py's _fail() catches broadly to still record
+            # a summary, and would otherwise leave no trace of why.
+            logger.error(
+                "session_dir=%s: writer thread(s) %s did not stop within 10s; refusing to finalize",
+                self.session_dir, stuck,
+            )
+            raise RuntimeError(
+                f"Recorder writer thread(s) {stuck} did not stop within 10s; refusing to finalize "
+                "while they may still be writing, to avoid a silently corrupt recording."
+            )
 
-        packets = self._stream.encode(None)
-        self._container.mux(packets)
-        self._container.close()
-
-        self.mp4_path = self.session_dir / "composite.mp4"
-        self._remux_to_mp4(self.mkv_path, self.mp4_path)
-        self._finalize_outputs()
+        for writer in self._writers:
+            writer.finalize()
 
         session_info = self._build_session_info()
-        with open(self.session_dir / "session.json", "w") as f:
+        with open(self.session_dir / "session.json", "w", encoding="utf-8") as f:
             json.dump(session_info, f, indent=2)
         return session_info
 
@@ -189,176 +382,14 @@ class Recorder:
         candidate.mkdir(parents=True, exist_ok=False)
         return candidate
 
-    def _run(self) -> None:
-        period = 1.0 / self.fps if self.fps > 0 else 0.0
-        next_tick = time.monotonic()
-        while not self._stop_event.is_set():
-            now = time.monotonic()
-            if next_tick > now:
-                time.sleep(min(next_tick - now, period) if period else 0.001)
-                continue
-            self._tick()
-            next_tick = max(next_tick + period, time.monotonic()) if period else time.monotonic()
-        self._drain_remaining()
-
-    def _tick(self) -> None:
-        self._track_a.absorb(self._drain_latest(self._track_a.camera))
-        self._track_b.absorb(self._drain_latest(self._track_b.camera))
-        if self._track_a.last_frame is None or self._track_b.last_frame is None:
-            return
-        self._encode_pair(self._track_a.last_frame, self._track_b.last_frame)
-
-    @staticmethod
-    def _drain_latest(camera: BaseCamera) -> Frame | None:
-        """Pop every frame currently queued and return only the newest one."""
-        latest = None
-        while True:
-            frame = camera.read(timeout=0)
-            if frame is None:
-                break
-            latest = frame
-        return latest
-
-    def _drain_remaining(self) -> None:
-        """After a stop request, flush whatever was already sitting in each
-        camera's queue at that moment, so it isn't silently discarded.
-
-        Deliberately a single bounded pass, not a loop until both queues go
-        empty: cameras may keep running past this session's end (e.g. for a
-        live preview between recordings), continuously refilling their
-        queues. If encoding ever falls behind the camera's frame rate even
-        slightly, "both queues empty" is a moving target that's never
-        actually reached, and this method would never return - which then
-        causes the caller's thread.join() to time out and proceed to flush
-        the encoder from another thread while this one is still encoding.
-        See DECISIONS.md.
-        """
-        frame_a = self._drain_latest(self._track_a.camera)
-        frame_b = self._drain_latest(self._track_b.camera)
-        self._track_a.absorb(frame_a)
-        self._track_b.absorb(frame_b)
-        if self._track_a.last_frame is not None and self._track_b.last_frame is not None:
-            self._encode_pair(self._track_a.last_frame, self._track_b.last_frame)
-
-    def _encode_pair(self, frame_a: Frame, frame_b: Frame) -> None:
-        composite = side_by_side(frame_a.image, frame_b.image, out_size=(self.width, self.height))
-        elapsed = time.monotonic() - self._start_monotonic
-        draw_timer(composite, f"{elapsed:7.2f}s", position=(10, 10))
-
-        video_frame = av.VideoFrame.from_ndarray(composite, format="bgr24").reformat(format="yuv420p")
-        video_frame.pts = self._frame_count
-        packets = self._stream.encode(video_frame)
-        self._container.mux(packets)
-        self._frame_count += 1
-
-    def _finalize_outputs(self) -> None:
-        """The MKV exists only as the interruption-safe copy during capture
-        (see CLAUDE.md: an interrupted MKV is still playable, an interrupted
-        MP4 is lost). Once stop() has produced composite.mp4 and it checks
-        out, the MKV is redundant -- the remux is a stream copy, so the MP4
-        holds byte-identical video -- and keeping it just doubles what every
-        session costs on disk. Delete it, but only after verifying the MP4,
-        and never delete both: if verification fails, the MKV stays as the
-        recoverable copy and session.json records mp4_verified=false.
-        """
-        if self._mp4_verifies(self.mp4_path):
-            self.mp4_verified = True
-            self.mkv_path.unlink()
-            logger.info(
-                "session_dir=%s: composite.mp4 verified (%d frames); removed interim composite.mkv",
-                self.session_dir,
-                self._frame_count,
-            )
-        else:
-            self.mp4_verified = False
-            logger.error(
-                "session_dir=%s: composite.mp4 did not verify; keeping composite.mkv as the recoverable copy",
-                self.session_dir,
-            )
-
-    def _mp4_verifies(self, mp4_path: Path) -> bool:
-        """True if the remuxed MP4 is safe to treat as the sole copy: its
-        first frames actually decode (catches the dropped-leading-keyframe
-        failure in DECISIONS.md's packet-filter entry -- valid headers, zero
-        decodable frames) and it carries essentially all the video packets
-        that were encoded (catches gross truncation). Both checks are cheap
-        -- a partial decode and a demux-only packet count, not a full
-        decode pass a waiting student would feel.
-        """
-        if self._frame_count == 0:
-            return False  # nothing was recorded -- no basis to verify, so don't drop the MKV
-        try:
-            with av.open(str(mp4_path)) as container:
-                stream = container.streams.video[0]
-                packets = sum(1 for packet in container.demux(stream) if packet.size)
-            with av.open(str(mp4_path)) as container:
-                stream = container.streams.video[0]
-                decoded = sum(1 for _ in islice(container.decode(stream), _MP4_VERIFY_DECODE_FRAMES))
-        except Exception as exc:
-            logger.error("session_dir=%s: composite.mp4 verification errored: %s", self.session_dir, exc)
-            return False
-
-        if decoded == 0:
-            logger.error(
-                "session_dir=%s: composite.mp4 decoded 0 frames from its first %d packets",
-                self.session_dir,
-                _MP4_VERIFY_DECODE_FRAMES,
-            )
-            return False
-        if packets < self._frame_count - _MP4_VERIFY_PACKET_SLACK:
-            logger.error(
-                "session_dir=%s: composite.mp4 has %d video packets, expected ~%d",
-                self.session_dir,
-                packets,
-                self._frame_count,
-            )
-            return False
-        return True
-
-    @staticmethod
-    def _remux_to_mp4(mkv_path: Path, mp4_path: Path) -> None:
-        input_ = av.open(str(mkv_path))
-        output = av.open(str(mp4_path), mode="w")
-        try:
-            in_stream = input_.streams.video[0]
-            out_stream = output.add_stream_from_template(in_stream)
-            for packet in input_.demux(in_stream):
-                # Skip only empty flush packets. Filtering on `packet.dts is
-                # None` instead drops the leading keyframe here and produces
-                # an MP4 that decodes zero frames.
-                if packet.size == 0:
-                    continue
-                packet.stream = out_stream
-                output.mux(packet)
-        finally:
-            output.close()
-            input_.close()
-
     def _build_session_info(self) -> dict:
         return {
+            "format_version": SESSION_FORMAT_VERSION,
             "session_start_utc": self._start_wall.isoformat(),
-            # composite.mkv is absent once the MP4 verified and it was
-            # deleted; present alongside the MP4 when verification failed.
-            "output_files": (
-                {"mp4": self.mp4_path.name}
-                if self.mp4_verified
-                else {"mkv": self.mkv_path.name, "mp4": self.mp4_path.name}
-            ),
-            "mp4_verified": self.mp4_verified,
-            "composite": {
-                "width": self.width,
-                "height": self.height,
-                "fps": self.fps,
-                "frame_count": self._frame_count,
-            },
-            "cameras": {
-                key: {
-                    "name": track.name,
-                    "resolution": list(track.camera.resolution),
-                    "start_timestamp": track.first_timestamp,
-                    "frame_count": track.frame_count,
-                    "dropped_frames": track.dropped,
-                }
-                for key, track in (("camera_a", self._track_a), ("camera_b", self._track_b))
-            },
+            "instrument": self.instrument_key,
+            # t=0 for every PTS in every stream. Two frames with equal PTS
+            # in different files were grabbed at the same instant.
+            "clock": {"origin_monotonic": self._origin_monotonic},
+            "fps": self.fps,
+            "streams": {writer.role: writer.info() for writer in self._writers},
         }
