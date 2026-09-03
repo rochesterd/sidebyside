@@ -2797,3 +2797,80 @@ flagged, a frozen camera blocking Start while `cameras_ready` stays True,
 a camera freezing mid-recording stopping it loudly with a real partial
 session on disk, and deselecting an instrument dropping its history. Full
 suite 280.
+
+---
+
+## 2026-09-03 - Camera configuration: which layer owns what
+
+**Decided:** Recorded the ownership model for camera configuration as a
+standing section in CLAUDE.md ("Camera configuration: who decides what"),
+because a wrong assumption about it silently produced a bad calibration
+that sat in `config.json` for weeks.
+
+**The assumption worth killing:** that Keeler and Haag-Streit configured
+these sensors better than we could, so the sensor layer is already
+handled. Neither is true. Both instrument cameras are generic **IDS**
+machine-vision cameras that the instrument makers merely mount, and
+sidebyside talks to IDS peak directly rather than through Keeler's
+Kinexis -- so there is no instrument-maker configuration to inherit. And
+IDS's own defaults were measured unusable here: the 2026-08-12 hardware
+smoke test found `ExposureTime ~15ms / Gain 1.0` gave a near-black frame
+pointed straight at a lamp (raw Bayer max 3-4 of 255).
+
+**The evidence that our calibration strategy, not the hardware, is the
+outlier** -- three settings for comparable scenes:
+
+| | exposure | gain |
+|---|---|---|
+| IDS factory default | 15 ms | 1.0 (near-black) |
+| IDS peak Cockpit's own auto-exposure | 47.5 ms | 25.4 |
+| `exposure_calibration.next_exposure_gain()` on the slit lamp | 87.2 ms | 1.0 |
+
+The vendor's own implementation reaches for gain readily and keeps
+exposure moderate. Ours is documented as doing the opposite ("only spills
+the remainder onto Gain once ExposureTime is clamped"), which is correct
+for stills and wrong for video: exposure time is a frame-rate budget.
+87.2ms caps the slit lamp at ~11.5fps against a 30fps target and puts
+87ms of motion blur on the view of a moving eye. That is where the "slit
+lamp runs at ~11fps" figure in this project's notes actually comes from
+-- it was read as a hardware property, and it is not.
+
+**What the instrument makers do own: the optics.** Light path, image
+orientation (the BIO's flip, handled in `device_presets.py`), and how
+much light reaches the sensor at all. None of it is configurable; it is
+compensated for, or improved at the instrument. This is why "turn up the
+slit lamp's own illuminator" is the real fix rather than any software
+setting -- more light buys short exposure *and* low gain together.
+
+**Why `config.json` rather than the camera's own memory.** GenICam
+devices persist `ExposureTime`/`Gain` across power cycles, so "set it
+once in Cockpit" appears to work. It is invisible, unversioned state with
+no provenance that walks off with a swapped or reset camera -- and the
+2026-08-11 slit-lamp entry already flagged the hazard: a stale value
+"would silently carry into the next kiosk session with no code-level
+check catching it." Config values have provenance and are reapplied in
+`_open()`. Same reasoning as serial-number identification over device
+index.
+
+**Why no "Advanced" tab in settings.py.** Tiering by user skill is the
+wrong cut for a project with three humans separated by role rather than
+ability. The cut that pays is *where the knowledge lives*, and the useful
+move is pushing decisions up that table -- every value the app derives is
+one nobody can set wrong. An advanced panel is usually a sign a preset
+has not been decided yet, and it is the first place a confused technician
+clicks. The 87ms case is the proof: it was not a missing setting (the
+setting existed and was set), so no amount of extra configurability would
+have prevented it. What was missing was any report of what the
+calibration *cost*.
+
+**Rejected:** deferring sensor configuration to IDS peak Cockpit
+entirely, the common pattern for this class of app. The 2026-08-18
+in-app-calibration entry already settled that for the routine case. This
+entry only narrows it: Cockpit stays the right tool for genuine
+sensor-level work (black level, pixel format), and once such a value is
+known it belongs in `device_presets.py`, not in a dialog.
+
+**Not yet acted on:** bounding exposure by `1/recording.fps` in
+`next_exposure_gain()`, warning when a configured exposure cannot meet
+the target frame rate, and reporting achieved fps/gain after a
+calibration. See the CLAUDE.md section's rules.

@@ -70,6 +70,45 @@ silently dropping frames rather than raising an error. Target 30fps, use
 separate host controllers where possible, and treat measured throughput as
 authoritative over datasheet numbers.
 
+## Camera configuration: who decides what
+
+Neither instrument camera is a Keeler or Haag-Streit camera. Both are
+generic IDS machine-vision cameras mounted on those instruments, and
+sidebyside talks to IDS peak directly — it does **not** go through
+Keeler's Kinexis. So there is no instrument-maker sensor configuration to
+inherit, and IDS's own power-on defaults were measured unusable here:
+`ExposureTime ~15ms / Gain 1.0` produced a near-black frame pointed
+straight at a lamp (raw Bayer max 3–4 of 255). See DECISIONS.md's
+"Camera configuration: which layer owns what" entry.
+
+| Layer | Owns | Where it lands |
+|---|---|---|
+| Keeler / Haag-Streit | the **optics** — light path, image orientation, how much light reaches the sensor at all | can't be configured; compensate in `device_presets.py`, or improve the instrument's own illumination |
+| IDS | sensor capability, generic defaults, **IDS peak Cockpit** | defaults are a starting point, not an answer. Cockpit stays the expert tool for sensor-level work (black level, pixel format) — don't reimplement it |
+| Developer | the answers, once known | `device_presets.py` for per-model facts; hard constraints belong in the algorithm, not a settings dialog |
+| Technician | *this room's* light | `settings.py` → `config.json`, one action per decision |
+| Student | nothing | already true — keep it that way |
+
+Rules that follow from this:
+
+- **Push decisions up the table; don't add an "Advanced" tab.** A knob a
+  technician can set wrong is worse than a value the app derives. An
+  advanced panel is usually a sign a preset hasn't been decided yet.
+- **The app holds the values, the camera doesn't.** GenICam cameras
+  persist `ExposureTime`/`Gain` across power cycles, so "set it once in
+  Cockpit" appears to work — but that is invisible, unversioned state
+  that walks off the moment a camera is swapped or reset. `config.json`
+  values have provenance and get reapplied in `IdsCamera._open()`. Same
+  reasoning as identifying cameras by serial rather than index.
+- **Report what a calibration cost, not just that it succeeded.** A
+  technician with no imaging background can judge "30fps, gain 2.6× of
+  4.0 max"; nobody can judge "87208.816". Missing visibility, not a
+  missing setting, is why the slit lamp sat at an 11fps exposure.
+- **Exposure time is a frame-rate budget.** Anything above
+  `1/recording.fps` costs frame rate *and* adds motion blur to exactly
+  the motion this app exists to record. That is a constraint, not a
+  preference — it belongs in code.
+
 ## Architecture
 
 `BaseCamera` in `camera.py` is the boundary. It owns the capture thread, the
