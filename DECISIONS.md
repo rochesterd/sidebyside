@@ -2723,3 +2723,77 @@ the default recordings folder" and shows the picker rather than erroring
 config there. **Not yet verified:** installing
 `sidebyside-viewer-setup.exe` on a machine that has never had sidebyside
 on it (PACKAGING.md step 6's checklist).
+
+---
+
+## 2026-09-03 - Frozen-picture detection: a camera can deliver frames without seeing anything
+
+**Decided:** `KioskController` compares consecutive frames' pixels per
+camera (`_frame_signature()` + `_update_freshness()`). A camera whose
+picture is byte-identical for `DEFAULT_FREEZE_TIMEOUT_S` (5s) is reported
+in `PreflightStatus.frozen_cameras`, which blocks Start, and fails a
+recording in progress with its own message.
+
+**Why:** found while diagnosing a report that an integrated webcam
+"disconnects after a second". Every existing check said the camera was
+perfectly healthy -- reads succeeded, 30fps steady, zero reconnects,
+standalone and inside a real `KioskWindow`. Comparing consecutive frames
+showed 39 of 39 pairs pixel-identical: the camera was blocked at the
+OS/driver level and the stream was re-delivering one still image.
+
+Nothing in the app could see that. `cap.read()` returns True, and
+`UvcCamera` self-counts `Frame.index` (UVC exposes no source counter --
+see the "Third-person UVC camera" entry), so the counter climbs even
+when the pixels are dead and `poll_recording()`'s stall check never
+fires. A student could have recorded a full session of frozen video and
+been told "0 dropped". That is exactly the outcome CLAUDE.md calls the
+worst: a black pane discovered a week later.
+
+**Exact equality, not a difference threshold.** A real sensor emits noise
+on every frame, so two byte-identical frames mean the pixels are not
+coming from a sensor at all. A threshold would have to guess how dark and
+how static a legitimate scene may be -- and the scene this app points at
+*is* dark and static (a slit lamp beam on a dark field). Equality needs no
+such guess. `_frame_signature()` therefore uses strided indexing rather
+than any resampling, which would smooth away the one-bit differences that
+prove liveness.
+
+**Only ever judges a frame it has not already judged.** The first
+implementation compared whatever `get_latest()` returned each poll, and
+the tests immediately caught it flagging a perfectly healthy camera: at a
+4Hz poll against a slower camera you re-examine the *same* frame and
+conclude the picture is frozen. Tracking the last `Frame.index` assessed
+fixes it and gives the right decomposition -- index not advancing is the
+stall check's business; index advancing while pixels do not is this one's.
+That matters concretely: the slit lamp runs at ~11fps.
+
+**Freeze timeout (5s) is deliberately longer than the stall timeout
+(2s).** A stalled camera has stopped delivering and is unambiguous; this
+check asks a subtler question, so it trades a little lateness for a much
+smaller chance of accusing a live camera. ~20 consecutive byte-identical
+samples from a real sensor is essentially impossible.
+
+**`frozen_cameras` is separate from `cameras_ready`** so the UI can say
+which problem it is. "Waiting for cameras" would send a student to check
+a cable; the camera is running. `app.py` says the picture is frozen and
+names what to check (covered, switched off, blocked).
+
+**Also fixed here:** the stall and freeze messages now use the
+technician-set labels ("BI900", "third-person camera") rather than the
+internal role keys, which is what a student actually reads in the error
+banner.
+
+**Verified against real hardware, one direction.** The false-positive
+direction -- the one that matters more, since wrongly refusing to record
+is its own failure -- was confirmed on the real webcam: live at 30fps for
+7s, never flagged. The machine's camera recovered before the true
+positive could be reproduced on it, so that direction rests on the tests
+(`_FreezablePictureCamera` advances `Frame.index` while returning the same
+image, which is precisely the observed real behaviour).
+
+**Tests:** `test_kiosk.py` +7 -- `_frame_signature` (equality, a changed
+sampled pixel, that it copies rather than views), a live camera never
+flagged, a frozen camera blocking Start while `cameras_ready` stays True,
+a camera freezing mid-recording stopping it loudly with a real partial
+session on disk, and deselecting an instrument dropping its history. Full
+suite 280.

@@ -11,7 +11,9 @@ import time
 import types
 import unittest
 
-from kiosk import KioskController, State, estimate_recording_bytes
+import numpy as np
+
+from kiosk import KioskController, State, _frame_signature, estimate_recording_bytes
 from synthetic_camera import SyntheticCamera
 
 
@@ -28,6 +30,26 @@ class FakeClock:
 
     def advance(self, dt: float) -> None:
         self._t += dt
+
+
+class _FreezablePictureCamera(SyntheticCamera):
+    """A camera whose picture can be frozen on demand while its frame
+    counter keeps advancing -- exactly what a blocked or switched-off
+    webcam looks like from the capture layer: reads succeed, Frame.index
+    climbs, the pixels never change.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._frozen_image = None
+
+    def freeze(self) -> None:
+        self._frozen_image = super()._render(0.0, 0)
+
+    def _render(self, elapsed: float, frame_index: int):
+        if self._frozen_image is not None:
+            return self._frozen_image
+        return super()._render(elapsed, frame_index)
 
 
 class _FailOnceCamera(SyntheticCamera):
@@ -232,6 +254,163 @@ class TestInstrumentSelection(unittest.TestCase):
                 third_person.stop()
                 cam_a.stop()
                 cam_b.stop()
+
+
+class TestFrameSignature(unittest.TestCase):
+    def test_identical_images_have_equal_signatures(self):
+        image = np.random.default_rng(0).integers(0, 255, (120, 160, 3), dtype=np.uint8)
+        self.assertTrue(np.array_equal(_frame_signature(image), _frame_signature(image.copy())))
+
+    def test_a_changed_sampled_pixel_shows_up(self):
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        changed = image.copy()
+        changed[0, 0] = (1, 0, 0)  # [0,0] is always sampled by the stride
+        self.assertFalse(np.array_equal(_frame_signature(image), _frame_signature(changed)))
+
+    def test_signature_is_a_copy_not_a_view(self):
+        """The controller holds signatures across polls, so a camera reusing
+        its frame buffer must not silently rewrite history."""
+        image = np.zeros((120, 160, 3), dtype=np.uint8)
+        signature = _frame_signature(image)
+        image[:] = 255
+        self.assertFalse(np.array_equal(signature, _frame_signature(image)))
+
+
+class TestFrozenCameraDetection(unittest.TestCase):
+    """A camera that delivers frames but stops *seeing* is the failure
+    CLAUDE.md calls the worst outcome: nothing else notices it, because
+    reads succeed and Frame.index keeps advancing."""
+
+    def _controller(self, tmp_root, third, instrument, clock):
+        return KioskController(
+            third,
+            {"instrument": instrument},
+            output_root=tmp_root,
+            width=160,
+            height=120,
+            fps=30,
+            freeze_timeout_s=1.0,
+            clock=clock,
+        )
+
+    def test_a_live_camera_is_never_flagged_as_frozen(self):
+        """The false-positive direction, which matters more than the true
+        positive: wrongly refusing to record is its own failure."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            third = SyntheticCamera(160, 120, fps=30, name="third")
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third.start()
+            instrument.start()
+            try:
+                clock = FakeClock()
+                controller = self._controller(tmp_root, third, instrument, clock)
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+
+                for _ in range(5):
+                    clock.advance(2.0)  # well past freeze_timeout_s each time
+                    time.sleep(0.15)  # ...but real frames really do arrive
+                    status = controller.poll_preflight()
+                    self.assertEqual(status.frozen_cameras, ())
+
+                self.assertEqual(controller.state, State.READY)
+            finally:
+                third.stop()
+                instrument.stop()
+
+    def test_frozen_camera_blocks_start(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            third = _FreezablePictureCamera(160, 120, fps=30, name="third")
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third.freeze()  # blocked from the outset
+            third.start()
+            instrument.start()
+            try:
+                clock = FakeClock()
+                controller = self._controller(tmp_root, third, instrument, clock)
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()  # baseline
+                # Real frames must keep arriving while fake time passes --
+                # otherwise nothing is delivering and this would be testing
+                # the stall path instead.
+                status = None
+                for _ in range(6):
+                    time.sleep(0.1)
+                    clock.advance(0.5)
+                    status = controller.poll_preflight()
+
+                self.assertEqual(status.frozen_cameras, ("third_person",))
+                self.assertFalse(status.ok)
+                # Frames *are* arriving -- this is not the "no camera" case.
+                self.assertTrue(status.cameras_ready)
+                self.assertEqual(controller.state, State.IDLE)
+            finally:
+                third.stop()
+                instrument.stop()
+
+    def test_a_camera_that_freezes_mid_recording_stops_it_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            third = _FreezablePictureCamera(160, 120, fps=30, name="third")
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third.start()
+            instrument.start()
+            try:
+                clock = FakeClock()
+                controller = self._controller(tmp_root, third, instrument, clock)
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                self.assertTrue(controller.poll_preflight().ok)
+
+                controller.start_recording()
+                time.sleep(0.3)
+                controller.poll_recording()
+                self.assertEqual(controller.state, State.RECORDING)
+
+                third.freeze()  # the camera gets blocked mid-session
+                # Frames keep arriving and Frame.index keeps climbing, so
+                # the stall check stays quiet -- only the pixels are dead.
+                for _ in range(6):
+                    if controller.state != State.RECORDING:
+                        break
+                    time.sleep(0.1)
+                    clock.advance(0.5)
+                    controller.poll_recording()
+
+                self.assertEqual(controller.state, State.ERROR)
+                self.assertIn("stopped changing", controller.error_message)
+                self.assertIn("third", controller.error_message.lower())
+                # Stopped cleanly, not abandoned: the partial session is real.
+                self.assertIsNotNone(controller.last_session_info)
+                self.assertTrue((controller.last_session_dir / "instrument.mp4").exists())
+            finally:
+                third.stop()
+                instrument.stop()
+
+    def test_deselecting_an_instrument_drops_its_freshness_history(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            third = SyntheticCamera(160, 120, fps=30, name="third")
+            cam_a = SyntheticCamera(160, 120, fps=30, name="a")
+            cam_b = SyntheticCamera(160, 120, fps=30, name="b")
+            third.start()
+            try:
+                clock = FakeClock()
+                controller = KioskController(
+                    third, {"a": cam_a, "b": cam_b}, output_root=tmp_root,
+                    width=160, height=120, fps=30, freeze_timeout_s=1.0, clock=clock,
+                )
+                controller.select_instrument("a")
+                time.sleep(0.2)
+                controller.poll_preflight()
+                self.assertIn("instrument", controller._last_signature)
+
+                controller.select_instrument("b")
+                self.assertEqual(controller._last_signature, {})
+            finally:
+                third.stop()
+                for cam in (cam_a, cam_b):
+                    cam.stop()
 
 
 class TestKioskControllerSession(unittest.TestCase):

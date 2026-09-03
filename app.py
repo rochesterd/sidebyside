@@ -382,6 +382,18 @@ class KioskWindow(QMainWindow):
             return "Select an instrument to begin."
         if preflight is None:
             return "Waiting for cameras..."
+        if preflight.frozen_cameras:
+            # Distinct from "waiting for cameras": the camera *is* running,
+            # so telling a student to plug it in would send them the wrong
+            # way. Name the thing they can actually check.
+            names = ", ".join(
+                self._display_names.get(key, key) for key in preflight.frozen_cameras
+            )
+            return (
+                f"{names}: the picture is frozen - the camera is on but not seeing "
+                "anything. Check that it isn't covered, switched off, or blocked."
+            )
+
         missing = []
         if not preflight.cameras_ready:
             if self._camera_start_errors:

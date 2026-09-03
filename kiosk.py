@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
+
 from camera import BaseCamera
 from recorder import Recorder
 
@@ -56,6 +58,43 @@ FALLBACK_CANVAS_HEIGHT = 1080
 # How long a camera's frame index may stay unchanged during a recording
 # before it counts as stalled. See DECISIONS.md.
 DEFAULT_STALL_TIMEOUT_S = 2.0
+
+# How long a camera may keep delivering *pixel-identical* frames before it
+# counts as frozen. Longer than the stall timeout on purpose: a stalled
+# camera has stopped delivering and is unambiguous, whereas this asks
+# "is the picture actually changing?", so it trades a little lateness for
+# a far smaller chance of accusing a live camera. Even so, ~20 consecutive
+# byte-identical samples from a real sensor is essentially impossible --
+# see _frame_signature(). See DECISIONS.md.
+DEFAULT_FREEZE_TIMEOUT_S = 5.0
+
+# Roughly how many points per axis _frame_signature() samples. Small
+# enough to be cheap on a 2056x1542 frame (~65x65), while still covering
+# thousands of independent pixels, so live sensor noise cannot hide from
+# it.
+_FRESHNESS_SAMPLES_PER_AXIS = 64
+
+
+def _frame_signature(image):
+    """A cheap, *exact-valued* subsample of a frame, for telling a live
+    stream from one that has frozen on a single image.
+
+    Strided indexing, never interpolation: the comparison is exact
+    equality, so a resampled or averaged signature could smooth away the
+    one-bit differences that prove a sensor is live. Exact equality is
+    what makes this safe to act on -- a real sensor emits noise on every
+    frame, so two byte-identical frames mean the pixels are not coming
+    from a sensor at all (a blocked camera being fed a substitute image,
+    a driver replaying its last good frame, a hung capture path). A
+    difference *threshold* would have to guess how dark and how static a
+    real scene may legitimately be; equality does not.
+    """
+    height, width = image.shape[:2]
+    step_y = max(1, height // _FRESHNESS_SAMPLES_PER_AXIS)
+    step_x = max(1, width // _FRESHNESS_SAMPLES_PER_AXIS)
+    # Copied, not a view: the caller holds this across polls, and a camera
+    # implementation is free to reuse its frame buffer.
+    return image[::step_y, ::step_x].copy()
 
 
 def estimate_recording_bytes(
@@ -96,10 +135,15 @@ class PreflightStatus:
     disk_ok: bool
     free_bytes: int
     required_bytes: float
+    # Cameras delivering frames whose pixels have stopped changing. Kept
+    # separate from cameras_ready so the UI can say *which* problem it is:
+    # "waiting for cameras" and "the camera is on but the picture is
+    # frozen" need different words and different fixes.
+    frozen_cameras: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return self.cameras_ready and self.disk_ok
+        return self.cameras_ready and self.disk_ok and not self.frozen_cameras
 
 
 class KioskController:
@@ -130,6 +174,7 @@ class KioskController:
         height: int | None = None,
         fps: int = 30,
         stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
+        freeze_timeout_s: float = DEFAULT_FREEZE_TIMEOUT_S,
         target_minutes: float = TARGET_SESSION_MINUTES,
         bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
         disk_usage_fn: Callable[[str], object] = shutil.disk_usage,
@@ -143,6 +188,7 @@ class KioskController:
         self.height = height
         self.fps = fps
         self.stall_timeout_s = stall_timeout_s
+        self.freeze_timeout_s = freeze_timeout_s
 
         self._third_person_name = third_person_name
         self._instrument_labels = instrument_labels or {}
@@ -172,6 +218,11 @@ class KioskController:
         self._recorder: Recorder | None = None
         self._last_index: dict[str, int] = {"instrument": -1, "third_person": -1}
         self._last_progress_time: dict[str, float] = {}
+        # Freshness: the last frame signature seen per camera, and when it
+        # last actually changed. See _update_freshness().
+        self._last_signature: dict[str, np.ndarray] = {}
+        self._last_change_time: dict[str, float] = {}
+        self._last_fresh_index: dict[str, int] = {}
 
     # --- Instrument selection -------------------------------------------
 
@@ -200,6 +251,8 @@ class KioskController:
         self.selected_instrument = None
         self.instruments[key].start()
         self.selected_instrument = key
+        # A newly started camera has no history worth carrying over.
+        self._reset_freshness()
         logger.info("instrument selected: %s", key)
 
     # --- Idle / ready -------------------------------------------------
@@ -221,16 +274,21 @@ class KioskController:
             disk_ok=usage.free >= required_bytes,
             free_bytes=usage.free,
             required_bytes=required_bytes,
+            # Refuse to start over recording something broken (CLAUDE.md):
+            # a frozen camera is worse than no camera, because it looks
+            # fine right up until someone plays the session back.
+            frozen_cameras=self._update_freshness(self._clock()),
         )
         if self.state != State.RECORDING:
             new_state = State.READY if status.ok else State.IDLE
             if new_state != self.state:
                 logger.info(
-                    "%s -> %s (cameras_ready=%s, disk_ok=%s)",
+                    "%s -> %s (cameras_ready=%s, disk_ok=%s, frozen=%s)",
                     self.state.value,
                     new_state.value,
                     status.cameras_ready,
                     status.disk_ok,
+                    status.frozen_cameras or "none",
                 )
             self.state = new_state
         return status
@@ -258,6 +316,66 @@ class KioskController:
         if third_width and third_height and instrument_width and instrument_height:
             return third_width + instrument_width, max(third_height, instrument_height)
         return FALLBACK_CANVAS_WIDTH, FALLBACK_CANVAS_HEIGHT
+
+    def _active_cameras(self) -> dict[str, BaseCamera]:
+        """The cameras that should be producing frames right now, keyed the
+        way stall/freshness reporting names them. The instrument is absent
+        until one is selected -- nothing is wrong with a camera that was
+        never started."""
+        cameras = {"third_person": self.third_person_camera}
+        if self.selected_instrument is not None:
+            cameras["instrument"] = self.instruments[self.selected_instrument]
+        return cameras
+
+    def _reset_freshness(self) -> None:
+        self._last_signature.clear()
+        self._last_change_time.clear()
+        self._last_fresh_index.clear()
+
+    def _update_freshness(self, now: float) -> tuple[str, ...]:
+        """Sample each active camera and return the keys whose picture has
+        not changed for freeze_timeout_s.
+
+        This is the check that catches a camera which is *delivering* but
+        not *seeing*: a blocked or switched-off webcam whose driver keeps
+        the stream alive on a substitute image, a capture path replaying
+        its last good frame. Nothing else notices, because reads succeed
+        and Frame.index keeps advancing -- for the UVC camera that counter
+        is self-assigned (UVC exposes no source counter, see
+        DECISIONS.md), so it advances even when the pixels are dead. Left
+        undetected this records a whole session of frozen video and
+        reports it as healthy, which is the failure CLAUDE.md calls the
+        worst outcome.
+        """
+        frozen: list[str] = []
+        active = self._active_cameras()
+        for key in list(self._last_signature):
+            if key not in active:  # e.g. the instrument was deselected
+                self._last_signature.pop(key, None)
+                self._last_change_time.pop(key, None)
+                self._last_fresh_index.pop(key, None)
+
+        for key, camera in active.items():
+            frame = camera.get_latest()
+            if frame is None:
+                continue  # not delivering at all -- that's cameras_ready/stall territory
+            if self._last_fresh_index.get(key) == frame.index:
+                # The same frame we already judged. Polling is simply
+                # faster than this camera delivers (the slit lamp runs at
+                # ~11fps against a 4Hz poll), which is not evidence of
+                # anything -- comparing a frame with itself would accuse
+                # every slow camera of being frozen. A camera that has
+                # genuinely stopped delivering is the stall check's job.
+                continue
+            self._last_fresh_index[key] = frame.index
+            signature = _frame_signature(frame.image)
+            previous = self._last_signature.get(key)
+            if previous is None or previous.shape != signature.shape or not np.array_equal(previous, signature):
+                self._last_signature[key] = signature
+                self._last_change_time[key] = now
+            elif now - self._last_change_time[key] >= self.freeze_timeout_s:
+                frozen.append(key)
+        return tuple(frozen)
 
     def _cameras_ready(self) -> bool:
         # No instrument picked yet counts as not ready, the same as a
@@ -287,6 +405,11 @@ class KioskController:
             frame = camera.get_latest()
             self._last_index[key] = frame.index if frame is not None else -1
             self._last_progress_time[key] = now
+        # Start the freeze clock at the session, not at whatever preflight
+        # last saw -- otherwise a session could inherit a nearly-expired
+        # timer and fail in its first moments.
+        self._reset_freshness()
+        self._update_freshness(now)
 
         self.state = State.RECORDING
         logger.info(
@@ -305,7 +428,12 @@ class KioskController:
             return
 
         instrument_camera = self.instruments[self.selected_instrument]
-        display_names = {"instrument": self.selected_instrument, "third_person": self._third_person_name}
+        # The technician-set labels, not the internal role keys -- these
+        # strings go straight into the error banner a student reads.
+        display_names = {
+            "instrument": self._instrument_labels.get(self.selected_instrument, self.selected_instrument),
+            "third_person": self._third_person_label or self._third_person_name,
+        }
 
         now = self._clock()
         stalled = []
@@ -324,6 +452,16 @@ class KioskController:
             self._fail(
                 f"No new frames from {names} for {self.stall_timeout_s:.1f}s+. "
                 "Recording stopped."
+            )
+            return
+
+        frozen = self._update_freshness(now)
+        if frozen:
+            names = ", ".join(display_names.get(key, key) for key in frozen)
+            self._fail(
+                f"The picture from {names} stopped changing {self.freeze_timeout_s:.0f}s ago - "
+                "the camera is delivering frames but not seeing anything. It may be "
+                "switched off, blocked, or covered. Recording stopped."
             )
 
     def stop_recording(self) -> dict:
