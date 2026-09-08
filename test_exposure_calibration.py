@@ -42,21 +42,29 @@ class IsConvergedTest(unittest.TestCase):
 
 
 class NextExposureGainTest(unittest.TestCase):
-    def test_exposure_alone_absorbs_a_reachable_correction(self):
+    """The correction step solves in total light (exposure x gain) and then
+    redistributes it with one preference: as much exposure as the budget
+    allows, as little gain as will do. Gain is the noise source, so every
+    step pulls it back toward its minimum -- which is what lets a camera
+    recover from a bad starting point rather than inheriting it."""
+
+    def test_a_reachable_increase_is_taken_on_exposure_and_returns_gain_to_minimum(self):
         new_exposure, new_gain = next_exposure_gain(
-            median=64.0,  # half the target -- needs 2x brightness
+            measured=64.0,  # half the target -- needs 2x brightness
             exposure_time_us=1000.0,
             exposure_range_us=(100.0, 10_000.0),
             gain=2.0,
             gain_range=(1.0, 8.0),
             target=128.0,
         )
-        self.assertAlmostEqual(new_exposure, 2000.0)
-        self.assertEqual(new_gain, 2.0)  # untouched -- exposure alone covered it
+        self.assertAlmostEqual(new_exposure, 4000.0)
+        self.assertAlmostEqual(new_gain, 1.0)
+        # Total light doubled, as asked: 1000x2 -> 4000x1.
+        self.assertAlmostEqual(new_exposure * new_gain, 1000.0 * 2.0 * 2.0)
 
     def test_gain_makes_up_the_shortfall_once_exposure_maxes_out(self):
         new_exposure, new_gain = next_exposure_gain(
-            median=16.0,  # needs 8x brightness, exposure can only give 2x
+            measured=16.0,  # needs 8x brightness, exposure can only give 2x
             exposure_time_us=5000.0,
             exposure_range_us=(100.0, 10_000.0),
             gain=2.0,
@@ -64,31 +72,61 @@ class NextExposureGainTest(unittest.TestCase):
             target=128.0,
         )
         self.assertAlmostEqual(new_exposure, 10_000.0)  # clamped at max
-        self.assertAlmostEqual(new_gain, 8.0)  # 2.0 * (8x / 2x reachable via exposure) = 8.0, clamped at max
+        self.assertAlmostEqual(new_gain, 8.0)  # clamped at max; still short, next step retries
 
-    def test_exposure_alone_absorbs_a_reachable_reduction(self):
+    def test_a_reduction_comes_off_gain_first(self):
+        """The case the earlier per-axis version got backwards: it shortened
+        exposure and left gain (and its noise) untouched."""
         new_exposure, new_gain = next_exposure_gain(
-            median=256.0,  # twice the target -- needs half the brightness
+            measured=192.0,  # 1.5x the target -- needs 2/3 the light
             exposure_time_us=1000.0,
-            exposure_range_us=(100.0, 10_000.0),
-            gain=2.0,
-            gain_range=(1.0, 8.0),
-            target=128.0,
-        )
-        self.assertAlmostEqual(new_exposure, 500.0)
-        self.assertEqual(new_gain, 2.0)
-
-    def test_gain_reduced_once_exposure_hits_its_minimum(self):
-        new_exposure, new_gain = next_exposure_gain(
-            median=2048.0,  # 16x the target -- needs to cut brightness far more than exposure alone can
-            exposure_time_us=800.0,
             exposure_range_us=(100.0, 10_000.0),
             gain=4.0,
             gain_range=(1.0, 8.0),
             target=128.0,
         )
-        self.assertAlmostEqual(new_exposure, 100.0)  # clamped at min
-        self.assertAlmostEqual(new_gain, 2.0)  # gain pulled down too, to make up the rest
+        self.assertAlmostEqual(new_gain, 1.0)  # gain emptied
+        self.assertAlmostEqual(new_exposure * new_gain, 1000.0 * 4.0 * (128.0 / 192.0))
+
+    def test_a_reduction_past_the_exposure_floor_leaves_both_at_minimum(self):
+        new_exposure, new_gain = next_exposure_gain(
+            measured=249.0,  # bright, but not treated as censored
+            exposure_time_us=150.0,
+            exposure_range_us=(100.0, 10_000.0),
+            gain=1.0,
+            gain_range=(1.0, 8.0),
+            target=128.0,
+        )
+        self.assertAlmostEqual(new_exposure, 100.0)  # exposure floor
+        self.assertAlmostEqual(new_gain, 1.0)  # gain floor -- it cannot go dimmer
+
+    def test_a_saturated_measurement_halves_rather_than_stepping_proportionally(self):
+        """A clipped highlight is censored: it says we are over, not by how
+        much. Measured on the real BIO, proportional steps from a 6.6%
+        clipped frame had not converged after eight iterations."""
+        new_exposure, new_gain = next_exposure_gain(
+            measured=255.0,
+            exposure_time_us=1000.0,
+            exposure_range_us=(100.0, 10_000.0),
+            gain=4.0,
+            gain_range=(1.0, 8.0),
+            target=210.0,
+        )
+        # Half the light, not the 210/255 = 0.82 a proportional step implies.
+        self.assertAlmostEqual(new_exposure * new_gain, 1000.0 * 4.0 * 0.5)
+        self.assertAlmostEqual(new_gain, 1.0)
+
+    def test_the_outcome_does_not_depend_on_the_starting_split(self):
+        """Same total light, different exposure/gain split -- the step must
+        land in the same place. This is why a camera stuck at high gain
+        recovers instead of inheriting it."""
+        common = dict(
+            measured=64.0, exposure_range_us=(100.0, 10_000.0),
+            gain_range=(1.0, 8.0), target=128.0,
+        )
+        a = next_exposure_gain(exposure_time_us=1000.0, gain=4.0, **common)
+        b = next_exposure_gain(exposure_time_us=2000.0, gain=2.0, **common)
+        self.assertEqual(a, b)
 
 
 class CenterCropTest(unittest.TestCase):
@@ -210,7 +248,7 @@ class NextExposureGainBudgetTest(unittest.TestCase):
         """The pre-existing behaviour, kept as the contrast for the test
         below -- this is what produced 87ms on the slit lamp."""
         exposure, gain = next_exposure_gain(
-            median=48.0,
+            measured=48.0,
             exposure_time_us=15_000.0,
             exposure_range_us=(10.0, 200_000.0),
             gain=1.0,
@@ -222,7 +260,7 @@ class NextExposureGainBudgetTest(unittest.TestCase):
 
     def test_a_budget_caps_exposure_and_spills_the_remainder_onto_gain(self):
         exposure, gain = next_exposure_gain(
-            median=48.0,
+            measured=48.0,
             exposure_time_us=15_000.0,
             exposure_range_us=(10.0, 200_000.0),
             gain=1.0,
@@ -235,7 +273,7 @@ class NextExposureGainBudgetTest(unittest.TestCase):
 
     def test_the_budget_never_asks_for_less_than_the_sensor_can_do(self):
         exposure, _gain = next_exposure_gain(
-            median=48.0,
+            measured=48.0,
             exposure_time_us=15_000.0,
             exposure_range_us=(20_000.0, 200_000.0),
             gain=1.0,
@@ -247,7 +285,7 @@ class NextExposureGainBudgetTest(unittest.TestCase):
 
     def test_a_budget_that_is_not_binding_changes_nothing(self):
         args = dict(
-            median=100.0, exposure_time_us=10_000.0, exposure_range_us=(10.0, 200_000.0),
+            measured=100.0, exposure_time_us=10_000.0, exposure_range_us=(10.0, 200_000.0),
             gain=1.0, gain_range=(1.0, 4.0), target=128.0,
         )
         self.assertEqual(

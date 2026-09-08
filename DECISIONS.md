@@ -2937,3 +2937,89 @@ clamp-and-spill, the sensor-minimum floor, a non-binding budget being a
 no-op, and the slit-lamp convergence regression alongside the unbounded
 behaviour it replaces); `test_config.py` +6; `test_settings.py` +3 for
 the cost line. Full suite 296.
+
+---
+
+## 2026-09-08 - Highlight metering, total-light redistribution, and what they uncovered
+
+First calibration work done against the real instruments (slit lamp with a
+black focus rod and the beam on; BIO looking at a lit object).
+
+**Metering the highlight, not the median.** `auto_calibrate()` steered on
+the centre-crop median toward 128. On the slit lamp that signal measured
+**0.0** -- the frame is ~98% black by design, a thin beam on a dark field,
+so no exposure can move its median. The search therefore pinned exposure
+at its ceiling and gave up. `metering_brightness(..., METERING_HIGHLIGHT)`
+drives p99.9 to 210 instead, which asks the question that matters: is the
+beam bright but not clipped? `IdsCamera.auto_calibrate()` defaults to it,
+since every IDS camera in this app is an instrument camera looking through
+eyepiece optics.
+
+Percentile and target were chosen from a measured sweep, not guessed:
+p99.9 tracked the beam's core across the usable range while clipping
+stayed under 0.02% up to ~35ms, and 210 leaves headroom under 255 so the
+beam keeps its internal structure.
+
+**Correction steps now solve in total light.** The per-axis version only
+reduced gain once exposure had bottomed out, so *cutting* brightness left
+gain and its noise untouched -- measured on the real BIO, it walked
+exposure down from 49.9ms to 7.7ms while pushing gain *up* from 15.5x to
+21.3x, and never converged. `next_exposure_gain()` now computes the
+desired exposure x gain, then redistributes with one preference: as much
+exposure as the frame budget allows, as little gain as will do. The
+outcome no longer depends on the starting split, which is what lets a
+camera recover from a bad state instead of inheriting it.
+
+**A clipped measurement is censored,** so a proportional step crawls: it
+says we are over, not by how much. At or above `DEFAULT_SATURATION_LEVEL`
+the step halves instead. Measured: eight proportional steps from the BIO's
+6.6%-clipped frame had not converged; with halving both cameras converge
+in under two seconds.
+
+Result on real hardware, both from bad starting points:
+
+| | before | after |
+|---|---|---|
+| slit lamp | 87.21ms, gain 1.00, 1.54% clipped | 30.00ms, gain 1.09, 0.006% clipped, p99.9 206 |
+| BIO | 36.79ms, gain 21.30, 6.73% clipped | 30.00ms, gain 1.31, 0.05% clipped, p99.9 210 |
+
+**Two ordering fixes in `_open()`**, both hardware-motivated: the
+frame-rate cap is applied after exposure and gain are settled rather than
+before (its limit depends on them), and config's exposure/gain are applied
+before `TLParamsLocked` rather than after. Both cameras verified to open,
+stream and record with the new order.
+
+**Also answered by hardware:** `_apply_frame_rate_cap()` carried a note
+that it was unverified whether `AcquisitionFrameRate` could be set after
+`AcquisitionStart`. It can, on both cameras; `AcquisitionFrameRateEnable`
+is absent on both.
+
+### What this uncovered, and did NOT fix
+
+The slit lamp still delivers ~11.5fps. The cause is not exposure at all:
+`DeviceClockFrequency` (the uEye pixel clock) **defaults to 24MHz out of a
+128MHz range, and resets to 24MHz on every open**. At 24MHz a 1600x1200
+frame takes ~87ms, which is simultaneously the 11.46fps ceiling *and* the
+reason `ExposureTime`'s maximum reads 87208.8us. So this project's
+long-standing "the slit lamp runs at ~11fps" and "87.2ms is the sensor
+maximum" are the same artifact of an unset pixel clock -- neither is a
+sensor limit, and the calibration was only ever filling the frame period
+it was handed.
+
+Measured, single 3s trials, counting real device-side `Frame.index` gaps:
+
+| clock | max exposure | delivered | drops |
+|---|---|---|---|
+| 24MHz (default) | 87.21ms | 12.4fps | 0 |
+| 60MHz | 34.99ms | 29.4fps | 0 |
+| 80MHz | 26.31ms | 38.7fps | 0 |
+| 100MHz | 21.10ms | 48.1fps | 3 |
+| 128MHz | 16.56ms | 61.3fps | 0 |
+
+Raising the clock shortens the maximum exposure in exact proportion, so it
+trades available light for frame rate -- it is not free, and the safe
+ceiling depends on the host USB controller, which is install-specific.
+Deliberately not acted on yet: the value belongs in `device_presets.py`
+(per-model) or `config.json` (per-install) per CLAUDE.md's camera-
+configuration table, and the drop testing behind it is three seconds per
+point, which is not enough to bet a clinic on.

@@ -68,16 +68,16 @@ from camera import BaseCamera
 from device_presets import orientation_for_model
 from exposure_calibration import (
     DEFAULT_MAX_ITERATIONS,
-    DEFAULT_TARGET_MEDIAN,
-    DEFAULT_TOLERANCE,
     DEFAULT_WB_MAX_ITERATIONS,
     DEFAULT_WB_TOLERANCE,
+    METERING_HIGHLIGHT,
     center_crop,
     channel_medians,
     exposure_budget_us,
     is_converged,
     is_white_balanced,
-    median_brightness,
+    metering_brightness,
+    metering_target,
     next_balance_ratios,
     next_exposure_gain,
 )
@@ -242,14 +242,16 @@ class IdsCamera(BaseCamera):
                 data_stream.QueueBuffer(buffer)
             self._data_stream = data_stream
 
-            self._node_map.FindNode("TLParamsLocked").SetValue(1)
-            data_stream.StartAcquisition()
-            self._node_map.FindNode("AcquisitionStart").Execute()
-            self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
-
-            if self._target_fps is not None:
-                self._apply_frame_rate_cap(self._target_fps)
-
+            # Applied before the stream is locked, not after.
+            # AcquisitionFrameRate's Maximum() is derived from ExposureTime
+            # and freezes at TLParamsLocked -- so setting exposure after
+            # StartAcquisition leaves the frame rate capped at a limit
+            # belonging to whatever exposure the device happened to be
+            # holding. Since GenICam cameras persist exposure across power
+            # cycles, that is usually the *previous* calibration. Found on
+            # real hardware: config.json's 30ms was applied correctly and
+            # the camera still delivered 11.5fps, because the rate had
+            # already been clamped to a stale 87ms exposure's 11.46 limit.
             auto_converge_nodes = []
             if self._exposure_time_us is not None:
                 self._ensure_manual_exposure()
@@ -271,7 +273,24 @@ class IdsCamera(BaseCamera):
             # still get today's one-time auto-converge, all in one pass (a
             # no-op for any axis with no *Auto node at all -- see
             # _converge_auto_nodes()'s docstring).
+            self._node_map.FindNode("TLParamsLocked").SetValue(1)
+            data_stream.StartAcquisition()
+            self._node_map.FindNode("AcquisitionStart").Execute()
+            self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
+
             self._converge_auto_nodes(auto_converge_nodes)
+
+            # After exposure/gain are settled, never before. This node's
+            # own Maximum() is derived from the current ExposureTime, so
+            # capping first reads a limit belonging to whatever the device
+            # happened to be holding -- and GenICam cameras persist
+            # exposure across power cycles. Found on real hardware: with
+            # the cap applied first, a camera whose stale exposure was
+            # 87ms stayed pinned at 11.5fps even after config.json's 30ms
+            # was applied, because AcquisitionFrameRate had already been
+            # clamped to 11.46 and nothing raised it again.
+            if self._target_fps is not None:
+                self._apply_frame_rate_cap(self._target_fps)
         except Exception:
             # A failure partway through leaves whatever got opened so far
             # (device, data stream, a running acquisition) dangling with
@@ -556,10 +575,11 @@ class IdsCamera(BaseCamera):
 
     def auto_calibrate(
         self,
-        target: float = DEFAULT_TARGET_MEDIAN,
-        tolerance: float = DEFAULT_TOLERANCE,
+        target: float | None = None,
+        tolerance: float | None = None,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         target_fps: float | None = None,
+        metering: str = METERING_HIGHLIGHT,
     ) -> bool:
         """One-shot software auto-exposure for a camera with no
         ExposureAuto/GainAuto (see needs_manual_calibration()) -- run once
@@ -576,6 +596,10 @@ class IdsCamera(BaseCamera):
         arrives at all, which points at the camera/scene, not the
         algorithm.
         """
+        default_target, default_tolerance = metering_target(metering)
+        target = default_target if target is None else target
+        tolerance = default_tolerance if tolerance is None else tolerance
+
         self._ensure_manual_exposure()
         self._ensure_manual_gain()
         exposure_range = self.exposure_time_range_us()
@@ -589,13 +613,12 @@ class IdsCamera(BaseCamera):
         max_exposure_us = exposure_budget_us(fps) if fps else None
 
         for _ in range(max_iterations):
-            image = center_crop(self._wait_for_fresh_frame())
-            median = median_brightness(image)
-            if is_converged(median, target, tolerance):
+            measured = metering_brightness(self._wait_for_fresh_frame(), metering)
+            if is_converged(measured, target, tolerance):
                 return True
 
             new_exposure, new_gain = next_exposure_gain(
-                median,
+                measured,
                 self.get_exposure_time_us(),
                 exposure_range,
                 self.get_gain(),

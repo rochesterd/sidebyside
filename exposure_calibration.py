@@ -42,6 +42,40 @@ DEFAULT_METERING_FRACTION = 0.5
 # nominal period rather than all of it.
 DEFAULT_EXPOSURE_BUDGET_FRACTION = 0.9
 
+# --- Metering modes -------------------------------------------------------
+#
+# How a frame's brightness is measured for calibration. The two instrument
+# cameras look through eyepiece optics at a bright region on an otherwise
+# black field -- a slit beam, or a fundus reflex. Such a frame is ~98%
+# black *by design*, so its median can never reach a mid-grey target no
+# matter the exposure: measured on the real slit lamp, the centre-crop
+# median was 0.0 at the sensor's maximum exposure. Steering on it drives
+# exposure and gain to their ceilings and destroys the very content the
+# recording exists to show. Metering the highlight instead asks the
+# question that actually matters: is the beam bright but not clipped?
+METERING_MEDIAN = "median"
+METERING_HIGHLIGHT = "highlight"
+VALID_METERING = (METERING_MEDIAN, METERING_HIGHLIGHT)
+
+# Which percentile counts as "the highlight", and where to put it. Chosen
+# from a real exposure sweep of the slit lamp beam on a black focus rod
+# (see DECISIONS.md): p99.9 tracked the beam's bright core across the whole
+# usable range, while clipping stayed under 0.02% up to ~35ms. A target of
+# 210 leaves clear headroom under 255 so the beam keeps its internal
+# structure; the tolerance is wide enough that the sweep's 30ms/gain-1.0
+# point (p99.9 = 191) already counts as converged.
+DEFAULT_HIGHLIGHT_PERCENTILE = 99.9
+DEFAULT_HIGHLIGHT_TARGET = 210.0
+DEFAULT_HIGHLIGHT_TOLERANCE = 20.0
+
+# At or above this level the metric is *censored*: a clipped highlight says
+# we are over, but not by how much, so a proportional correction crawls
+# (measured on the real BIO: eight proportional steps from a 6.6%-clipped
+# frame still had not converged). Halving instead re-measures somewhere
+# informative within a couple of steps.
+DEFAULT_SATURATION_LEVEL = 250.0
+DEFAULT_SATURATED_STEP = 0.5
+
 DEFAULT_WB_TOLERANCE = 5.0
 DEFAULT_WB_MAX_ITERATIONS = 8
 
@@ -134,20 +168,61 @@ def exposure_budget_us(
     return (1_000_000.0 / target_fps) * fraction
 
 
+def highlight_brightness(image, percentile: float = DEFAULT_HIGHLIGHT_PERCENTILE) -> float:
+    """Brightness of the image's brightest content -- the slit beam, the
+    fundus reflex -- rather than of the frame as a whole."""
+    return float(np.percentile(image, percentile))
+
+
+def metering_brightness(
+    image,
+    mode: str = METERING_MEDIAN,
+    fraction: float = DEFAULT_METERING_FRACTION,
+    percentile: float = DEFAULT_HIGHLIGHT_PERCENTILE,
+) -> float:
+    """The number a calibration steers on, for the given metering mode.
+
+    METERING_MEDIAN crops to the centre first, because a vignetted rim
+    would drag a whole-frame average down (see center_crop).
+    METERING_HIGHLIGHT deliberately does *not*: the examiner moves the
+    beam around the field, and metering a centre crop that happens to miss
+    it would read the black background and then drive exposure up until
+    the off-centre beam was destroyed. A stray highlight at the rim only
+    costs a little underexposure, which is recoverable; blowing out the
+    beam is not.
+    """
+    if mode == METERING_HIGHLIGHT:
+        return highlight_brightness(image, percentile)
+    return median_brightness(center_crop(image, fraction))
+
+
+def metering_target(mode: str = METERING_MEDIAN) -> tuple[float, float]:
+    """(target, tolerance) that go with a metering mode."""
+    if mode == METERING_HIGHLIGHT:
+        return DEFAULT_HIGHLIGHT_TARGET, DEFAULT_HIGHLIGHT_TOLERANCE
+    return DEFAULT_TARGET_MEDIAN, DEFAULT_TOLERANCE
+
+
 def next_exposure_gain(
-    median: float,
+    measured: float,
     exposure_time_us: float,
     exposure_range_us: tuple[float, float],
     gain: float,
     gain_range: tuple[float, float],
     target: float = DEFAULT_TARGET_MEDIAN,
     max_exposure_us: float | None = None,
+    saturated_level: float = DEFAULT_SATURATION_LEVEL,
+    saturated_step: float = DEFAULT_SATURATED_STEP,
 ) -> tuple[float, float]:
-    """One correction step toward `target` median brightness.
+    """One correction step toward `target`, from a `measured` brightness
+    (whatever metering_brightness() returned).
 
-    Scales ExposureTime by the brightness ratio first, spilling the
-    remainder onto Gain once ExposureTime is clamped -- so a target
-    reachable by ExposureTime alone never touches Gain.
+    Works in total light -- exposure x gain -- then redistributes it with
+    one fixed preference: use as much exposure as the frame budget allows,
+    and only then gain. Gain is the noise source, so the least of it that
+    will do is the right amount; and because `max_exposure_us` already
+    caps exposure at roughly one frame interval, preferring exposure
+    cannot run away into motion blur.
 
     `max_exposure_us` (from exposure_budget_us()) tightens that clamp to
     the frame-rate budget rather than the sensor's own maximum. Without
@@ -158,27 +233,28 @@ def next_exposure_gain(
     frame, while 4x of gain headroom sat unused. See DECISIONS.md's
     "Camera configuration: which layer owns what" entry.
     """
-    ratio = target / max(median, 1.0)
     exposure_min, exposure_max = exposure_range_us
     gain_min, gain_max = gain_range
 
     if max_exposure_us is not None:
         # Never below what the sensor can physically do: a frame-rate
         # target this camera cannot meet is a reason to warn (see
-        # config.check_exposure_fits_fps), not a reason to ask it for an
+        # config.exposure_fps_warnings), not a reason to ask it for an
         # impossible exposure.
         exposure_max = max(exposure_min, min(exposure_max, max_exposure_us))
 
-    desired_exposure = exposure_time_us * ratio
-    new_exposure = min(exposure_max, max(exposure_min, desired_exposure))
+    if measured >= saturated_level:
+        ratio = saturated_step
+    else:
+        ratio = target / max(measured, 1.0)
 
-    new_gain = gain
-    if new_exposure != desired_exposure:
-        # ExposureTime alone couldn't absorb the full correction (it hit a
-        # range limit) -- apply exactly the shortfall to Gain, not the full
-        # ratio again, so Gain only ever makes up what Exposure couldn't.
-        residual_ratio = desired_exposure / new_exposure
-        desired_gain = gain * residual_ratio
-        new_gain = min(gain_max, max(gain_min, desired_gain))
-
+    # Solve in total light, then redistribute under the constraints. Doing
+    # it this way is what makes the preference below hold in *both*
+    # directions -- the earlier per-axis version only reduced gain once
+    # exposure had bottomed out, so cutting brightness left gain (and its
+    # noise) high. Measured on the real BIO: it walked exposure down from
+    # 49.9ms to 7.7ms while pushing gain *up* from 15.5x to 21.3x.
+    desired_light = exposure_time_us * gain * ratio
+    new_exposure = min(exposure_max, max(exposure_min, desired_light / gain_min))
+    new_gain = min(gain_max, max(gain_min, desired_light / new_exposure))
     return new_exposure, new_gain
