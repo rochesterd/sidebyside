@@ -298,6 +298,9 @@ class IdsCamera(BaseCamera):
             self._node_map.FindNode("AcquisitionStart").Execute()
             self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
+            # Bound the *vendor's* auto-exposure by the same frame-rate
+            # budget our own calibration obeys, before letting it converge.
+            self._apply_auto_exposure_limit()
             self._converge_auto_nodes(auto_converge_nodes)
 
             # After exposure/gain are settled, never before. This node's
@@ -591,6 +594,43 @@ class IdsCamera(BaseCamera):
         wanted = min(float(node.Maximum()), max(float(node.Minimum()), float(clock_hz)))
         node.SetValue(wanted)
         logger.info("%s: pixel clock set to %.1f MHz", self.label, node.Value() / 1e6)
+
+    def _apply_auto_exposure_limit(self) -> None:
+        """Cap how long the camera's *own* ExposureAuto may expose for.
+
+        `auto_calibrate()` obeys a frame-rate budget (see
+        exposure_budget_us), but that only covers cameras with no
+        auto-exposure. A camera that has one -- the BIO -- was free to
+        ignore the budget entirely, and did: its ExposureAuto settled on
+        49.92ms, which caps AcquisitionFrameRate at 20 against a 30fps
+        target. Exposure is a frame-rate budget whoever is choosing it.
+
+        Measured on the BIO: with the limit on at 30ms, ExposureAuto
+        converges to 30.00ms, the frame-rate ceiling rises 20.00 -> 33.24
+        and delivery goes 20 -> 29.9fps. The extra light it can no longer
+        get from time it takes from gain, which is the intended trade.
+
+        Best-effort, like every optional node here -- the slit lamp's uEye
+        transport exposes neither node, and has no auto-exposure to bound.
+        """
+        if not self._target_fps:
+            return
+        limit_us = exposure_budget_us(self._target_fps)
+
+        max_node = self._node_map.TryFindNode("BrightnessAutoExposureTimeMax")
+        mode_node = self._node_map.TryFindNode("BrightnessAutoExposureTimeLimitMode")
+        if max_node is None or not max_node.IsAvailable() or not max_node.IsWriteable():
+            return
+
+        # The ceiling has to be set before the mode is switched on, or the
+        # camera would briefly enforce whatever stale maximum it held.
+        max_node.SetValue(min(float(max_node.Maximum()), max(float(max_node.Minimum()), limit_us)))
+        if mode_node is not None and mode_node.IsAvailable() and mode_node.IsWriteable():
+            mode_node.SetCurrentEntry("On")
+        logger.info(
+            "%s: auto-exposure limited to %.1fms for a %.0ffps target",
+            self.label, max_node.Value() / 1000, self._target_fps,
+        )
 
     def _apply_frame_rate_cap(self, target_fps: float) -> None:
         """Caps this camera's own acquisition rate to (not above) target_fps

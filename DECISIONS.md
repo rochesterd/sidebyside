@@ -3091,3 +3091,44 @@ before it becomes an assumption. This one survived weeks of being designed
 around.
 
 **Tests:** `test_device_presets.py` +4, `test_config.py` +4. Full suite 306.
+
+---
+
+## 2026-09-08 - The frame-rate budget applies to the vendor's auto-exposure too
+
+**Decided:** `IdsCamera._apply_auto_exposure_limit()` sets
+`BrightnessAutoExposureTimeMax` to `exposure_budget_us(target_fps)` and
+turns `BrightnessAutoExposureTimeLimitMode` on, before
+`_converge_auto_nodes()` runs.
+
+**Why:** the budget was only ever enforced on `auto_calibrate()` -- the
+software path, which exists for cameras that have *no* auto-exposure. A
+camera that has one was free to ignore it, and did. The BIO's own
+`ExposureAuto` settled on 49.92ms, capping `AcquisitionFrameRate` at 20.00
+against a 30fps target. "Exposure time is a frame-rate budget" is true
+whoever is choosing the exposure; enforcing it on only one of the two
+paths was an oversight, not a design.
+
+Measured on real hardware, 10s sessions through `KioskController`:
+
+| | instrument frames / 10s | delivered |
+|---|---|---|
+| BIO before | 201 | 20.0fps |
+| BIO after | 302 | **30.0fps** |
+
+Node-level: `ExposureAuto` converges to 30.00ms instead of 49.92ms and the
+`AcquisitionFrameRate` ceiling rises 20.00 -> 33.24. The light it can no
+longer take from time it takes from gain, which is the intended trade and
+the same one the pixel-clock entry describes.
+
+**Ceiling before mode.** `BrightnessAutoExposureTimeMax` is set first and
+the limit mode switched on second, so the camera never briefly enforces
+whatever stale maximum it was holding (it powers up at 2 seconds).
+
+**Best-effort, like every optional node in this file:** the slit lamp's
+uEye transport exposes neither node and has no auto-exposure to bound --
+verified still opening, streaming and recording at 30fps unaffected.
+
+With this and the pixel clock, **both instrument cameras now deliver
+exactly the configured 30fps** with zero dropped frames, from a starting
+point of 11.5fps (slit lamp) and 20fps (BIO).
