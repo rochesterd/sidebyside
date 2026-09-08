@@ -529,5 +529,45 @@ class ExposureFpsWarningTest(unittest.TestCase):
         load_config(self.path)
 
 
+class PixelClockConfigTest(unittest.TestCase):
+    """Unlike most device presets this one is deliberately overridable: the
+    preset suits the hardware, but the *safe* clock depends on the host USB
+    controller, which is per-install."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.path = Path(self._tmpdir.name) / "config.json"
+
+    def _write(self, data: dict) -> None:
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_absent_means_use_the_model_preset(self):
+        self._write(VALID)
+        self.assertIsNone(load_config(self.path).instruments["slit_lamp"].pixel_clock_hz)
+
+    def test_an_override_is_parsed(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["pixel_clock_hz"] = 60_000_000
+        self._write(data)
+        self.assertEqual(load_config(self.path).instruments["slit_lamp"].pixel_clock_hz, 60_000_000)
+
+    def test_a_non_positive_or_non_integer_override_is_rejected(self):
+        for bad in (0, -1, 60.5, "60000000", True):
+            with self.subTest(bad=bad):
+                data = json.loads(json.dumps(VALID))
+                data["instruments"]["slit_lamp"]["pixel_clock_hz"] = bad
+                self._write(data)
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+    def test_net2860_rejects_it(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "pixel_clock_hz": 60_000_000}
+        self._write(data)
+        with self.assertRaises(ConfigError):
+            load_config(self.path)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -98,6 +98,12 @@ class InstrumentConfig:
     # mounting. See DECISIONS.md's "Device-model rotation presets" entry
     # and its orientation follow-up.
     orientation: str | None = None
+    # Optional override of device_presets.py's per-model pixel clock. The
+    # preset is right for the hardware, but the *safe* ceiling depends on
+    # the host USB controller, which is per-install -- so unlike most
+    # presets this one is deliberately technician-overridable. None means
+    # "use the model preset"; see DECISIONS.md.
+    pixel_clock_hz: int | None = None
 
 
 @dataclass
@@ -241,7 +247,8 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         # instead of producing a config.json that looks configured but
         # isn't.
         unexpected = {
-            "serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio", "orientation"
+            "serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio",
+            "orientation", "pixel_clock_hz"
         } & entry.keys()
         if unexpected:
             raise ConfigError(
@@ -271,6 +278,9 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         )
 
     orientation = _parse_optional_orientation(path, f"instruments.{key}.orientation", entry.get("orientation"))
+    pixel_clock_hz = entry.get("pixel_clock_hz")
+    if pixel_clock_hz is not None:
+        pixel_clock_hz = _positive_int(path, f"instruments.{key}.pixel_clock_hz", pixel_clock_hz)
 
     return InstrumentConfig(
         kind=kind,
@@ -281,6 +291,7 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         red_balance_ratio=red_balance_ratio,
         blue_balance_ratio=blue_balance_ratio,
         orientation=orientation,
+        pixel_clock_hz=pixel_clock_hz,
     )
 
 

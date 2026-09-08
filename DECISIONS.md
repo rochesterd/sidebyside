@@ -3023,3 +3023,71 @@ Deliberately not acted on yet: the value belongs in `device_presets.py`
 (per-model) or `config.json` (per-install) per CLAUDE.md's camera-
 configuration table, and the drop testing behind it is three seconds per
 point, which is not enough to bet a clinic on.
+
+---
+
+## 2026-09-08 - The slit lamp's "11fps sensor limit" was an unset pixel clock
+
+**Decided:** `device_presets.pixel_clock_hz_for_model()` sets the legacy
+uEye slit lamp camera to **80MHz**, applied by `IdsCamera._apply_pixel_clock()`
+early in `_open()` -- before anything reads or writes `ExposureTime`,
+because the clock determines that node's range. `config.json`'s
+`instruments.<role>.pixel_clock_hz` overrides it.
+
+**What was actually wrong.** `DeviceClockFrequency` on that camera powers
+up at **24MHz of a 10-128MHz range, and resets on every open** -- unlike
+ExposureTime/Gain, it does not persist. At 24MHz a 1600x1200 frame takes
+~87ms, which is simultaneously an 11.46fps ceiling *and* the reason
+`ExposureTime`'s maximum reads 87208.8us. So this project's two
+long-standing "facts" about that camera -- that it runs at ~11fps, and
+that 87.2ms is its sensor maximum -- were the same single unset value.
+Neither was a sensor limit. Every previous calibration was merely filling
+whatever frame period it had been handed.
+
+Measured end to end, real hardware, one 10s session per row:
+
+| | instrument frames / 10s | delivered |
+|---|---|---|
+| before (24MHz) | 116 | 11.5fps |
+| after (80MHz) | 302 | **30.0fps** |
+
+**Why 80MHz and not 60.** Sustained 150s runs with the third-person camera
+also streaming, counting device-side `Frame.index` gaps:
+
+| clock | delivered | dropped |
+|---|---|---|
+| 60MHz | 28.57fps | 0 |
+| 80MHz | **30.01fps** | 0 |
+
+60MHz is clean but its ceiling is 28.56fps, so `_apply_frame_rate_cap()`
+can never actually reach the 30fps recording target. 80MHz is the lowest
+clock that delivers the full target. Higher was measured too (100MHz gave
+48fps but showed drops in a short trial; 128MHz gave 61fps) -- all far
+past what `recording.fps` asks for, and each step shortens the maximum
+exposure in proportion, so the extra clock would be bought with gain.
+
+**It is a trade, not a free win.** Frame period falls with clock, and
+`ExposureTime`'s maximum falls with it: 87.21ms at 24MHz, 34.99ms at
+60MHz, 26.31ms at 80MHz. Less available light per frame, made up with
+gain. Re-calibrating at 80MHz landed at 26.31ms / gain 1.09 -- still the
+minimum end of a 1.0-4.0 gain range, so the trade cost nothing here. On a
+dimmer subject it would.
+
+**Why this one is technician-overridable** when `orientation` is not: the
+preset is a property of the camera, but the *safe* clock depends on the
+host USB controller, which is per-install. That is the one condition
+CLAUDE.md's configuration table says earns a knob. There is no
+`settings.py` control for it yet -- same standing gap as `orientation`.
+
+**Also fixed here:** `_open()` now clamps a configured exposure into the
+node's live range before applying it, since the clock above may have moved
+that range and a value written under a different clock would otherwise be
+out of bounds.
+
+**The lesson worth keeping** (now in CLAUDE.md's Conventions): a limit
+that shows up in two places at once -- here a frame rate *and* an exposure
+maximum, both explained by one number -- is worth one query to the device
+before it becomes an assumption. This one survived weeks of being designed
+around.
+
+**Tests:** `test_device_presets.py` +4, `test_config.py` +4. Full suite 306.

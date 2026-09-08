@@ -57,6 +57,7 @@ semantics didn't.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
@@ -65,7 +66,7 @@ from ids_peak import ids_peak
 from ids_peak_ipl import ids_peak_ipl
 
 from camera import BaseCamera
-from device_presets import orientation_for_model
+from device_presets import orientation_for_model, pixel_clock_hz_for_model
 from exposure_calibration import (
     DEFAULT_MAX_ITERATIONS,
     DEFAULT_WB_MAX_ITERATIONS,
@@ -81,6 +82,8 @@ from exposure_calibration import (
     next_balance_ratios,
     next_exposure_gain,
 )
+
+logger = logging.getLogger(__name__)
 
 # Comfortably under BaseCamera.stop()'s 2.0s thread-join timeout, so a
 # stop() call isn't left waiting on a blocked _grab().
@@ -170,6 +173,7 @@ class IdsCamera(BaseCamera):
         blue_balance_ratio: float | None = None,
         target_fps: float | None = None,
         orientation: str | None = None,
+        pixel_clock_hz: int | None = None,
     ):
         super().__init__(queue_size=queue_size, label=serial, orientation=orientation)
         self._serial = serial
@@ -179,6 +183,11 @@ class IdsCamera(BaseCamera):
         # is passed through instead and wins over the preset. See
         # device_presets.py.
         self._model_name: str | None = None
+        # None means "use device_presets' per-model value" -- the same
+        # preset-with-escape-hatch shape as `orientation`. Overridable
+        # because the *safe* clock depends on the host USB controller,
+        # which is per-install. See _apply_pixel_clock().
+        self._pixel_clock_hz = pixel_clock_hz
         # Per-instrument calibrated values from config.json (InstrumentConfig's
         # optional exposure_time_us/gain/red_balance_ratio/blue_balance_ratio
         # fields) -- see ROADMAP.md's "In-app exposure/gain calibration" entry
@@ -231,6 +240,11 @@ class IdsCamera(BaseCamera):
             if self._orientation is None:
                 self._orientation = orientation_for_model(self._model_name)
 
+            # Before anything reads or writes ExposureTime: the pixel clock
+            # sets the frame period, and ExposureTime's own maximum is
+            # derived from it.
+            self._apply_pixel_clock()
+
             self._width = int(self._node_map.FindNode("Width").Value())
             self._height = int(self._node_map.FindNode("Height").Value())
 
@@ -255,7 +269,13 @@ class IdsCamera(BaseCamera):
             auto_converge_nodes = []
             if self._exposure_time_us is not None:
                 self._ensure_manual_exposure()
-                self.set_exposure_time_us(self._exposure_time_us)
+                # Clamped: the pixel clock above may have moved this
+                # node's range, and a config value written under a
+                # different clock would otherwise be out of bounds.
+                exposure_min, exposure_max = self.exposure_time_range_us()
+                self.set_exposure_time_us(
+                    min(exposure_max, max(exposure_min, self._exposure_time_us))
+                )
             else:
                 auto_converge_nodes.append("ExposureAuto")
             if self._gain is not None:
@@ -539,6 +559,38 @@ class IdsCamera(BaseCamera):
             self.set_blue_balance_ratio(new_blue)
 
         return False
+
+    def _apply_pixel_clock(self) -> None:
+        """Set the sensor pixel clock, which is what actually determines
+        this camera's frame period -- and therefore both its maximum frame
+        rate and its maximum exposure.
+
+        The legacy uEye slit lamp camera powers up at 24MHz of a 10-128MHz
+        range on *every* open (unlike ExposureTime/Gain, this does not
+        persist), and 24MHz on a 1600x1200 sensor is an ~87ms frame period.
+        That single unset value is the whole of this project's
+        long-standing "the slit lamp only does ~11fps" and "87.2ms is its
+        sensor maximum" -- neither was ever a sensor limit. See
+        device_presets.pixel_clock_hz_for_model() and DECISIONS.md.
+
+        Best-effort, like every other optional node in this file: the BIO's
+        USB3 Vision camera reports a fixed, unwritable 197MHz and simply
+        has nothing to set.
+        """
+        clock_hz = self._pixel_clock_hz
+        if clock_hz is None:
+            clock_hz = pixel_clock_hz_for_model(self._model_name)
+        if clock_hz is None:
+            return
+
+        node = self._node_map.TryFindNode("DeviceClockFrequency")
+        if node is None or not node.IsAvailable() or not node.IsWriteable():
+            return
+        # Clamped rather than refused: a technician override that this
+        # particular camera cannot reach should still get as close as it can.
+        wanted = min(float(node.Maximum()), max(float(node.Minimum()), float(clock_hz)))
+        node.SetValue(wanted)
+        logger.info("%s: pixel clock set to %.1f MHz", self.label, node.Value() / 1e6)
 
     def _apply_frame_rate_cap(self, target_fps: float) -> None:
         """Caps this camera's own acquisition rate to (not above) target_fps

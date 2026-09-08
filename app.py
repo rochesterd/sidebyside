@@ -512,6 +512,7 @@ def _make_camera(
         # -- e.g. the Keeler BIO camera's image comes in vertically flipped.
         # A config.json `orientation` overrides that. See device_presets.py.
         orientation=inst.orientation,
+        pixel_clock_hz=inst.pixel_clock_hz,
     )
 
 

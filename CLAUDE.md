@@ -53,7 +53,7 @@ see `SUPPORTED_HARDWARE.md`.
 
 | Instrument | Camera | Interface | Notes |
 |---|---|---|---|
-| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, ~60fps, legacy uEye family — needs the uEye Transport Layer |
+| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, legacy uEye family — needs the uEye Transport Layer. Powers up at a **24 MHz pixel clock every open**, an ~87 ms frame period: that alone is its long-assumed "11 fps limit" and its "87.2 ms max exposure". `device_presets.py` sets 80 MHz → 30 fps. |
 | Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak. Instrument optics deliver a vertically-flipped image — `device_presets.py` applies `flip_vertical` automatically (same fix `net2860_helper.py` hardcodes for the older BIO camera). |
 | Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Identified by VID/PID, set in `config.json` via `settings.py`; see DECISIONS.md for the identification strategy and the single-device fallback. Any UVC-compliant webcam is expected to work, not just this model. |
 
@@ -108,6 +108,11 @@ Rules that follow from this:
   `1/recording.fps` costs frame rate *and* adds motion blur to exactly
   the motion this app exists to record. That is a constraint, not a
   preference — it belongs in code.
+- **Check what actually gates a limit before designing around it.** The
+  slit lamp's "~11 fps" and "87.2 ms maximum exposure" were treated as
+  sensor facts for weeks and written into notes as such. Both were one
+  unset pixel clock. A limit that appears in two places at once is worth
+  one query to the device before it becomes an assumption.
 
 ## Architecture
 
@@ -158,7 +163,7 @@ a UI poll loop can stall the display waiting on a queue.
 | File | Role |
 |---|---|
 | `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). Also owns the per-frame `orientation` (`VALID_ORIENTATIONS`: none/rotate_180/flip_horizontal/flip_vertical — the dimension-preserving symmetries; `apply_orientation()` is the transform) applied in `_run()` before a frame is queued, so every consumer sees it the same way. |
-| `device_presets.py` | Per-model camera quirks that aren't device-discoverable and don't vary by install — today just `orientation_for_model()` (the Keeler BIO camera's optics deliver a vertically-flipped image → `flip_vertical`, same as `net2860_helper.py` does for the older BIO). `IdsCamera._open()` consults it; a `config.json` `orientation` overrides it. Imports only `camera.py` (stdlib + numpy). See DECISIONS.md's "Device-model rotation presets" entries and ROADMAP.md's device-profiles entry. |
+| `device_presets.py` | Per-model camera quirks that aren't device-discoverable — `orientation_for_model()`, and `pixel_clock_hz_for_model()` (the legacy uEye slit lamp camera's frame period, and therefore its frame rate *and* its maximum exposure, is set by a pixel clock that defaults to 24 MHz on every open) (the Keeler BIO camera's optics deliver a vertically-flipped image → `flip_vertical`, same as `net2860_helper.py` does for the older BIO). `IdsCamera._open()` consults it; a `config.json` `orientation` overrides it. Imports only `camera.py` (stdlib + numpy). See DECISIONS.md's "Device-model rotation presets" entries and ROADMAP.md's device-profiles entry. |
 | `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
 | `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Two identification modes: `device` (a literal DirectShow index, used by `settings.py`'s Preview) and `vid_pid` (resolved to an index at `start()` time via `uvc_enumeration.resolve_device()`, used by `app.py`'s real runtime path — see DECISIONS.md for why resolution happens there, not at construction). `Frame.index` is self-counted, not source-reported. Reopens the device by itself (`_try_reconnect()`) if `read()` fails for ~0.5s straight — a USB drop otherwise stays a dead pane, since `cv2.VideoCapture` never recovers on its own. |
 | `uvc_enumeration.py` | `list_uvc_devices()` — index/name/VID:PID for every attached UVC device, in `cv2.CAP_DSHOW`'s own open order, via `pygrabber`'s DirectShow internals. `resolve_device()` — single-device-fallback/ambiguity logic turning a configured `vid_pid` into one `UvcDeviceInfo`. |

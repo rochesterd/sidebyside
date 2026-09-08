@@ -31,6 +31,35 @@ _ORIENTATION_BY_MODEL_TOKEN: dict[str, str] = {
 }
 
 
+# Pixel clock, for camera families where it is settable and where the
+# power-on default is not what this app needs. The legacy uEye slit lamp
+# camera comes up at 24MHz of a 10-128MHz range *on every open* (it does
+# not persist), and at 24MHz a 1600x1200 frame takes ~87ms -- which is
+# simultaneously an 11.5fps ceiling and the reason its ExposureTime
+# maximum reads 87208us. Neither is a sensor limit; both are this one
+# unset value. 80MHz is the lowest clock that reliably delivers the full
+# 30fps recording target (60MHz tops out at 28.6fps, so the frame-rate cap
+# can never reach 30), measured with zero device-side drops over 150s with
+# the third-person camera streaming too. Raising it shortens the maximum
+# exposure in proportion, so this is a trade of available light for frame
+# rate, not a free win. See DECISIONS.md.
+#
+# The BIO's USB3 Vision camera reports a fixed, unwritable 197MHz -- there
+# is nothing to set, which is why it has no entry here.
+_PIXEL_CLOCK_HZ_BY_MODEL_TOKEN: dict[str, int] = {
+    "UI325": 80_000_000,  # Haag-Streit BI 900 slit lamp, legacy uEye
+}
+
+
+def pixel_clock_hz_for_model(model_name: str | None) -> int | None:
+    """Pixel clock this model should run at, or None to leave it alone."""
+    normalized = (model_name or "").upper()
+    for token, clock_hz in _PIXEL_CLOCK_HZ_BY_MODEL_TOKEN.items():
+        if token.upper() in normalized:
+            return clock_hz
+    return None
+
+
 def orientation_for_model(model_name: str | None) -> str:
     """The orientation fix (a `camera.VALID_ORIENTATIONS` member) for a
     camera reporting `model_name`, or ORIENTATION_NONE if no preset
