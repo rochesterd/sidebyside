@@ -3161,3 +3161,60 @@ and the slit lamp's usual subject -- a vertical beam on a black field --
 is close enough to symmetric that a wrong orientation would not be
 obvious. If it is wrong, `config.json`'s `orientation` overrides the
 preset without a code change.
+
+---
+
+## 2026-09-08 - Documentation caught up with the day's hardware work
+
+Housekeeping entry, recorded because most of what changed was *removing*
+caveats, and a removed caveat leaves no trace of why it went.
+
+**`ids_camera.py` carried a blanket "none of this is hardware-verified"
+paragraph** covering white balance, the frame-rate cap and
+`_converge_auto_nodes()`, plus per-method notes on ExposureTime/Gain's
+`Minimum()`/`Maximum()` and on `AcquisitionFrameRate`. Today's work
+exercised all of those against both real cameras, so the notes were no
+longer true -- and a stale "unverified" is worse than none, because it
+invites re-doing work that has been done. Replaced with what is actually
+verified, and what is not.
+
+**One caveat was kept and sharpened rather than removed:** the manual
+white-balance path (`auto_white_balance()`, BalanceRatioSelector/
+BalanceRatio) is still unverified and *cannot* be verified on this
+hardware -- `needs_manual_white_balance()` is False on both cameras, since
+the Keeler has working `BalanceWhiteAuto` and the slit lamp exposes no
+white-balance nodes at all. It needs a camera with no BalanceWhiteAuto but
+with BalanceRatio, which neither of these is. That is a more useful note
+than "unverified" alone, because it says what would be required.
+
+**Two claims had become actively wrong**, not merely stale:
+
+- `_apply_frame_rate_cap()`'s docstring said the slit lamp's long exposure
+  was "expected to make this a no-op in practice." The opposite was true:
+  at the default 24MHz pixel clock its ceiling was 11.46fps, so the clamp
+  was the thing holding the camera down. Now that the clock is raised both
+  cameras have headroom above 30fps and it genuinely caps rather than
+  throttles.
+- `SUPPORTED_HARDWARE.md` said the 30fps-simultaneous worst case was
+  unmeasured and "blocked on the slit lamp's exposure/gain calibration."
+  Both are now done. It also assumed both IDS cameras stream together,
+  which stopped being true when `select_instrument()` made only one
+  instrument camera run at a time -- so the real concurrent load is one
+  instrument plus the webcam, roughly 94 MB/s at 30fps for the Keeler
+  against a 350-400 MB/s controller. Replaced with the measured runs
+  (zero device-side drops at 150s, 60s and repeated 10s sessions), and
+  the standing caveat that the third-person camera in all of them was a
+  laptop integrated webcam rather than the ELP that ships.
+
+**Also added to CLAUDE.md's tables:** `exposure_calibration.py` and
+`test_exposure_calibration.py`, which had never been listed despite
+`exposure_calibration.py` now holding the metering modes, the frame-rate
+budget and the total-light correction step; and `config.py`'s row gained
+`exposure_fps_warnings()`.
+
+**An editing lesson worth keeping:** one of these notes was supposed to
+have been corrected in the pixel-clock commit and silently was not -- the
+replacement did not match and the script had no assertion on that one
+edit, so it reported success. Every replacement in this pass asserts its
+target exists first. A patch script without an assert is a patch script
+that lies.

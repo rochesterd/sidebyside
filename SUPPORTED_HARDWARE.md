@@ -11,21 +11,36 @@ system" entry for the project this supports.
 
 | Camera | Interface | Tested | Notes |
 |---|---|---|---|
-| IDS UI-3250CP-C-HQ Rev. 2 (serial 4103484089), mounted on a Haag-Streit BI 900 slit lamp | uEye Transport Layer | 2026-08-12 — DECISIONS.md "Slit lamp camera smoke test" | No `ExposureAuto`/`GainAuto` on this camera — needs a one-time manual exposure/gain calibration once mounted on the instrument, done in-app via `settings.py`'s Preview dialog (see ROADMAP.md's "In-app exposure/gain calibration" entry). Gain ceiling 4.0x, well below the Keeler's ~25x. |
-| IDS U3-327xCP-C (serial 4110050487), mounted on a Keeler Vantage Plus Digital BIO | Native USB3 Vision | 2026-08-12 — DECISIONS.md "Hardware smoke test found two real IdsCamera bugs; both fixed"; 2026-09-01 — rotation preset | Auto-exposure/gain converges once at open (`ExposureAuto`/`GainAuto` = `Once`), ~10 frames / ~0.5s, then locks for the session. The instrument optics deliver a vertically-flipped image — `device_presets.py` matches model `U3-327xCP-C` and applies `flip_vertical` automatically (the identical fix `net2860_helper.py` hardcodes for the older BIO camera; see DECISIONS.md's two "Device-model rotation presets" entries). |
+| IDS UI-3250CP-C-HQ Rev. 2 (serial 4103484089), mounted on a Haag-Streit BI 900 slit lamp | uEye Transport Layer | 2026-08-12 — DECISIONS.md "Slit lamp camera smoke test" | No `ExposureAuto`/`GainAuto` on this camera — needs a one-time manual exposure/gain calibration once mounted on the instrument, done in-app via `settings.py`'s Preview dialog (see ROADMAP.md's "In-app exposure/gain calibration" entry). Gain ceiling 4.0x, well below the Keeler's ~25x. **2026-09-08:** its `DeviceClockFrequency` powers up at 24 MHz of a 10–128 MHz range on every open, which alone produced both the long-assumed "~11 fps limit" and the "87.2 ms maximum exposure" — neither was a sensor limit. `device_presets.py` now sets 80 MHz (30.0 fps measured, 0 dropped frames over 150 s with the third-person camera also streaming) and applies `rotate_180` (image arrives mirrored on both axes; **not yet visually verified**). |
+| IDS U3-327xCP-C (serial 4110050487), mounted on a Keeler Vantage Plus Digital BIO | Native USB3 Vision | 2026-08-12 — DECISIONS.md "Hardware smoke test found two real IdsCamera bugs; both fixed"; 2026-09-01 — rotation preset | Auto-exposure/gain converges once at open (`ExposureAuto`/`GainAuto` = `Once`), ~10 frames / ~0.5s, then locks for the session. **2026-09-08:** that auto-exposure was free to ignore the frame-rate budget and did, settling at 49.92 ms and capping the camera at 20 fps; `IdsCamera._apply_auto_exposure_limit()` now bounds it via `BrightnessAutoExposureTimeMax`, giving 30.0 fps measured. Its `DeviceClockFrequency` is a fixed, unwritable 197 MHz — nothing to set. The instrument optics deliver a vertically-flipped image — `device_presets.py` matches model `U3-327xCP-C` and applies `flip_vertical` automatically (the identical fix `net2860_helper.py` hardcodes for the older BIO camera; see DECISIONS.md's two "Device-model rotation presets" entries). |
 | "HD USB Camera" (VID 32E4:PID 9310), presumed ELP-USB100W03M-L21 | UVC (`cv2.VideoCapture`, `CAP_DSHOW`) | 2026-08-17 — DECISIONS.md "UvcCamera hardware-verified against the real ELP camera" | Model identity inferred from VID/PID + physical inspection, not an on-device product-string match — treat as "an ELP-USB100W03M-L21 or equivalent," not a confirmed exact model. Time to first frame 0.9-1.6s, slower and less consistent than the IDS cameras' convergence. **Autofocus/auto-exposure lock (2026-08-18) is implemented but unverified against this device** — the camera was unplugged when it was added; see DECISIONS.md's "Lock UVC autofocus/auto-exposure after a warmup window" entry for what specifically still needs confirming. |
 | NET GmbH "KS722OUP" board camera (eMPIA EM2860 bridge, VID 0x20F1:PID 0x0004), mounted on an older-model Keeler Vantage Plus Digital BIO, selectable via `kind: "net2860"` on the `bio` instrument role | Vendor DirectShow filter instantiated by CLSID, driven from a 32-bit helper subprocess (`net2860_camera.py`/`net2860_helper.py`) | 2026-08-26 — DECISIONS.md "`Net2860Camera`: 32-bit helper process for the older Vantage Plus BIO" (build) and its follow-up entry (wiring + a real end-to-end recording) | Wired into `config.py`/`app.py`/`settings.py` and verified with a real recorded session (`KioskController`, real camera, real composite.mp4) — usable today from a source checkout with `.venv32/` set up (`setup_net2860_helper.ps1`). **Not packaged**: `net2860_helper.py` isn't frozen into an exe, so a clinic install built from `PACKAGING.md`'s current process still can't use it (needs a 32-bit Python present, which the frozen-exe distribution doesn't provide). |
 
-**Bandwidth caveat:** DECISIONS.md's 2026-08-12 dual-camera test confirmed
-**zero** device-level frame drops with both IDS cameras streaming
-simultaneously at their native (uncalibrated, sub-30fps) rates — the only
-losses observed were this process's own capture-queue evictions, not USB
-saturation or a device-level drop. The actual worst case CLAUDE.md's
-Hardware section describes (both cameras at full resolution *and*
-30fps simultaneously) has **not** been directly measured — that's blocked
-on the slit lamp's exposure/gain calibration (above) bringing its
-framerate up to target first. Treat 30fps-simultaneous as expected to
-work per the datasheet math, not yet independently confirmed under load.
+**Bandwidth, measured 2026-09-08.** This was previously listed as
+unmeasured and blocked on the slit lamp's calibration. Both are now done,
+and the concurrent load is smaller than the original caution assumed:
+only **one** instrument camera streams at a time (`select_instrument()`
+starts the chosen one and stops the other — see CLAUDE.md's Architecture
+section), so the real worst case is one instrument plus the third-person
+webcam, not both IDS cameras together.
+
+At 30fps that is roughly 94 MB/s for the Keeler (2048x1536 Bayer8) or
+58 MB/s for the slit lamp (1600x1200), plus a 640x480 webcam — well
+inside the 350-400 MB/s a single USB 3.0 controller delivers, which is
+why the runs below are clean. Measured with both cameras streaming,
+counting device-side `Frame.index` gaps:
+
+| run | result |
+|---|---|
+| slit lamp @ 80MHz + webcam, 150s | 30.01 fps, **0 dropped** |
+| slit lamp @ 60MHz + webcam, 150s | 28.57 fps, **0 dropped** |
+| BIO + webcam, 60s | 1807 + 1688 frames, **0 dropped** |
+| several 10s `KioskController` sessions, both instruments | **0 dropped** |
+
+Caveat worth keeping: the third-person camera in these runs was a laptop
+integrated webcam, not the ELP that ships. Its bandwidth share is small,
+but the numbers above are not a substitute for one run on the real clinic
+machine with the real camera.
 
 ## Expected to work, untested
 

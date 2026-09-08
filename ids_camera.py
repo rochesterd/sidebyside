@@ -44,15 +44,22 @@ exposure/gain-specific convergence loop (`_converge_auto_exposure()`) to
 also cover `BalanceWhiteAuto`, since all three follow the identical
 Once-then-poll-until-Off-then-lock shape.
 
-None of the white-balance/frame-rate-cap additions, nor the generalized
-`_converge_auto_nodes()` itself, are hardware-verified the way the rest of
-this module is -- this dev machine has no ids_peak installed and no
-vendor/ids_peak_api.txt dump to check node names against (see CLAUDE.md's
-Environment section). Flagged node-by-node at each call site below;
-re-running tools/smoke_test_camera.py against both real cameras is
-warranted before trusting any of it, including the exposure/gain path,
-since _converge_auto_nodes() changed its control flow even though per-axis
-semantics didn't.
+Hardware-verified against both real cameras again on 2026-09-08, which
+closed most of the "unverified" notes this module used to carry:
+`_converge_auto_nodes()`, `exposure_time_range_us()`/`gain_range()`'s
+Minimum()/Maximum() accessors, `_apply_frame_rate_cap()`,
+`auto_calibrate()`, and the two additions below -- `_apply_pixel_clock()`
+and `_apply_auto_exposure_limit()`. Both cameras now deliver the
+configured 30fps with no dropped frames; see DECISIONS.md's 2026-09-08
+entries for what that took.
+
+Still unverified, and unreachable on the present hardware: the manual
+white-balance path (`auto_white_balance()` and the BalanceRatioSelector/
+BalanceRatio accessors). `needs_manual_white_balance()` returns False on
+both cameras -- the Keeler has working BalanceWhiteAuto and the slit lamp
+exposes no white-balance nodes at all -- so nothing here can exercise it.
+It needs a camera with no BalanceWhiteAuto *but* with BalanceRatio, which
+neither of these is. Flagged again at its call site below.
 """
 
 from __future__ import annotations
@@ -454,16 +461,15 @@ class IdsCamera(BaseCamera):
         if node is not None and node.IsAvailable() and node.IsWriteable():
             node.SetCurrentEntry("Off")
 
-    # NOTE: ExposureTime/Gain's Minimum()/Maximum() accessor names below
-    # follow GenApi's standard IFloat node interface (the same convention
-    # Value()/SetValue() already use for this file's Width/Height/PayloadSize
-    # integer nodes) but, unlike every other node call in this file, are
-    # *not* confirmed against vendor/ids_peak_api.txt or a hardware smoke
-    # test -- this dev machine has no ids_peak installed to generate that
-    # dump against (see CLAUDE.md's Environment section). Verify these
-    # against a real ExposureTime/Gain node (regenerate vendor/ids_peak_api.txt
-    # on a machine with the SDK, or run tools/smoke_test_camera.py against
-    # the slit lamp) before relying on this in a real session.
+    # ExposureTime/Gain's Minimum()/Maximum() accessors are confirmed
+    # against both real cameras (2026-09-08). Worth knowing what they
+    # report, because neither range is a fixed property of the sensor:
+    # ExposureTime's maximum is the frame period, so it moves with
+    # _apply_pixel_clock() (87.21ms at 24MHz, 26.31ms at 80MHz on the slit
+    # lamp). Gain's range is a real hardware difference between the two --
+    # 1.00-4.00x on the slit lamp against 1.00-25.41x on the Keeler --
+    # which is why the calibration cost line reports gain against its own
+    # maximum rather than as a bare number.
 
     def get_exposure_time_us(self) -> float:
         return float(self._node_map.FindNode("ExposureTime").Value())
@@ -489,9 +495,10 @@ class IdsCamera(BaseCamera):
     # SFNC selector+value pattern for per-channel white balance gain (a
     # single BalanceRatio node whose meaning depends on which channel
     # BalanceRatioSelector currently names) but, like ExposureTime/Gain's
-    # Minimum()/Maximum() above, is *not* confirmed against
-    # vendor/ids_peak_api.txt or a hardware smoke test. Verify before relying
-    # on this in a real session.
+    # Minimum()/Maximum() above, is *not* confirmed against real hardware --
+    # and cannot be here: needs_manual_white_balance() is False on both
+    # cameras, so nothing reaches this path. It needs a camera with no
+    # BalanceWhiteAuto but with BalanceRatio, which neither of these is.
 
     def _select_balance_ratio(self, channel: str) -> None:
         self._node_map.FindNode("BalanceRatioSelector").SetCurrentEntry(channel)
@@ -643,18 +650,18 @@ class IdsCamera(BaseCamera):
         Best-effort like every other node access in this file: silently
         does nothing if either node is absent, and clamps to whatever the
         camera can actually do (via Maximum()) rather than failing if
-        target_fps exceeds that -- e.g. the slit lamp's own calibrated long
-        exposure time is expected to make this a no-op there in practice.
+        target_fps exceeds that. That clamp used to be load-bearing on the
+        slit lamp, whose 24MHz default pixel clock put its ceiling at
+        11.46fps; with _apply_pixel_clock() raising the clock, both cameras
+        now have headroom above the 30fps target and this genuinely caps
+        rather than throttles.
 
-        NOTE (unverified): AcquisitionFrameRateEnable gating
-        AcquisitionFrameRate is a real GenICam SFNC variation across camera
-        families -- this code tolerates either camera exposing it or not.
-        Also unverified: whether AcquisitionFrameRate can be set *after*
-        AcquisitionStart the way ExposureAuto/GainAuto already are
-        (confirmed working post-start), since it more directly reconfigures
-        stream timing than a pure value node. If a hardware test shows it
-        must be set before streaming begins, move this call earlier in
-        _open(), before data_stream.StartAcquisition().
+        Hardware-verified 2026-09-08 on both cameras: AcquisitionFrameRate
+        can be set after AcquisitionStart, and AcquisitionFrameRateEnable
+        is absent on both (the tolerate-either-way handling below is what
+        makes that a non-event). Its Maximum() is derived from the current
+        frame period, so this must run only once exposure, gain and the
+        pixel clock are settled -- which is why _open() calls it last.
         """
         enable_node = self._node_map.TryFindNode("AcquisitionFrameRateEnable")
         if enable_node is not None and enable_node.IsAvailable() and enable_node.IsWriteable():
