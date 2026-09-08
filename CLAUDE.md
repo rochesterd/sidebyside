@@ -53,7 +53,7 @@ see `SUPPORTED_HARDWARE.md`.
 
 | Instrument | Camera | Interface | Notes |
 |---|---|---|---|
-| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, legacy uEye family — needs the uEye Transport Layer. Powers up at a **24 MHz pixel clock every open**, an ~87 ms frame period: that alone is its long-assumed "11 fps limit" and its "87.2 ms max exposure". `device_presets.py` sets 80 MHz → 30 fps. |
+| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, legacy uEye family — needs the uEye Transport Layer. Powers up at a **24 MHz pixel clock every open**, an ~87 ms frame period: that alone is its long-assumed "11 fps limit" and its "87.2 ms max exposure". `device_presets.py` sets 80 MHz → 30 fps, and applies `rotate_180` (the image arrives mirrored on both axes). |
 | Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak. Instrument optics deliver a vertically-flipped image — `device_presets.py` applies `flip_vertical` automatically (same fix `net2860_helper.py` hardcodes for the older BIO camera). |
 | Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Identified by VID/PID, set in `config.json` via `settings.py`; see DECISIONS.md for the identification strategy and the single-device fallback. Any UVC-compliant webcam is expected to work, not just this model. |
 

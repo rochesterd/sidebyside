@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import unittest
 
-from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE
+from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE, ORIENTATION_ROTATE_180
 from device_presets import orientation_for_model, pixel_clock_hz_for_model
 
 
@@ -18,9 +18,16 @@ class OrientationForModelTest(unittest.TestCase):
     def test_match_is_case_insensitive_and_substring(self):
         self.assertEqual(orientation_for_model("u3-327xcp-c rev.2"), ORIENTATION_FLIP_VERTICAL)
 
-    def test_slit_lamp_camera_has_no_preset(self):
-        # Must NOT collide with the U3-327 token.
-        self.assertEqual(orientation_for_model("UI325xCP-C"), ORIENTATION_NONE)
+    def test_slit_lamp_camera_image_is_rotated_180(self):
+        """Reported from the instrument 2026-09-08: mirrored on both axes,
+        which is a 180-degree rotation rather than two separate flips."""
+        self.assertEqual(orientation_for_model("UI325xCP-C"), ORIENTATION_ROTATE_180)
+
+    def test_the_two_instrument_presets_do_not_collide(self):
+        """"UI325" and "U3-327" are both substring tokens; each must match
+        only its own camera."""
+        self.assertEqual(orientation_for_model("UI325xCP-C"), ORIENTATION_ROTATE_180)
+        self.assertEqual(orientation_for_model("U3-327xCP-C"), ORIENTATION_FLIP_VERTICAL)
 
     def test_unknown_model_defaults_to_none(self):
         self.assertEqual(orientation_for_model("SomeOtherCamera"), ORIENTATION_NONE)

@@ -3132,3 +3132,32 @@ verified still opening, streaming and recording at 30fps unaffected.
 With this and the pixel clock, **both instrument cameras now deliver
 exactly the configured 30fps** with zero dropped frames, from a starting
 point of 11.5fps (slit lamp) and 20fps (BIO).
+
+---
+
+## 2026-09-08 - Slit lamp image is rotated 180 degrees
+
+**Decided:** `device_presets.orientation_for_model()` now returns
+`rotate_180` for the slit lamp camera (`UI325` token), alongside the BIO's
+existing `flip_vertical`.
+
+**Why:** reported from the instrument -- the image arrives mirrored on
+*both* axes. Flipping both axes is a 180-degree rotation, which is why
+this is one orientation rather than two, and why `VALID_ORIENTATIONS`
+covers the whole Klein-four group rather than just the two axis flips.
+
+Note the two instrument cameras need *different* corrections --
+`flip_vertical` for the BIO, `rotate_180` for the slit lamp -- which is
+the case for keying this per model rather than applying one blanket
+"instrument optics" rule. A test now pins that the `UI325` and `U3-327`
+substring tokens each match only their own camera.
+
+**NOT visually verified.** The cameras dropped off USB enumeration before
+the change could be checked against a live image, so this rests on the
+report alone. Two reasons to re-check it against something with an
+obvious up and down before trusting it: the earlier BIO correction went
+`rotate_180` -> `flip_vertical` after exactly this kind of verbal report,
+and the slit lamp's usual subject -- a vertical beam on a black field --
+is close enough to symmetric that a wrong orientation would not be
+obvious. If it is wrong, `config.json`'s `orientation` overrides the
+preset without a code change.

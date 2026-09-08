@@ -19,7 +19,7 @@ ids_camera.py is.
 
 from __future__ import annotations
 
-from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE
+from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE, ORIENTATION_ROTATE_180
 
 # Matched case-insensitively as a substring of ids_peak's
 # descriptor.ModelName(). Confirmed strings on real hardware (2026-09-01):
@@ -28,6 +28,10 @@ from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE
 # camera.VALID_ORIENTATIONS.
 _ORIENTATION_BY_MODEL_TOKEN: dict[str, str] = {
     "U3-327": ORIENTATION_FLIP_VERTICAL,  # Keeler Vantage Plus Digital BIO -- optics deliver a vertically-flipped image
+    # Haag-Streit BI 900 slit lamp: the image arrives mirrored on both
+    # axes, which is a 180-degree rotation, not two separate flips.
+    # Reported from the instrument 2026-09-08.
+    "UI325": ORIENTATION_ROTATE_180,
 }
 
 
