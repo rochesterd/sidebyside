@@ -41,7 +41,13 @@ from PySide6.QtWidgets import (
 )
 
 from camera import BaseCamera
-from config import ConfigError, DEFAULT_CONFIG_PATH, load_config, resolve_default_sessions_dir
+from config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_RECORDING_FPS,
+    ConfigError,
+    load_config,
+    resolve_default_sessions_dir,
+)
 from qt_image import bgr_to_pixmap
 from uvc_camera import UvcCamera
 from uvc_enumeration import UvcDeviceInfo, list_uvc_devices
@@ -199,8 +205,13 @@ class PreviewDialog(QDialog):
         initial_gain: float | None = None,
         initial_red_balance_ratio: float | None = None,
         initial_blue_balance_ratio: float | None = None,
+        target_fps: float | None = None,
     ):
         super().__init__(parent)
+        # The recording frame rate this calibration has to fit inside.
+        # Exposure is a frame-rate budget -- see exposure_calibration's
+        # exposure_budget_us() and CLAUDE.md's camera-configuration table.
+        self._target_fps = target_fps
         self.setWindowTitle(f"Preview – {title}")
         self._camera = camera
         # Stop the camera on *any* dialog exit, not just closeEvent: the Esc
@@ -386,7 +397,7 @@ class PreviewDialog(QDialog):
         self.calibration_status_label.setText("Calibrating…")
         QApplication.processEvents()
         try:
-            converged = self._camera.auto_calibrate()
+            converged = self._camera.auto_calibrate(target_fps=self._target_fps)
         except Exception as exc:
             QMessageBox.warning(self, "Calibration failed", str(exc))
             converged = None
@@ -403,11 +414,38 @@ class PreviewDialog(QDialog):
         self._refresh_exposure_gain_labels()
 
         if converged is True:
-            self.calibration_status_label.setText("Calibrated.")
+            self.calibration_status_label.setText(f"Calibrated.   {self._calibration_cost()}")
         elif converged is False:
             self.calibration_status_label.setText(
-                "Couldn't reach target brightness automatically -- adjust the sliders by eye."
+                "Couldn't reach target brightness automatically -- adjust the sliders by eye.   "
+                f"{self._calibration_cost()}"
             )
+
+    def _calibration_cost(self) -> str:
+        """What the calibration actually bought, in units a technician can
+        judge without an imaging background.
+
+        "87208.816" tells nobody anything; "11fps, gain 1.0 of 4.0" tells
+        them it is wrong. Reporting the cost -- not adding another setting
+        -- is what was missing when the slit lamp sat at an 11fps exposure.
+        See CLAUDE.md's "Camera configuration: who decides what".
+        """
+        exposure_us = self._camera.get_exposure_time_us()
+        gain = self._camera.get_gain()
+        _gain_min, gain_max = self._camera.gain_range()
+        possible_fps = 1_000_000.0 / max(exposure_us, 1e-6)
+        parts = [
+            f"exposure {exposure_us / 1000:.1f}ms",
+            f"gain {gain:.1f}x of {gain_max:.1f} max",
+            f"allows ~{possible_fps:.0f}fps",
+        ]
+        text = "   |   ".join(parts)
+        if self._target_fps and possible_fps < self._target_fps:
+            text += (
+                f"   <-- BELOW the {self._target_fps:g}fps recording target, "
+                "and blurs motion. Add light at the instrument."
+            )
+        return text
 
     def _on_white_balance_clicked(self) -> None:
         self.white_balance_button.setEnabled(False)
@@ -490,12 +528,14 @@ class DeviceRow(QWidget):
         has_label: bool,
         preview_camera_factory: Callable[[RowCandidate], BaseCamera],
         supports_calibration: bool = False,
+        target_fps: float = DEFAULT_RECORDING_FPS,
         parent=None,
     ):
         super().__init__(parent)
         self.role_key = role_key
         self.has_label = has_label
         self.supports_calibration = supports_calibration
+        self.target_fps = target_fps
         self._preview_camera_factory = preview_camera_factory
         self._candidates: list[RowCandidate] = []
         self._pending_selection = _UNSET
@@ -643,6 +683,7 @@ class DeviceRow(QWidget):
             initial_gain=self._gain if self.supports_calibration else None,
             initial_red_balance_ratio=self._red_balance_ratio if self.supports_calibration else None,
             initial_blue_balance_ratio=self._blue_balance_ratio if self.supports_calibration else None,
+            target_fps=self.target_fps,
         )
         dialog.exec()
         if self.supports_calibration and dialog.calibration_supported:
@@ -665,6 +706,9 @@ class SettingsWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Camera Settings")
         self.config_path = Path(config_path)
+        # Filled in by _load_existing_config(); the fallback matches what
+        # config.py applies when config.json has no `recording` section.
+        self._recording_fps: float = DEFAULT_RECORDING_FPS
         self._list_ids_devices_fn = list_ids_devices_fn
         self._list_uvc_devices_fn = list_uvc_devices_fn
 
@@ -835,6 +879,9 @@ class SettingsWindow(QMainWindow):
         self._third_person_row.set_pending_selection(cfg.third_person.vid_pid)
         if cfg.sessions_dir is not None:
             self.sessions_dir_edit.setText(str(cfg.sessions_dir))
+        self._recording_fps = cfg.recording.fps
+        for row in self._instrument_rows.values():
+            row.target_fps = cfg.recording.fps
         if cfg.retention is not None:
             self.retention_group.setChecked(True)
             self.retention_age_spin.setValue(cfg.retention.max_age_days)  # sets protect_spin's max first

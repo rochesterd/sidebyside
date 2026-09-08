@@ -12,11 +12,14 @@ already makes.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _VID_PID_RE = re.compile(r"^[0-9A-Fa-f]{4}:[0-9A-Fa-f]{4}$")
 
@@ -142,6 +145,40 @@ class AppConfig:
     retention: RetentionConfig | None = None
 
 
+def achievable_fps(exposure_time_us: float) -> float:
+    """The fastest a camera can run at this exposure. A sensor exposing
+    for E microseconds cannot deliver frames faster than 1/E."""
+    return 1_000_000.0 / max(exposure_time_us, 1e-6)
+
+
+def exposure_fps_warnings(config: "AppConfig") -> list[str]:
+    """One message per instrument whose configured exposure makes the
+    recording frame rate unreachable.
+
+    Not a ConfigError: a slow camera still records usable video, and
+    refusing to start would be worse than the problem. But it must be
+    *visible* -- this is exactly the failure that went unnoticed for
+    weeks, an 87ms exposure silently capping the slit lamp at ~11fps
+    against a 30fps target. Missing visibility, not a missing setting,
+    was the gap. See CLAUDE.md's "Camera configuration: who decides
+    what".
+    """
+    messages: list[str] = []
+    target = config.recording.fps
+    for key, instrument in config.instruments.items():
+        if instrument.exposure_time_us is None:
+            continue
+        possible = achievable_fps(instrument.exposure_time_us)
+        if possible < target:
+            messages.append(
+                f"{instrument.label or key}: exposure {instrument.exposure_time_us / 1000:.1f}ms "
+                f"limits this camera to about {possible:.0f}fps, below the {target:g}fps "
+                f"recording target - and adds that much motion blur to every frame. "
+                f"Re-run Calibrate in settings, or add light at the instrument."
+            )
+    return messages
+
+
 def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
     path = Path(path)
     if not path.exists():
@@ -169,13 +206,16 @@ def load_config(path: Path | str = DEFAULT_CONFIG_PATH) -> AppConfig:
     sessions_dir = _parse_sessions_dir(path, raw.get("sessions_dir"))
     retention = _parse_retention(path, raw.get("retention"))
 
-    return AppConfig(
+    config = AppConfig(
         instruments=instruments,
         third_person=third_person,
         recording=recording,
         sessions_dir=sessions_dir,
         retention=retention,
     )
+    for message in exposure_fps_warnings(config):
+        logger.warning("%s: %s", path, message)
+    return config
 
 
 def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:

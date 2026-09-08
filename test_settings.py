@@ -553,6 +553,65 @@ class _FakeCalibratableCamera(SyntheticCamera):
         return True
 
 
+class CalibrationCostReportingTest(unittest.TestCase):
+    """A calibration must report what it *cost*, not just that it worked.
+
+    "87208.816" tells a technician nothing; "11fps, gain 1.0 of 4.0" tells
+    them it is wrong. That missing visibility -- not a missing setting --
+    is why the slit lamp sat at an 11fps exposure. See CLAUDE.md's
+    "Camera configuration: who decides what".
+    """
+
+    def test_cost_line_reports_exposure_gain_and_achievable_fps(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp", target_fps=30)
+        try:
+            camera.set_exposure_time_us(20_000.0)  # 20ms -> 50fps
+            camera.set_gain(2.0)
+            text = dialog._calibration_cost()
+        finally:
+            dialog._shutdown()
+
+        self.assertIn("20.0ms", text)
+        self.assertIn("gain 2.0x", text)
+        self.assertIn("50fps", text)
+        self.assertNotIn("BELOW", text)  # 50fps clears a 30fps target
+
+    def test_cost_line_calls_out_an_exposure_below_the_recording_target(self):
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp", target_fps=30)
+        try:
+            camera.set_exposure_time_us(87_208.816)  # the real slit lamp value
+            text = dialog._calibration_cost()
+        finally:
+            dialog._shutdown()
+
+        self.assertIn("87.2ms", text)
+        self.assertIn("11fps", text)
+        self.assertIn("BELOW", text)
+        self.assertIn("30fps", text)
+
+    def test_no_target_fps_means_no_verdict(self):
+        """settings.py always passes one, but the dialog must not invent a
+        judgement when it has nothing to judge against."""
+        from settings import PreviewDialog
+
+        camera = _FakeCalibratableCamera()
+        dialog = PreviewDialog(camera, "Slit Lamp")
+        try:
+            camera.set_exposure_time_us(87_208.816)
+            text = dialog._calibration_cost()
+        finally:
+            dialog._shutdown()
+
+        self.assertIn("87.2ms", text)
+        self.assertNotIn("BELOW", text)
+
+
 class PreviewDialogCalibrationTest(unittest.TestCase):
     def test_calibratable_camera_shows_sliders_seeded_from_its_current_values(self):
         from settings import PreviewDialog
@@ -588,7 +647,7 @@ class PreviewDialogCalibrationTest(unittest.TestCase):
             self.assertEqual(dialog.final_exposure_time_us, 4000.0)
             self.assertEqual(dialog.final_gain, 3.0)
             self.assertEqual(dialog.exposure_slider.value(), 4000)
-            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+            self.assertTrue(dialog.calibration_status_label.text().startswith("Calibrated."))
         finally:
             dialog.close()
 
@@ -644,12 +703,12 @@ class PreviewDialogCalibrationTest(unittest.TestCase):
         dialog = PreviewDialog(camera, "Slit Lamp")
         try:
             dialog._on_calibrate_clicked()
-            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+            self.assertTrue(dialog.calibration_status_label.text().startswith("Calibrated."))
             self.assertEqual(dialog.white_balance_status_label.text(), "")
 
             dialog._on_white_balance_clicked()
             self.assertEqual(dialog.white_balance_status_label.text(), "Calibrated.")
-            self.assertEqual(dialog.calibration_status_label.text(), "Calibrated.")
+            self.assertTrue(dialog.calibration_status_label.text().startswith("Calibrated."))
         finally:
             dialog.close()
 

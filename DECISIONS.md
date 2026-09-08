@@ -2874,3 +2874,66 @@ known it belongs in `device_presets.py`, not in a dialog.
 `next_exposure_gain()`, warning when a configured exposure cannot meet
 the target frame rate, and reporting achieved fps/gain after a
 calibration. See the CLAUDE.md section's rules.
+
+---
+
+## 2026-09-03 - Exposure is bounded by the frame-rate budget, and calibration reports what it cost
+
+**Decided:** Acted on the three items the "Camera configuration: which
+layer owns what" entry left open.
+
+1. `exposure_calibration.exposure_budget_us(target_fps)` gives the longest
+   exposure that still leaves room for a frame rate (the interval times
+   `DEFAULT_EXPOSURE_BUDGET_FRACTION`, 0.9, for readout headroom).
+   `next_exposure_gain()` takes an optional `max_exposure_us` that
+   tightens its clamp to that budget instead of the sensor's own maximum;
+   `IdsCamera.auto_calibrate(target_fps=...)` supplies it.
+2. `config.exposure_fps_warnings()` reports any instrument whose
+   configured exposure cannot meet `recording.fps`, logged at
+   `load_config()`.
+3. `settings.py`'s Preview reports what a calibration achieved --
+   "exposure 30.0ms | gain 2.6x of 4.0 max | allows ~33fps" -- and calls
+   it out explicitly when that falls below the recording target.
+
+**Why the clamp needed no restructuring:** the existing algorithm already
+spills onto Gain "once ExposureTime is clamped at its range limit". Only
+the limit was wrong -- the sensor's maximum rather than the frame budget.
+Lowering it makes the existing spill do the right thing, so this is a
+one-line behavioural change plus its plumbing, not a new search strategy.
+
+**The budget never asks for less than the sensor can do.** It is clamped
+to at least `exposure_range_us[0]`. A frame-rate target this camera cannot
+physically meet is a reason to warn, not a reason to request an impossible
+exposure and get nothing.
+
+**Warning, not ConfigError.** A slow camera still records usable video;
+refusing to start would be a worse failure than the one being reported,
+and would brick the current install (`config.json` carries the 87.2ms
+value today). Loud and visible, not fatal.
+
+**Reporting is the half that actually prevents a repeat.** The 87ms case
+was not a missing setting -- the setting existed and was set. What was
+missing was any statement of its cost. "87208.816" is unjudgeable;
+"11fps, gain 1.0 of 4.0 max" is obviously wrong to anyone. That is why
+the fix is a status line rather than another slider, per CLAUDE.md's
+"Camera configuration: who decides what".
+
+**`auto_calibrate()` falls back to the camera's own `target_fps`** when
+the caller names none, so `app.py`'s runtime path is bounded too -- but
+`settings.py`'s Preview cameras deliberately never receive `target_fps`
+(they must not cap acquisition), which is exactly why calibration takes
+it as its own argument rather than reading the camera's.
+
+**Verified by calculation, not hardware** -- no IDS camera is attached.
+`exposure_fps_warnings()` fires correctly against the real `config.json`
+("BI900: exposure 87.2ms limits this camera to about 11fps, below the
+30fps recording target"). The regression test runs the real convergence
+loop from a near-black frame and confirms it now lands inside a 30fps
+budget by using gain rather than spending the frame interval. What the
+slit lamp actually settles on has to be re-measured in the room.
+
+**Tests:** `test_exposure_calibration.py` +7 (budget arithmetic, the
+clamp-and-spill, the sensor-minimum floor, a non-binding budget being a
+no-op, and the slit-lamp convergence regression alongside the unbounded
+behaviour it replaces); `test_config.py` +6; `test_settings.py` +3 for
+the cost line. Full suite 296.

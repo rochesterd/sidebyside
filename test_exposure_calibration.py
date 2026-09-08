@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 
 from exposure_calibration import (
+    exposure_budget_us,
     center_crop,
     channel_medians,
     is_converged,
@@ -186,6 +187,93 @@ class NextBalanceRatiosTest(unittest.TestCase):
         )
         self.assertEqual(new_red, 4.0)  # clamped at max
         self.assertEqual(new_blue, 1.0)
+
+
+class ExposureBudgetTest(unittest.TestCase):
+    """Exposure time is a frame-rate budget: a sensor exposing for E
+    microseconds cannot deliver faster than 1/E."""
+
+    def test_budget_is_the_frame_interval_less_readout_headroom(self):
+        # 30fps -> 33.33ms interval, times the 0.9 headroom fraction.
+        self.assertAlmostEqual(exposure_budget_us(30), 30_000.0, delta=1.0)
+        self.assertAlmostEqual(exposure_budget_us(60), 15_000.0, delta=1.0)
+
+    def test_budget_rejects_a_non_positive_rate(self):
+        for bad in (0, -30):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    exposure_budget_us(bad)
+
+
+class NextExposureGainBudgetTest(unittest.TestCase):
+    def test_without_a_budget_exposure_absorbs_everything(self):
+        """The pre-existing behaviour, kept as the contrast for the test
+        below -- this is what produced 87ms on the slit lamp."""
+        exposure, gain = next_exposure_gain(
+            median=48.0,
+            exposure_time_us=15_000.0,
+            exposure_range_us=(10.0, 200_000.0),
+            gain=1.0,
+            gain_range=(1.0, 4.0),
+            target=128.0,
+        )
+        self.assertAlmostEqual(exposure, 40_000.0, delta=1.0)
+        self.assertEqual(gain, 1.0)
+
+    def test_a_budget_caps_exposure_and_spills_the_remainder_onto_gain(self):
+        exposure, gain = next_exposure_gain(
+            median=48.0,
+            exposure_time_us=15_000.0,
+            exposure_range_us=(10.0, 200_000.0),
+            gain=1.0,
+            gain_range=(1.0, 4.0),
+            target=128.0,
+            max_exposure_us=exposure_budget_us(30),
+        )
+        self.assertAlmostEqual(exposure, 30_000.0, delta=1.0)
+        self.assertAlmostEqual(gain, 40_000.0 / 30_000.0, places=3)
+
+    def test_the_budget_never_asks_for_less_than_the_sensor_can_do(self):
+        exposure, _gain = next_exposure_gain(
+            median=48.0,
+            exposure_time_us=15_000.0,
+            exposure_range_us=(20_000.0, 200_000.0),
+            gain=1.0,
+            gain_range=(1.0, 4.0),
+            target=128.0,
+            max_exposure_us=5_000.0,
+        )
+        self.assertEqual(exposure, 20_000.0)
+
+    def test_a_budget_that_is_not_binding_changes_nothing(self):
+        args = dict(
+            median=100.0, exposure_time_us=10_000.0, exposure_range_us=(10.0, 200_000.0),
+            gain=1.0, gain_range=(1.0, 4.0), target=128.0,
+        )
+        self.assertEqual(
+            next_exposure_gain(**args),
+            next_exposure_gain(**args, max_exposure_us=exposure_budget_us(30)),
+        )
+
+    def test_the_slit_lamp_regression_converges_inside_the_frame_budget(self):
+        """Run the loop the way auto_calibrate() does, from a near-black
+        frame, and confirm it lands inside a 30fps budget by using gain
+        rather than spending the whole frame interval."""
+        exposure, gain = 15_000.0, 1.0
+        budget = exposure_budget_us(30)
+        median = 20.0
+        for _ in range(8):
+            if is_converged(median, 128.0, 10.0):
+                break
+            exposure, gain = next_exposure_gain(
+                median, exposure, (10.0, 200_000.0), gain, (1.0, 4.0),
+                target=128.0, max_exposure_us=budget,
+            )
+            median = min(255.0, 20.0 * (exposure / 15_000.0) * gain)
+
+        self.assertLessEqual(exposure, budget)
+        self.assertGreater(gain, 1.0)
+        self.assertGreaterEqual(1_000_000.0 / exposure, 30.0)
 
 
 if __name__ == "__main__":

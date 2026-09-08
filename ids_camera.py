@@ -74,6 +74,7 @@ from exposure_calibration import (
     DEFAULT_WB_TOLERANCE,
     center_crop,
     channel_medians,
+    exposure_budget_us,
     is_converged,
     is_white_balanced,
     median_brightness,
@@ -558,6 +559,7 @@ class IdsCamera(BaseCamera):
         target: float = DEFAULT_TARGET_MEDIAN,
         tolerance: float = DEFAULT_TOLERANCE,
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        target_fps: float | None = None,
     ) -> bool:
         """One-shot software auto-exposure for a camera with no
         ExposureAuto/GainAuto (see needs_manual_calibration()) -- run once
@@ -578,6 +580,13 @@ class IdsCamera(BaseCamera):
         self._ensure_manual_gain()
         exposure_range = self.exposure_time_range_us()
         gain_range = self.gain_range()
+        # Exposure is a frame-rate budget. Without this the search spends
+        # the whole frame interval to avoid gain -- see
+        # next_exposure_gain()'s docstring and DECISIONS.md. Falls back to
+        # this camera's own acquisition target if the caller didn't name
+        # one; None on both means the old unbounded behaviour.
+        fps = target_fps if target_fps is not None else self._target_fps
+        max_exposure_us = exposure_budget_us(fps) if fps else None
 
         for _ in range(max_iterations):
             image = center_crop(self._wait_for_fresh_frame())
@@ -586,7 +595,13 @@ class IdsCamera(BaseCamera):
                 return True
 
             new_exposure, new_gain = next_exposure_gain(
-                median, self.get_exposure_time_us(), exposure_range, self.get_gain(), gain_range, target=target
+                median,
+                self.get_exposure_time_us(),
+                exposure_range,
+                self.get_gain(),
+                gain_range,
+                target=target,
+                max_exposure_us=max_exposure_us,
             )
             self.set_exposure_time_us(new_exposure)
             self.set_gain(new_gain)

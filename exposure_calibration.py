@@ -37,6 +37,11 @@ DEFAULT_MAX_ITERATIONS = 8
 # guess, not a measurement -- revisit once real footage is available.
 DEFAULT_METERING_FRACTION = 0.5
 
+# A sensor cannot expose for the whole frame interval -- readout and
+# transfer need part of it -- so the usable budget is a fraction of the
+# nominal period rather than all of it.
+DEFAULT_EXPOSURE_BUDGET_FRACTION = 0.9
+
 DEFAULT_WB_TOLERANCE = 5.0
 DEFAULT_WB_MAX_ITERATIONS = 8
 
@@ -111,6 +116,24 @@ def is_converged(
     return abs(median - target) <= tolerance
 
 
+def exposure_budget_us(
+    target_fps: float, fraction: float = DEFAULT_EXPOSURE_BUDGET_FRACTION
+) -> float:
+    """The longest exposure that still leaves room for `target_fps`.
+
+    Exposure time is a frame-rate budget, not a free parameter: a sensor
+    exposing for E microseconds cannot deliver frames faster than 1/E.
+    Anything above this ceiling costs frame rate *and* smears motion --
+    the exact motion this app exists to record. That makes it a
+    constraint rather than a preference, which is why it lives here and
+    not in a settings dialog. See CLAUDE.md's "Camera configuration: who
+    decides what".
+    """
+    if target_fps <= 0:
+        raise ValueError(f"target_fps must be positive, got {target_fps!r}")
+    return (1_000_000.0 / target_fps) * fraction
+
+
 def next_exposure_gain(
     median: float,
     exposure_time_us: float,
@@ -118,16 +141,33 @@ def next_exposure_gain(
     gain: float,
     gain_range: tuple[float, float],
     target: float = DEFAULT_TARGET_MEDIAN,
+    max_exposure_us: float | None = None,
 ) -> tuple[float, float]:
     """One correction step toward `target` median brightness.
 
-    Scales ExposureTime by the brightness ratio first. Only spills the
-    remainder onto Gain once ExposureTime is clamped at its range limit, so
-    a target reachable by ExposureTime alone never touches Gain at all.
+    Scales ExposureTime by the brightness ratio first, spilling the
+    remainder onto Gain once ExposureTime is clamped -- so a target
+    reachable by ExposureTime alone never touches Gain.
+
+    `max_exposure_us` (from exposure_budget_us()) tightens that clamp to
+    the frame-rate budget rather than the sensor's own maximum. Without
+    it this function will happily spend the whole frame interval to avoid
+    a little gain, which is correct for stills and wrong for video: it
+    produced an 87ms exposure on the slit lamp, capping it at ~11fps
+    against a 30fps target and putting 87ms of motion blur on every
+    frame, while 4x of gain headroom sat unused. See DECISIONS.md's
+    "Camera configuration: which layer owns what" entry.
     """
     ratio = target / max(median, 1.0)
     exposure_min, exposure_max = exposure_range_us
     gain_min, gain_max = gain_range
+
+    if max_exposure_us is not None:
+        # Never below what the sensor can physically do: a frame-rate
+        # target this camera cannot meet is a reason to warn (see
+        # config.check_exposure_fits_fps), not a reason to ask it for an
+        # impossible exposure.
+        exposure_max = max(exposure_min, min(exposure_max, max_exposure_us))
 
     desired_exposure = exposure_time_us * ratio
     new_exposure = min(exposure_max, max(exposure_min, desired_exposure))

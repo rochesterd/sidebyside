@@ -12,7 +12,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from config import ConfigError, load_config, resolve_default_config_path, resolve_default_sessions_dir
+from config import (
+    ConfigError,
+    achievable_fps,
+    exposure_fps_warnings,
+    load_config,
+    resolve_default_config_path,
+    resolve_default_sessions_dir,
+)
 
 VALID = {
     "instruments": {
@@ -463,6 +470,63 @@ class DefaultPathsTest(unittest.TestCase):
                 resolve_default_sessions_dir(),
                 Path("C:\\Users\\Public") / "Documents" / "sidebyside" / "sessions",
             )
+
+
+class ExposureFpsWarningTest(unittest.TestCase):
+    """An exposure that cannot meet the recording frame rate is a warning,
+    not a ConfigError: a slow camera still records usable video, and
+    refusing to start would be worse than the problem. But it must be
+    visible -- this went unnoticed for weeks. See CLAUDE.md's "Camera
+    configuration: who decides what".
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.path = Path(self._tmpdir.name) / "config.json"
+
+    def _write(self, data: dict) -> None:
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_achievable_fps_is_the_reciprocal_of_exposure(self):
+        self.assertAlmostEqual(achievable_fps(87_208.816), 11.47, places=1)
+        self.assertAlmostEqual(achievable_fps(33_333.0), 30.0, places=1)
+
+    def test_the_real_slit_lamp_value_warns_against_a_30fps_target(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 87208.816
+        data["instruments"]["slit_lamp"]["gain"] = 1.0
+        self._write(data)
+
+        warnings = exposure_fps_warnings(load_config(self.path))
+
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("87.2ms", warnings[0])
+        self.assertIn("11fps", warnings[0])
+        self.assertIn("30fps", warnings[0])
+
+    def test_an_exposure_that_meets_the_target_does_not_warn(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 20_000.0
+        self._write(data)
+        self.assertEqual(exposure_fps_warnings(load_config(self.path)), [])
+
+    def test_no_configured_exposure_means_nothing_to_check(self):
+        self._write(VALID)
+        self.assertEqual(exposure_fps_warnings(load_config(self.path)), [])
+
+    def test_the_warning_follows_the_configured_recording_fps(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 87208.816
+        data["recording"] = {"fps": 10}
+        self._write(data)
+        self.assertEqual(exposure_fps_warnings(load_config(self.path)), [])
+
+    def test_a_too_long_exposure_is_not_a_hard_error(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["exposure_time_us"] = 87208.816
+        self._write(data)
+        load_config(self.path)
 
 
 if __name__ == "__main__":
