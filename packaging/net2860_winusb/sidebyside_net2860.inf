@@ -1,0 +1,61 @@
+; sidebyside_net2860.inf
+;
+; Binds the older Keeler Vantage Plus BIO's camera (NET GmbH KS722OUP, an
+; eMPIA EM2860 bridge) to Microsoft's inbox WinUSB driver, so
+; net2860_winusb_camera.py can drive it from user mode.
+;
+; This package contains NO binaries of its own. Every install section is an
+; Include/Needs reference into the inbox WINUSB.inf, so the only kernel
+; driver involved is Microsoft's already-signed winusb.sys. That is the
+; whole point: there is no kernel code here to sign, so this needs neither
+; an EV certificate nor a Partner Center submission -- only an ordinary
+; driver-package signature. See DECISIONS.md's 2026-09-09 entries.
+;
+; It REPLACES Keeler's vendor driver for this hardware ID. The two are
+; mutually exclusive; only one can be bound at a time. To go back, point
+; Device Manager at Keeler's own driver folder.
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
+Provider    = %ProviderName%
+CatalogFile = sidebyside_net2860.cat
+DriverVer   = 09/09/2026,1.0.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%ProviderName% = Standard, NTamd64
+
+[Standard.NTamd64]
+%DeviceName% = USB_Install, USB\VID_20F1&PID_0004
+
+; The inbox WINUSB.inf requires an external INF to reference each of these
+; three DDInstall sections, even where we add nothing of our own to them --
+; it says so in its own header comment, and it is how that INF stays
+; extensible across Windows releases.
+[USB_Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[USB_Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[USB_Install.HW]
+Include = winusb.inf
+Needs   = WINUSB.NT.HW
+AddReg  = Dev_AddReg
+
+; Without a DeviceInterfaceGUID the device has no interface to enumerate
+; and SetupAPI cannot find it, so winusb.py's find_by_vid_pid() would
+; return nothing even with the driver correctly bound. This GUID is fixed
+; for the life of the product -- winusb.py does not hardcode it (it reads
+; whatever the INF registered), but changing it would still orphan any
+; caller that cached it.
+[Dev_AddReg]
+HKR,,DeviceInterfaceGUIDs,0x10000,"{CE873099-195F-4601-9800-F9748A92CB41}"
+
+[Strings]
+ProviderName = "NECO sidebyside"
+DeviceName   = "Keeler Vantage Plus BIO camera (sidebyside WinUSB)"
