@@ -178,6 +178,14 @@ can't be verified, the installer shows an explicit error dialog rather
 than continuing silently — confirm that path too by temporarily renaming
 `vendor\ids-peak-response.iss` before a test run.
 
+**Status 2026-09-09:** run end to end once on a second machine — both
+shortcuts launched, IDS peak installed silently, the Finished restart
+page appeared, and the installed `app.exe` recorded a real session with
+the slit lamp attached. Not yet exercised: the re-run-skips-reinstall
+path on a machine that already has IDS peak, and the failed-silent-install
+error dialog (the rename-`vendor\ids-peak-response.iss` test). See
+`DECISIONS.md`'s 2026-09-09 entry.
+
 ## 6. Compile the viewer-only installer
 
 Needs only step 2's `viewer.spec` build — no `vendor/` contents, no

@@ -3162,6 +3162,11 @@ is close enough to symmetric that a wrong orientation would not be
 obvious. If it is wrong, `config.json`'s `orientation` overrides the
 preset without a code change.
 
+**Verified 2026-09-09.** Checked on a second machine against a subject
+with an obvious top and bottom, using the real BI 900 camera -- the image
+is correctly oriented. The caveat above is kept for the record; it no
+longer blocks trusting the preset. See the 2026-09-09 entry below.
+
 ---
 
 ## 2026-09-08 - Documentation caught up with the day's hardware work
@@ -3218,3 +3223,39 @@ replacement did not match and the script had no assertion on that one
 edit, so it reported success. Every replacement in this pass asserts its
 target exists first. A patch script without an assert is a patch script
 that lies.
+
+---
+
+## 2026-09-09 - Clinic installer and slit-lamp rotation verified on a second machine
+
+Verification milestone, not a new decision -- recorded so the caveats it
+closes leave a trail, same as the 2026-09-08 doc catch-up entry above.
+
+**The full clinic installer was run end to end on a second machine.**
+`sidebyside-setup.exe` installed, both the Desktop and Start-menu
+shortcuts launched their `.exe`s, the bundled IDS peak SDK installed
+silently, the Finished page showed the native restart choice, and the
+installed `app.exe` recorded a real session with the slit lamp camera
+attached. This exercises most of PACKAGING.md step 5's "before handing
+this to anyone" checklist. Two sub-checks are still not explicitly done
+and stay in that checklist: that re-running the installer on a machine
+with a current-enough IDS peak skips reinstalling it
+(`IdsPeakAlreadyInstalled`), and that a failed silent install shows the
+explicit error dialog rather than continuing (the
+rename-`vendor\ids-peak-response.iss` test). The viewer-only installer
+(step 6) is still untested on a clean machine.
+
+**The slit lamp's 180-degree rotation preset is now visually verified.**
+The 2026-09-08 "Slit lamp image is rotated 180 degrees" entry shipped the
+`rotate_180` preset on a verbal report alone and flagged that the usual
+beam-on-black subject is too near-symmetric to confirm it by eye.
+Checked on the second machine against a subject with an obvious top and
+bottom, using the real BI 900 camera: correctly oriented. That entry's
+"NOT visually verified" caveat is closed.
+
+**One stale ROADMAP note corrected while here:** the 2026-08-20
+frozen-exe entry still described relocating `config.json` to
+`%ProgramData%` as "not yet implemented." It has been implemented since
+that work -- `config.py`'s `resolve_default_config_path()` returns
+`%ProgramData%\sidebyside\config.json` under `is_frozen()`, and stays
+CWD-relative in dev/test.

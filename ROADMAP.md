@@ -406,15 +406,15 @@ instead of trying to heuristically detect its absence at runtime.
 
 ### Status
 
-**Built 2026-08-25** — see DECISIONS.md's "Built the exposure/gain
-calibration feature" entry for what actually landed, including the
-`exposure_calibration.py` split (for unit-testability without the IDS peak
-SDK) and the one part of this that's still unverified: the
-`ExposureTime`/`Gain` node accessor names, since this dev machine has no
-`ids_peak` installed to check them against `vendor/ids_peak_api.txt` or
-real hardware. Confirming those, the same way `_converge_auto_exposure()`
-already was via `tools/smoke_test_camera.py`, is the one remaining step
-before trusting this in a real session.
+**Built 2026-08-25, hardware-verified 2026-09-08.** See DECISIONS.md's
+"Built the exposure/gain calibration feature" entry for what actually
+landed, including the `exposure_calibration.py` split (for unit-testability
+without the IDS peak SDK). The `ExposureTime`/`Gain` accessors and the
+convergence path were exercised against both real cameras on 2026-09-08 —
+see that date's "Documentation caught up with the day's hardware work"
+entry. Still unverifiable on this hardware: the manual white-balance path
+(`auto_white_balance()` / `BalanceRatio`), since neither camera has the
+node shape it needs — that entry says what a test rig would require.
 
 ---
 
@@ -618,8 +618,10 @@ code, no terminal, ever touched by them.
 - **`config.json` relocates off the source tree.** There's no repo
   checkout on a target machine in this model, so `config.py`'s path
   resolution needs a real home for it — likely
-  `%ProgramData%\sidebyside\config.json`. Not yet implemented; existing
-  `load_config()`/`config.example.json` behavior otherwise unaffected.
+  `%ProgramData%\sidebyside\config.json`. **Implemented** in
+  `config.py`'s `resolve_default_config_path()` (gated on `is_frozen()`);
+  dev/test stays CWD-relative, and `load_config()`/`config.example.json`
+  behavior is otherwise unaffected.
 - **Inno Setup builds the actual installer** (chosen over WiX Toolset —
   lower learning curve, single `.exe` output, matches this project's
   scale). Its job: copy `app.exe`/`settings.exe` to Program Files, create
