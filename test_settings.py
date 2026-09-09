@@ -61,6 +61,11 @@ class SettingsWindowTest(unittest.TestCase):
         self,
         ids_devices: list = (),
         uvc_devices: list = (),
+        # Injected and empty by default so these tests never depend on
+        # whether a legacy BIO happens to be plugged into the machine
+        # running them -- unlike the vendor-driver candidate, the WinUSB one
+        # is discovered rather than always offered.
+        winusb_devices: list = (),
         instrument_preview_factory=lambda candidate: SyntheticCamera(160, 120, fps=30),
         uvc_preview_factory=lambda candidate: SyntheticCamera(160, 120, fps=30),
     ) -> SettingsWindow:
@@ -68,6 +73,7 @@ class SettingsWindowTest(unittest.TestCase):
             config_path=self.config_path,
             list_ids_devices_fn=lambda: list(ids_devices),
             list_uvc_devices_fn=lambda: list(uvc_devices),
+            list_net2860_winusb_fn=lambda: list(winusb_devices),
             instrument_preview_camera_factory=instrument_preview_factory,
             uvc_preview_camera_factory=uvc_preview_factory,
         )
@@ -294,6 +300,63 @@ class SettingsWindowTest(unittest.TestCase):
 
         self.assertIn("net2860", bio_keys)
         self.assertNotIn("net2860", slit_lamp_keys)  # BIO-specific, not offered on slit lamp
+
+    def test_winusb_candidate_is_offered_only_when_one_is_detected(self):
+        # The vendor-driver candidate is static because that route can't be
+        # scanned for. This one can be, so an absent camera (or an
+        # uninstalled driver package) must show up as nothing offered rather
+        # than as an entry that fails when selected.
+        absent = self._make_window()
+        self.assertNotIn(
+            "net2860_winusb", {c.key for c in absent._instrument_rows["bio"]._candidates}
+        )
+
+        present = self._make_window(winusb_devices=[("USB\\VID_20F1&PID_0004\\x", "\\\\?\\usb#x")])
+        bio_keys = {c.key for c in present._instrument_rows["bio"]._candidates}
+        slit_lamp_keys = {c.key for c in present._instrument_rows["slit_lamp"]._candidates}
+
+        self.assertIn("net2860_winusb", bio_keys)
+        self.assertNotIn("net2860_winusb", slit_lamp_keys)  # BIO-specific
+
+    def test_two_detected_winusb_devices_still_offer_one_candidate(self):
+        # There is exactly one of this camera, and the candidate carries no
+        # identity to tell two apart -- so a duplicated enum entry must not
+        # produce two indistinguishable dropdown rows.
+        window = self._make_window(winusb_devices=[("a", "pa"), ("b", "pb")])
+
+        keys = [c.key for c in window._instrument_rows["bio"]._candidates]
+        self.assertEqual(keys.count("net2860_winusb"), 1)
+
+    def test_selecting_winusb_and_saving_writes_expected_json_shape(self):
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE],
+            uvc_devices=[THIRD_PERSON_DEVICE],
+            winusb_devices=[("USB\\VID_20F1&PID_0004\\x", "\\\\?\\usb#x")],
+        )
+        _select(window._instrument_rows["slit_lamp"], "111")
+        window._instrument_rows["slit_lamp"].label_edit.setText("Slit Lamp")
+        _select(window._instrument_rows["bio"], "net2860_winusb")
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860_winusb", "label": "BIO"})
+
+    def test_existing_winusb_config_preselects_it_on_load(self):
+        data = json.loads(json.dumps(VALID_CONFIG))
+        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO"}
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE],
+            uvc_devices=[THIRD_PERSON_DEVICE],
+            winusb_devices=[("USB\\VID_20F1&PID_0004\\x", "\\\\?\\usb#x")],
+        )
+
+        self.assertEqual(window._instrument_rows["bio"].selected_key(), "net2860_winusb")
+        self.assertEqual(window._instrument_rows["bio"].label_text(), "BIO")
 
     def test_selecting_net2860_and_saving_writes_expected_json_shape(self):
         window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE])

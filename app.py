@@ -503,6 +503,17 @@ def _make_camera(
     if synthetic:
         return SyntheticCamera(*resolution, name=name, fps=30)
 
+    if inst.kind == "net2860_winusb":
+        # The same legacy BIO camera as "net2860" below, but through
+        # Microsoft's inbox winusb.sys in-process instead of Keeler's vendor
+        # driver and a 32-bit helper subprocess. Lazily imported for the
+        # same reason as the others -- winusb.py binds Windows DLLs at
+        # import time, which is pointless on a machine running --synthetic.
+        # No target_fps: this camera is fixed at PAL's 25fps.
+        from net2860_winusb_camera import Net2860WinUsbCamera
+
+        return Net2860WinUsbCamera(label=name)
+
     if inst.kind == "net2860":
         # Imported lazily, not at module level: net2860_camera.py's default
         # paths assume .venv32/ exists, which it won't on a dev machine

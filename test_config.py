@@ -134,6 +134,49 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
+    def test_net2860_winusb_instrument_loads_with_no_serial(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO"}
+        self._write(data)
+
+        cfg = load_config(self.path)
+
+        self.assertEqual(cfg.instruments["bio"].kind, "net2860_winusb")
+        self.assertIsNone(cfg.instruments["bio"].serial)
+        self.assertEqual(cfg.instruments["bio"].label, "BIO")
+
+    def test_net2860_winusb_instrument_rejects_the_same_fields_as_net2860(self):
+        # Same camera, different driver route -- so the same empty config
+        # shape. The AE/AWB loop runs on the camera board either way, and
+        # the orientation is a fixed property of the instrument's optics.
+        for field, value in [
+            ("serial", "222"),
+            ("exposure_time_us", 1000.0),
+            ("gain", 2.0),
+            ("red_balance_ratio", 1.5),
+            ("blue_balance_ratio", 1.5),
+            ("orientation", "flip_vertical"),
+            ("pixel_clock_hz", 60_000_000),
+        ]:
+            with self.subTest(field=field):
+                data = json.loads(json.dumps(VALID))
+                data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO", field: value}
+                self._write(data)
+
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+    def test_an_unknown_kind_names_all_three(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {"kind": "net2860_usb", "label": "BIO"}
+        self._write(data)
+
+        with self.assertRaises(ConfigError) as ctx:
+            load_config(self.path)
+        message = str(ctx.exception)
+        for kind in ("ids", "net2860", "net2860_winusb"):
+            self.assertIn(kind, message)
+
     def test_net2860_instrument_still_requires_label(self):
         data = json.loads(json.dumps(VALID))
         data["instruments"]["bio"] = {"kind": "net2860"}

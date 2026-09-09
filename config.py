@@ -229,30 +229,42 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         raise ConfigError(f"{path}: instruments.{key} must be an object. {_FIX_HINT}")
 
     kind = entry.get("kind")
-    if kind not in ("ids", "net2860"):
+    if kind not in ("ids", "net2860", "net2860_winusb"):
         raise ConfigError(
-            f"{path}: instruments.{key}.kind must be \"ids\" or \"net2860\", got {kind!r}. {_FIX_HINT}"
+            f"{path}: instruments.{key}.kind must be \"ids\", \"net2860\" or "
+            f"\"net2860_winusb\", got {kind!r}. {_FIX_HINT}"
         )
 
     label = entry.get("label")
     if not isinstance(label, str) or not label:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
 
-    if kind == "net2860":
-        # No serial (there's exactly one of this camera, no identification
-        # scheme -- see DECISIONS.md's "Net2860Camera" entry) and no
-        # exposure/gain/white-balance calibration (not implemented for this
-        # camera). Rejected loudly rather than silently ignored, so
-        # copy-pasting an "ids" entry and only changing "kind" fails fast
-        # instead of producing a config.json that looks configured but
-        # isn't.
+    if kind in ("net2860", "net2860_winusb"):
+        # Both routes to the same legacy BIO camera: "net2860" through
+        # Keeler's vendor driver and a 32-bit helper, "net2860_winusb"
+        # through Microsoft's inbox winusb.sys in-process. They take the
+        # same (empty) configuration for the same reasons.
+        #
+        # No serial: there's exactly one of this camera and no
+        # identification scheme -- see DECISIONS.md's "Net2860Camera"
+        # entry. No exposure/gain/white-balance either, and that is not a
+        # missing feature: the AE/AWB loop runs on the camera board itself
+        # (a Sony CXD3172AR with a C8051F321 closing the loop), where the
+        # host cannot reach it. No orientation, because the flip this
+        # instrument's optics need is a fixed property of the hardware, not
+        # a room-level choice -- it belongs in code, not in a settings
+        # dialog. See CLAUDE.md's "who decides what" table.
+        #
+        # Rejected loudly rather than silently ignored, so copy-pasting an
+        # "ids" entry and only changing "kind" fails fast instead of
+        # producing a config.json that looks configured but isn't.
         unexpected = {
             "serial", "exposure_time_us", "gain", "red_balance_ratio", "blue_balance_ratio",
             "orientation", "pixel_clock_hz"
         } & entry.keys()
         if unexpected:
             raise ConfigError(
-                f"{path}: instruments.{key} is kind \"net2860\", which doesn't take "
+                f"{path}: instruments.{key} is kind \"{kind}\", which doesn't take "
                 f"{', '.join(sorted(unexpected))}. {_FIX_HINT}"
             )
         return InstrumentConfig(kind=kind, serial=None, label=label)

@@ -103,11 +103,39 @@ def _default_make_net2860_camera(_candidate: RowCandidate) -> BaseCamera:
     return Net2860Camera(label="preview")
 
 
+def _default_make_net2860_winusb_camera(_candidate: RowCandidate) -> BaseCamera:
+    from net2860_winusb_camera import Net2860WinUsbCamera
+
+    return Net2860WinUsbCamera(label="preview")
+
+
+def _default_list_net2860_winusb() -> list:
+    """Present-and-bound legacy BIO cameras, or [] if there are none.
+
+    Unlike the vendor-driver route this really is a device scan: a WinUSB
+    device has an enumerable interface, so we can tell "camera plugged in
+    and driver installed" from "not there". Errors are swallowed into an
+    empty list -- winusb.py binds Windows DLLs at import, and a settings.py
+    that refuses to open because one optional camera's discovery failed
+    would be worse than one that simply doesn't offer it.
+    """
+    try:
+        import winusb
+        from net2860_winusb_camera import PID, VID
+
+        return winusb.find_by_vid_pid(VID, PID)
+    except Exception:  # noqa: BLE001 -- see docstring
+        logger.exception("legacy BIO (WinUSB) discovery failed; offering no candidate")
+        return []
+
+
 def _default_make_instrument_camera(candidate: RowCandidate) -> BaseCamera:
     """Shared preview factory for both instrument rows (slit lamp, BIO) --
     branches per-candidate rather than per-row, since the BIO row can offer
     both "ids" and "net2860" candidates. See DECISIONS.md's "Net2860Camera"
     entry."""
+    if candidate.kind == "net2860_winusb":
+        return _default_make_net2860_winusb_camera(candidate)
     if candidate.kind == "net2860":
         return _default_make_net2860_camera(candidate)
     return _default_make_ids_camera(candidate)
@@ -141,6 +169,28 @@ def _net2860_candidates() -> list[RowCandidate]:
             preview_target=None,
             source=None,
         )
+    ]
+
+
+def _net2860_winusb_candidates(devices: list) -> list[RowCandidate]:
+    """The same camera as _net2860_candidates(), reached through WinUSB.
+
+    This one *is* device-scanned: a WinUSB-bound device has an enumerable
+    interface, so an empty list here means something real -- either the
+    camera isn't plugged in, or the driver package hasn't been installed on
+    this machine. Offering nothing is the honest answer in both cases,
+    which is why this is not a static candidate the way the vendor-driver
+    one has to be.
+    """
+    return [
+        RowCandidate(
+            key="net2860_winusb",
+            kind="net2860_winusb",
+            display_name="Legacy BIO (NET GmbH KS722OUP, WinUSB)",
+            preview_target=None,
+            source=None,
+        )
+        for _ in devices[:1]
     ]
 
 
@@ -706,6 +756,7 @@ class SettingsWindow(QMainWindow):
         config_path: Path | str = DEFAULT_CONFIG_PATH,
         list_ids_devices_fn: Callable[[], list] = _default_list_ids_devices,
         list_uvc_devices_fn: Callable[[], list[UvcDeviceInfo]] = list_uvc_devices,
+        list_net2860_winusb_fn: Callable[[], list] = _default_list_net2860_winusb,
         instrument_preview_camera_factory: Callable[[RowCandidate], BaseCamera] = _default_make_instrument_camera,
         uvc_preview_camera_factory: Callable[[RowCandidate], BaseCamera] = _default_make_uvc_camera,
     ):
@@ -717,6 +768,7 @@ class SettingsWindow(QMainWindow):
         self._recording_fps: float = DEFAULT_RECORDING_FPS
         self._list_ids_devices_fn = list_ids_devices_fn
         self._list_uvc_devices_fn = list_uvc_devices_fn
+        self._list_net2860_winusb_fn = list_net2860_winusb_fn
 
         self.warning_label = QLabel()
         self.warning_label.setWordWrap(True)
@@ -899,10 +951,18 @@ class SettingsWindow(QMainWindow):
     def rescan(self) -> None:
         ids_devices, ids_status = self._safe_list_ids_devices()
         ids_candidates = _ids_candidates(ids_devices)
+        winusb_devices = self._list_net2860_winusb_fn()
         for key, row in self._instrument_rows.items():
             # "bio" only: this camera is a BIO-specific alternative, not a
-            # slit-lamp one -- see DECISIONS.md's "Net2860Camera" entry.
-            candidates = ids_candidates + _net2860_candidates() if key == "bio" else ids_candidates
+            # slit-lamp one -- see DECISIONS.md's "Net2860Camera" entry. The
+            # WinUSB candidate appears only when one is actually present and
+            # bound; the vendor-driver one is always offered because it
+            # can't be scanned for.
+            if key == "bio":
+                candidates = (ids_candidates + _net2860_winusb_candidates(winusb_devices)
+                              + _net2860_candidates())
+            else:
+                candidates = ids_candidates
             row.set_candidates(candidates, status=ids_status)
 
         uvc_devices = self._list_uvc_devices_fn()
@@ -951,8 +1011,10 @@ class SettingsWindow(QMainWindow):
 
     def _instrument_data(self, row: DeviceRow) -> dict:
         candidate = row.selected_candidate()
-        if candidate is not None and candidate.kind == "net2860":
-            return {"kind": "net2860", "label": row.label_text()}
+        if candidate is not None and candidate.kind in ("net2860", "net2860_winusb"):
+            # Both take the same empty shape -- no serial, no calibration,
+            # no orientation. See config.py's _parse_instrument.
+            return {"kind": candidate.kind, "label": row.label_text()}
 
         data = {"kind": "ids", "serial": row.selected_key(), "label": row.label_text()}
         exposure_time_us, gain = row.calibration()
