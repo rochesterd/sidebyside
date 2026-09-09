@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
-from config import resolve_default_sessions_dir
+from config import load_config, resolve_default_sessions_dir
 from settings import DeviceRow, SettingsWindow
 from synthetic_camera import SyntheticCamera
 from uvc_enumeration import UvcDeviceInfo
@@ -106,7 +106,15 @@ class SettingsWindowTest(unittest.TestCase):
         self.assertIsNone(window._instrument_rows["slit_lamp"].selected_key())
         self.assertEqual(window._instrument_rows["slit_lamp"].label_text(), "Slit Lamp")  # label still loaded
         self.assertEqual(window._instrument_rows["bio"].selected_key(), "222")
-        self.assertFalse(window.save_button.isEnabled())
+        # Saving is allowed -- a room may have only one instrument -- but the
+        # consequence is spelled out first, because an absent camera here is
+        # far more likely to be one that is merely unplugged than one that
+        # does not exist. This used to be a hard block; the protection is now
+        # the warning, not the disabled button.
+        self.assertTrue(window.save_button.isEnabled())
+        self.assertFalse(window.omission_label.isHidden())
+        self.assertIn("Slit Lamp", window.omission_label.text())
+        self.assertIn("Rescan", window.omission_label.text())
 
     def test_malformed_existing_config_shows_warning_without_crashing(self):
         self.config_path.write_text("{not valid json", encoding="utf-8")
@@ -133,6 +141,44 @@ class SettingsWindowTest(unittest.TestCase):
 
         _select(window._third_person_row, "32E4:9310")
         self.assertTrue(window.save_button.isEnabled())
+
+    def test_one_instrument_plus_third_person_is_enough_to_save(self):
+        # A room may have only one instrument, and a dev machine may have
+        # only the camera being worked on. What has to be true is that
+        # something records, not that every role is filled.
+        window = self._make_window(ids_devices=[BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE])
+        _select(window._instrument_rows["bio"], "222")
+        window._instrument_rows["bio"].label_edit.setText("BIO")
+        _select(window._third_person_row, "32E4:9310")
+
+        self.assertTrue(window.save_button.isEnabled())
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(list(written["instruments"]), ["bio"])
+        # And the result has to be loadable -- a config settings.py will
+        # write but config.py refuses is worse than a blocked Save button.
+        self.config_path.write_text(json.dumps(written), encoding="utf-8")
+        cfg = load_config(self.config_path)
+        self.assertEqual(list(cfg.instruments), ["bio"])
+
+    def test_no_instrument_at_all_still_blocks_save(self):
+        window = self._make_window(uvc_devices=[THIRD_PERSON_DEVICE])
+        _select(window._third_person_row, "32E4:9310")
+
+        self.assertFalse(window.save_button.isEnabled())
+
+    def test_saving_drops_a_role_whose_camera_is_no_longer_there(self):
+        self.config_path.write_text(json.dumps(VALID_CONFIG), encoding="utf-8")
+        window = self._make_window(ids_devices=[BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE])
+
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        # Not carried forward from the old file: keeping it would leave
+        # students an instrument the technician could not verify.
+        self.assertNotIn("slit_lamp", written["instruments"])
+        self.assertIn("bio", written["instruments"])
 
     def test_same_camera_picked_for_two_roles_blocks_save(self):
         window = self._make_window(

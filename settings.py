@@ -790,6 +790,17 @@ class SettingsWindow(QMainWindow):
         )
         self.conflict_label.hide()
 
+        # Amber, not red: leaving an instrument out is allowed (a room may
+        # genuinely have only one), but it must never happen by accident --
+        # a camera that was merely unplugged at configuration time would
+        # otherwise silently disappear from the students' picker.
+        self.omission_label = QLabel()
+        self.omission_label.setWordWrap(True)
+        self.omission_label.setStyleSheet(
+            "background-color: #8a6d00; color: white; font-weight: bold; padding: 8px;"
+        )
+        self.omission_label.hide()
+
         self._instrument_rows: dict[str, DeviceRow] = {
             key: DeviceRow(
                 key,
@@ -833,6 +844,7 @@ class SettingsWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addWidget(self.warning_label)
         layout.addWidget(self.conflict_label)
+        layout.addWidget(self.omission_label)
         for row in self._all_rows():
             layout.addWidget(row)
             row.changed.connect(self._update_save_enabled)
@@ -1007,7 +1019,45 @@ class SettingsWindow(QMainWindow):
             return
 
         self.conflict_label.hide()
-        self.save_button.setEnabled(all(row.is_valid() for row in self._all_rows()))
+
+        omitted = self._omitted_instrument_roles()
+        if omitted:
+            titles = " and ".join(ROLE_TITLES.get(r, r) for r in omitted)
+            was = "were" if len(omitted) > 1 else "was"
+            self.omission_label.setText(
+                f"{titles} has no camera selected and will be left out of the saved "
+                f"configuration - students won't be offered it. If that camera is simply "
+                f"not plugged in right now, connect it and press Rescan before saving; if "
+                f"it {was} already configured, saving now removes it."
+            )
+            self.omission_label.show()
+        else:
+            self.omission_label.hide()
+
+        self.save_button.setEnabled(self._can_save())
+
+    def _omitted_instrument_roles(self) -> list[str]:
+        return [key for key, row in self._instrument_rows.items() if row.selected_key() is None]
+
+    def _can_save(self) -> bool:
+        """Every instrument role used to be mandatory. It isn't any more: a
+        room may have only one instrument, and a technician configuring a
+        BIO-only machine shouldn't be blocked by a slit lamp that doesn't
+        exist. What remains mandatory is that *something* records -- at
+        least one instrument plus the third-person camera -- and that any
+        role actually selected is completely specified.
+
+        The gate that protects the student is unchanged and lives in
+        kiosk.py: Start stays disabled until the selected instrument and the
+        third-person camera are both confirmed live. This one only decides
+        what a technician is allowed to write down.
+        """
+        if self._duplicate_serial_roles():
+            return False
+        if not self._third_person_row.is_valid():
+            return False
+        selected = [r for r in self._instrument_rows.values() if r.selected_key() is not None]
+        return bool(selected) and all(r.is_valid() for r in selected)
 
     def _instrument_data(self, row: DeviceRow) -> dict:
         candidate = row.selected_candidate()
@@ -1046,7 +1096,7 @@ class SettingsWindow(QMainWindow):
         return existing if isinstance(existing, dict) else {}
 
     def _on_save_clicked(self) -> None:
-        if self._duplicate_serial_roles() or not all(row.is_valid() for row in self._all_rows()):
+        if not self._can_save():
             return
 
         base = self._existing_config_dict()
@@ -1060,6 +1110,14 @@ class SettingsWindow(QMainWindow):
         # forward, since there's no field for them here.
         instruments = dict(prior_instruments)
         for key, row in self._instrument_rows.items():
+            if row.selected_key() is None:
+                # Dropped rather than carried forward from the file: a role
+                # left unselected means "this room doesn't have one", and
+                # keeping a stale entry would leave students an instrument
+                # the technician couldn't verify. _update_save_enabled()
+                # warns before this point that it is about to happen.
+                instruments.pop(key, None)
+                continue
             entry = self._instrument_data(row)
             prior = prior_instruments.get(key)
             if entry.get("kind") == "ids" and isinstance(prior, dict):
