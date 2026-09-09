@@ -26,17 +26,40 @@
 #
 # Re-runnable: reuses an existing certificate with the same subject rather
 # than minting a new one, so a rebuild does not invalidate installs.
+#
+# BACK THE SIGNING KEY UP. It lives in this user's certificate store, not in
+# the repo, and it is the build machine's signing identity. Lose it and the
+# next build signs with a *different* identity, so every clinic machine that
+# already trusts the old certificate will reject the new package until the
+# new .cer is installed there too. The installer does install the .cer, so
+# this self-heals on a reinstall rather than bricking anything -- but it
+# turns a driver update into a certificate rollout. Export once and keep it
+# somewhere safe:
+#
+#   $c = Get-ChildItem Cert:\CurrentUser\My |
+#        Where-Object { $_.Subject -eq "CN=NECO sidebyside driver signing" }
+#   Export-PfxCertificate -Cert $c -FilePath signing-key.pfx `
+#                         -Password (Read-Host -AsSecureString)
+#
+# Import it on a new build machine with Import-PfxCertificate before running
+# this script, and it will be reused rather than replaced.
 
 [CmdletBinding()]
 param(
     [string]$CertSubject = "CN=NECO sidebyside driver signing",
-    [string]$OutDir = $PSScriptRoot,
+    # Left empty and resolved in the body: $PSScriptRoot is not reliably
+    # this script's directory while parameter defaults are being bound --
+    # with a PowerShell profile loaded it resolves to the profile's folder,
+    # which is where the .cer silently ended up the first time.
+    [string]$OutDir = "",
     # Also install into THIS machine (trust the cert, stage the driver).
     # Needs elevation. Intended for a dev/test box, not the build step.
     [switch]$Install
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $OutDir) { $OutDir = $PSScriptRoot }
 
 function Fail($msg) { Write-Host $msg -ForegroundColor Red; exit 1 }
 
@@ -62,12 +85,20 @@ if (-not $inf2cat -or -not $signtool) {
     Fail @"
 Missing driver-signing tools.
 
-  Inf2Cat.exe : $(if ($inf2cat) { $inf2cat } else { 'NOT FOUND' })
-  signtool.exe: $(if ($signtool) { $signtool } else { 'NOT FOUND' })
+  Inf2Cat.exe : $(if ($inf2cat) { $inf2cat } else { 'NOT FOUND' })   (Windows WDK)
+  signtool.exe: $(if ($signtool) { $signtool } else { 'NOT FOUND' })   (Windows SDK)
 
-Install the Windows SDK (or WDK) and tick "Windows SDK Signing Tools for
-Desktop Apps". This is a BUILD-machine requirement only -- clinic machines
-need nothing beyond the three output files.
+They come from two different kits, and installing only the SDK is the easy
+mistake -- it gets you signtool and leaves Inf2Cat missing:
+
+  SDK   tick only "Windows SDK Signing Tools for Desktop Apps" (a few MB;
+        the rest of that installer's 3.6 GB is irrelevant here)
+  WDK   winget install Microsoft.WindowsWDK.10.0.<version>
+
+The WDK version must match the installed SDK version, not the OS build.
+
+Build-machine requirement only -- clinic machines need nothing beyond the
+three output files.
 "@
 }
 Write-Host "Inf2Cat : $inf2cat"
