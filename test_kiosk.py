@@ -10,10 +10,13 @@ import tempfile
 import time
 import types
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from kiosk import KioskController, State, _frame_signature, estimate_recording_bytes
+from recorder import _StreamWriter
 from synthetic_camera import SyntheticCamera
 
 
@@ -154,6 +157,42 @@ class TestKioskControllerPreflight(unittest.TestCase):
             finally:
                 instrument.stop()
                 third_person.stop()
+
+    def test_a_missing_sessions_dir_drive_is_reported_not_raised(self):
+        """A configured sessions_dir on a drive that isn't there (a removed
+        USB disk, an offline share) makes shutil.disk_usage raise.
+        poll_preflight() must surface that as not-ready with a reason, not
+        let it propagate every poll and wedge the kiosk -- at startup it
+        would otherwise be a bare crash with only a log line. See
+        DECISIONS.md's "Config that would only fail at Start" entry.
+        """
+        def exploding_disk_usage(_path):
+            raise OSError(2, "The system cannot find the path specified")
+
+        instrument = SyntheticCamera(160, 120, fps=30)
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument.start()
+        third_person.start()
+        try:
+            controller = KioskController(
+                third_person,
+                {"instrument": instrument},
+                output_root="E:\\gone\\sessions",
+                disk_usage_fn=exploding_disk_usage,
+            )
+            controller.select_instrument("instrument")
+            time.sleep(0.2)
+
+            status = controller.poll_preflight()  # must not raise
+
+            self.assertTrue(status.cameras_ready)
+            self.assertFalse(status.disk_ok)
+            self.assertFalse(status.ok)
+            self.assertIsNotNone(status.disk_error)
+            self.assertEqual(controller.state, State.IDLE)
+        finally:
+            instrument.stop()
+            third_person.stop()
 
 
 class TestInstrumentSelection(unittest.TestCase):
@@ -515,6 +554,204 @@ class TestKioskControllerSession(unittest.TestCase):
                 # The state machine itself isn't stuck: the next preflight
                 # poll re-evaluates and moves on, even though the banner
                 # (error_message / last_session_info) stays put for the UI.
+                controller.poll_preflight()
+                self.assertNotEqual(controller.state, State.ERROR)
+            finally:
+                instrument.stop()
+                third_person.stop()
+
+    def test_start_recording_reports_a_recorder_that_cannot_start(self):
+        """The disk preflight measures free space on the nearest *existing*
+        ancestor, so it can't see a sessions_dir that can't be created (a
+        technician pointed it at a file, or somewhere unwritable). It says
+        READY and then Recorder.start() raises. That must land in ERROR
+        with a reason, not propagate into the Qt event loop and leave Start
+        silently doing nothing forever. See DECISIONS.md's 2026-09-09 entry.
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            blocker = Path(tmp_root) / "notadir.txt"
+            blocker.write_text("this is a file, not a folder", encoding="utf-8")
+
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third_person = SyntheticCamera(160, 120, fps=30, name="third-person")
+            instrument.start()
+            third_person.start()
+            try:
+                controller = KioskController(
+                    third_person,
+                    {"instrument": instrument},
+                    output_root=blocker / "sessions",
+                    width=160,
+                    height=120,
+                    fps=30,
+                )
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+                self.assertEqual(controller.state, State.READY)
+
+                controller.start_recording()  # must not raise
+
+                self.assertEqual(controller.state, State.ERROR)
+                self.assertIn("Could not start recording", controller.error_message)
+                self.assertIsNone(controller._recorder)
+                self.assertIsNone(controller.last_session_dir)
+
+                controller.poll_preflight()
+                self.assertNotEqual(controller.state, State.ERROR)
+            finally:
+                instrument.stop()
+                third_person.stop()
+
+    def test_a_camera_reporting_an_unusable_resolution_refuses_to_record(self):
+        """Refusing to start beats recording something broken (CLAUDE.md).
+        _even() floors at 2, so without an explicit guard a camera whose
+        driver hasn't filled in its frame size (0x0) would give a 2x2
+        encoder and a "verified" recording of nothing.
+        """
+        class ZeroResolutionCamera(SyntheticCamera):
+            @property
+            def resolution(self):
+                return (0, 0)
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            instrument = ZeroResolutionCamera(160, 120, fps=30, name="instrument")
+            third_person = SyntheticCamera(160, 120, fps=30, name="third-person")
+            instrument.start()
+            third_person.start()
+            try:
+                controller = KioskController(
+                    third_person,
+                    {"instrument": instrument},
+                    output_root=tmp_root,
+                    width=160,
+                    height=120,
+                    fps=30,
+                )
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+
+                controller.start_recording()
+
+                self.assertEqual(controller.state, State.ERROR)
+                self.assertIn("unusable resolution", controller.error_message)
+                # No litter: the half-made session directory is cleaned up.
+                self.assertEqual(list(Path(tmp_root).iterdir()), [])
+            finally:
+                instrument.stop()
+                third_person.stop()
+
+    def test_a_writer_failing_mid_recording_stops_the_session_loudly(self):
+        """A writer thread that hits a full disk / encoder fault leaves the
+        camera itself fine, so the stall and freeze checks won't catch it.
+        poll_recording() checks recorder.failed_stream() and stops the
+        session immediately rather than letting one stream run on frozen
+        until Stop. See DECISIONS.md's "Harden the recording path" entry.
+        """
+        real_encode = _StreamWriter._encode
+        counts: dict[str, int] = {}
+
+        def failing_encode(self, frame):
+            counts[self.role] = counts.get(self.role, 0) + 1
+            if self.role == "instrument" and counts[self.role] > 10:
+                raise OSError("simulated disk full")
+            return real_encode(self, frame)
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third_person = SyntheticCamera(160, 120, fps=30, name="third-person")
+            instrument.start()
+            third_person.start()
+            try:
+                controller = KioskController(
+                    third_person,
+                    {"instrument": instrument},
+                    output_root=tmp_root,
+                    width=160,
+                    height=120,
+                    fps=30,
+                    instrument_labels={"instrument": "BI900"},
+                )
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+                self.assertEqual(controller.state, State.READY)
+
+                with patch.object(_StreamWriter, "_encode", failing_encode):
+                    controller.start_recording()
+                    time.sleep(0.8)  # let the instrument writer pass its failure threshold
+                    controller.poll_recording()
+
+                self.assertEqual(controller.state, State.ERROR)
+                self.assertIn("BI900", controller.error_message)
+                self.assertIn("streams", controller.last_session_info)
+
+                inst = controller.last_session_info["streams"]["instrument"]
+                self.assertFalse(inst["verified"])
+                self.assertIn("error", inst)
+                self.assertTrue((controller.last_session_dir / "instrument.mkv").exists())
+                # The other stream still finalized normally.
+                self.assertTrue(controller.last_session_info["streams"]["third_person"]["verified"])
+
+                controller.poll_preflight()
+                self.assertNotEqual(controller.state, State.ERROR)
+            finally:
+                instrument.stop()
+                third_person.stop()
+
+    def test_stop_recording_lands_in_error_when_the_recorder_cannot_finalize(self):
+        """A full disk during the MKV->MP4 remux / manifest write, or a
+        stuck writer thread, makes Recorder.stop() raise. The normal Stop
+        path must catch that, land in ERROR with the raw-files location
+        named, and not propagate into the Qt event loop leaving the
+        controller stuck in RECORDING -- same contract as _fail().
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third_person = SyntheticCamera(160, 120, fps=30, name="third-person")
+            instrument.start()
+            third_person.start()
+            try:
+                session_dir = Path(tmp_root) / "2026-09-09_1200"
+                session_dir.mkdir()
+
+                class ExplodingRecorder:
+                    def __init__(self):
+                        self.session_dir = session_dir
+
+                    def start(self):
+                        pass
+
+                    def stop(self):
+                        raise OSError("no space left on device while writing session.json")
+
+                controller = KioskController(
+                    third_person,
+                    {"instrument": instrument},
+                    output_root=tmp_root,
+                    width=160,
+                    height=120,
+                    fps=30,
+                    recorder_factory=lambda _cam, _name: ExplodingRecorder(),
+                )
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+                self.assertEqual(controller.state, State.READY)
+
+                controller.start_recording()
+                self.assertEqual(controller.state, State.RECORDING)
+
+                info = controller.stop_recording()  # must not raise
+
+                self.assertEqual(controller.state, State.ERROR)
+                self.assertIn("error", info)
+                self.assertNotIn("streams", info)
+                self.assertIsNotNone(controller.error_message)
+                self.assertIn(str(session_dir), controller.error_message)
+                self.assertEqual(controller.last_session_dir, session_dir)
+
                 controller.poll_preflight()
                 self.assertNotEqual(controller.state, State.ERROR)
             finally:

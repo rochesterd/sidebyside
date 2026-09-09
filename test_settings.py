@@ -176,6 +176,58 @@ class SettingsWindowTest(unittest.TestCase):
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
 
+    def test_save_preserves_config_the_ui_does_not_model(self):
+        """recording fps, a per-instrument orientation / pixel_clock_hz
+        override, and a third instrument role have no field in this
+        two-row UI. Editing something unrelated and saving must not drop
+        them. See DECISIONS.md's 2026-09-09 "Config that would only fail
+        at Start" entry.
+        """
+        from config import load_config
+
+        data = json.loads(json.dumps(VALID_CONFIG))
+        data["recording"] = {"fps": 24}
+        data["instruments"]["slit_lamp"]["orientation"] = "rotate_180"
+        data["instruments"]["slit_lamp"]["pixel_clock_hz"] = 60_000_000
+        data["instruments"]["indirect_scope"] = {"kind": "ids", "serial": "333", "label": "Indirect Scope"}
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        window.sessions_dir_edit.setText("D:\\elsewhere")  # touch something the UI owns
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["recording"], {"fps": 24})
+        self.assertEqual(written["instruments"]["slit_lamp"]["orientation"], "rotate_180")
+        self.assertEqual(written["instruments"]["slit_lamp"]["pixel_clock_hz"], 60_000_000)
+        self.assertEqual(
+            written["instruments"]["indirect_scope"],
+            {"kind": "ids", "serial": "333", "label": "Indirect Scope"},
+        )
+        self.assertEqual(written["sessions_dir"], "D:\\elsewhere")
+        load_config(self.config_path)  # the merged result still parses
+
+    def test_save_drops_an_orientation_override_when_the_role_becomes_net2860(self):
+        """The carry-forward must not paste an ids-only key onto a net2860
+        entry, which config.py rejects."""
+        from config import load_config
+
+        data = json.loads(json.dumps(VALID_CONFIG))
+        data["instruments"]["bio"]["orientation"] = "flip_vertical"
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        _select(window._instrument_rows["bio"], "net2860")
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860", "label": "BIO"})
+        load_config(self.config_path)
+
     def _fill_valid_selections(self, window: SettingsWindow) -> None:
         _select(window._instrument_rows["slit_lamp"], "111")
         window._instrument_rows["slit_lamp"].label_edit.setText("Slit Lamp")

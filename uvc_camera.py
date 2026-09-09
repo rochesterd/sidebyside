@@ -134,12 +134,19 @@ class UvcCamera(BaseCamera):
             return self._device
         return uvc_enumeration.resolve_device(self._vid_pid).index
 
-    def _open_capture(self, *, warmup: bool) -> cv2.VideoCapture:
+    def _open_capture(self, *, warmup: bool, want_size: tuple[int, int] | None = None) -> cv2.VideoCapture:
         """Open and configure a VideoCapture for the current device, or
         raise UvcCameraNotFoundError. Shared by _open() and the mid-stream
         reconnect path -- reconnect passes warmup=False, since the scene
         hasn't changed and a 2s autofocus/exposure re-warmup would just
         stall the capture thread.
+
+        want_size: the reconnect path passes the resolution the first open
+        settled on, so a device that would otherwise reopen at its
+        DirectShow default keeps a frame size the recorder's fixed-size
+        encoder can accept. Requested before _configure_capture(), since a
+        resolution change can force a stream renegotiation. Best-effort --
+        the caller checks what actually came back.
         """
         device = self._resolve_device_index()
         cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
@@ -147,6 +154,9 @@ class UvcCamera(BaseCamera):
             cap.release()
             raise UvcCameraNotFoundError(f"could not open UVC device {device!r}")
 
+        if want_size is not None:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, want_size[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, want_size[1])
         if self._target_fps is not None:
             self._apply_frame_rate_cap(cap)
         self._configure_capture(cap, warmup=warmup)
@@ -160,6 +170,25 @@ class UvcCamera(BaseCamera):
         # resolution isn't known until it's opened.
         self._width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self._height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if not (self._width and self._height):
+            # Some DirectShow drivers don't report a frame size until a
+            # frame has actually been pulled. The frame itself is ground
+            # truth, so ask it before giving up.
+            ok, image = cap.read()
+            if ok and image is not None:
+                self._height, self._width = image.shape[:2]
+        if self._width < 2 or self._height < 2:
+            # Refuse rather than hand the recorder a nonsense resolution:
+            # it would size its encoder from this and produce a
+            # "successful", verified recording of a couple of pixels --
+            # broken in exactly the way nobody notices until playback.
+            # Raising here puts it in BaseCamera's normal start()-fails
+            # path, so app.py retries and the status line says why.
+            cap.release()
+            raise UvcCameraNotFoundError(
+                f"UVC device {self._device or self._vid_pid!r} reported an unusable "
+                f"frame size ({self._width}x{self._height})"
+            )
         self._counter = 0
         self._consecutive_failures = 0
         self._last_reconnect_attempt = 0.0
@@ -274,19 +303,22 @@ class UvcCamera(BaseCamera):
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        # self.resolution is fixed after the first _open() and the
+        # recorder's encoder is sized from it, so ask a re-enumerated device
+        # for the same frame size back rather than let it reopen at its
+        # DirectShow default. The recorder resizes anything that still
+        # doesn't match as a backstop.
+        want_size = (self._width, self._height) if self._width and self._height else None
         try:
-            cap = self._open_capture(warmup=False)
+            cap = self._open_capture(warmup=False, want_size=want_size)
         except Exception as exc:
             logger.warning("%s: UVC reopen failed, will retry: %s", self.label, exc)
             return
 
-        # A re-enumerated device can come back at a different resolution;
-        # keep the original so the recording canvas stays stable (the
-        # compositor letterboxes a mismatched frame anyway), but say so.
         new_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
         if all(new_size) and new_size != (self._width, self._height):
             logger.warning(
-                "%s: reopened at %dx%d (was %dx%d); keeping the original",
+                "%s: reopened at %dx%d, could not restore %dx%d; the recorder will resize to fit",
                 self.label,
                 *new_size,
                 self._width,

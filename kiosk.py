@@ -140,6 +140,11 @@ class PreflightStatus:
     # "waiting for cameras" and "the camera is on but the picture is
     # frozen" need different words and different fixes.
     frozen_cameras: tuple[str, ...] = ()
+    # Set when the disk-space check itself couldn't run -- the configured
+    # sessions_dir is on a drive that isn't there (a removed USB disk, an
+    # offline network share). disk_ok is False alongside it; the UI shows a
+    # "is that drive connected?" message rather than a bogus "0 MB free".
+    disk_error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -268,16 +273,29 @@ class KioskController:
         required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
             width, height, self.fps, minutes=self._target_minutes, bits_per_pixel=self._bits_per_pixel
         )
-        usage = self._disk_usage_fn(str(_existing_ancestor(self.output_root)))
+        try:
+            free_bytes = self._disk_usage_fn(str(_existing_ancestor(self.output_root))).free
+            disk_ok = free_bytes >= required_bytes
+            disk_error: str | None = None
+        except OSError as exc:
+            # The configured sessions_dir is on a drive that isn't present
+            # (a removed USB disk, an offline network share). Report it as
+            # "not ready" with a reason rather than letting this raise every
+            # poll and wedge the kiosk -- at startup it would otherwise be a
+            # bare crash with only a log line.
+            logger.warning("disk-space check failed for %s: %s", self.output_root, exc)
+            free_bytes, disk_ok, disk_error = 0, False, str(exc)
+
         status = PreflightStatus(
             cameras_ready=self._cameras_ready(),
-            disk_ok=usage.free >= required_bytes,
-            free_bytes=usage.free,
+            disk_ok=disk_ok,
+            free_bytes=free_bytes,
             required_bytes=required_bytes,
             # Refuse to start over recording something broken (CLAUDE.md):
             # a frozen camera is worse than no camera, because it looks
             # fine right up until someone plays the session back.
             frozen_cameras=self._update_freshness(self._clock()),
+            disk_error=disk_error,
         )
         if self.state != State.RECORDING:
             new_state = State.READY if status.ok else State.IDLE
@@ -394,8 +412,25 @@ class KioskController:
             raise RuntimeError(f"cannot start recording from state {self.state}")
 
         instrument_camera = self.instruments[self.selected_instrument]
-        self._recorder = self._recorder_factory(instrument_camera, self.selected_instrument)
-        self._recorder.start()
+        try:
+            self._recorder = self._recorder_factory(instrument_camera, self.selected_instrument)
+            self._recorder.start()
+        except Exception as exc:
+            # A sessions_dir that can't be created (a technician pointed it
+            # at a file, or somewhere unwritable), a full disk, an encoder
+            # that won't open. The disk preflight can't see any of these --
+            # it measures free space on the nearest *existing* ancestor --
+            # so this is where they surface. Land in ERROR with the reason
+            # rather than propagating into the Qt event loop, where the
+            # student would just see Start do nothing at all, forever.
+            logger.exception("could not start recording")
+            self._recorder = None
+            self.error_message = f"Could not start recording: {exc}"
+            self.last_session_info = None
+            self.last_session_dir = None
+            self.state = State.ERROR
+            return
+
         self.error_message = None
         self.last_session_info = None
         self.last_session_dir = None
@@ -419,10 +454,12 @@ class KioskController:
         )
 
     def poll_recording(self) -> None:
-        """Call regularly while RECORDING. If a camera's frame index hasn't
-        advanced for stall_timeout_s, stops the recording and moves to
+        """Call regularly while RECORDING. Stops the recording and moves to
         ERROR immediately - loud and early, per CLAUDE.md, rather than
-        letting a broken recording run to completion.
+        letting a broken recording run to completion - if a writer thread
+        failed, if a camera's frame index hasn't advanced for
+        stall_timeout_s, or if a camera's picture has stopped changing for
+        freeze_timeout_s.
         """
         if self.state != State.RECORDING:
             return
@@ -434,6 +471,18 @@ class KioskController:
             "instrument": self._instrument_labels.get(self.selected_instrument, self.selected_instrument),
             "third_person": self._third_person_label or self._third_person_name,
         }
+
+        # A writer thread that hit a full disk / encoder fault. The camera
+        # is still fine so the stall/freeze checks below won't catch it --
+        # stop now rather than let one stream run on frozen until Stop.
+        failed = self._recorder.failed_stream()
+        if failed:
+            role, detail = failed
+            self._fail(
+                f"Recording of {display_names.get(role, role)} stopped unexpectedly: {detail}. "
+                "Recording stopped; the frames captured so far are kept."
+            )
+            return
 
         now = self._clock()
         stalled = []
@@ -467,8 +516,27 @@ class KioskController:
     def stop_recording(self) -> dict:
         if self.state != State.RECORDING:
             raise RuntimeError(f"cannot stop recording from state {self.state}")
-        session_info = self._recorder.stop()
-        self.last_session_dir = self._recorder.session_dir
+
+        recorder = self._recorder
+        self.last_session_dir = recorder.session_dir
+        try:
+            session_info = recorder.stop()
+        except Exception as exc:
+            # A stuck writer thread, or a full disk during the MKV->MP4
+            # remux/manifest write. The raw capture files are still on disk
+            # (that's what the MKV is for) -- surface the failure loudly and
+            # land in ERROR rather than propagating into the Qt event loop
+            # and leaving the controller stuck in RECORDING. Mirrors _fail().
+            logger.exception("recorder.stop() failed during a normal Stop")
+            self._recorder = None
+            self.last_session_info = {"error": f"the recording could not be finalized: {exc}"}
+            self.error_message = (
+                f"The recording was stopped but could not be finalized: {exc} "
+                f"The raw capture files are in {recorder.session_dir}."
+            )
+            self.state = State.ERROR
+            return self.last_session_info
+
         self._recorder = None
         self.last_session_info = session_info
         self.error_message = None

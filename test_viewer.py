@@ -13,16 +13,55 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow
 
 from unittest.mock import patch
 
+import viewer
 from session_format import INSTRUMENT_STREAM, THIRD_PERSON_STREAM
 from session_reader import Session
 from test_session_reader import record_session
 from viewer import SessionPickerDialog, ViewerDialog, _mmss
 
 _qt_app = QApplication.instance() or QApplication([])
+
+
+class DialogLifetimeTest(unittest.TestCase):
+    """The kiosk runs unattended for days, and every Watch / Past recordings
+    press opens a modal dialog parented to its window. Qt parent-child
+    ownership would keep each one -- and the full-size QPixmap rendered into
+    it -- alive for the life of the process. See DECISIONS.md's 2026-09-09
+    entry.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.session_dir = record_session(cls._tmp.name, 1)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_open_session_does_not_leave_the_dialog_parented(self):
+        parent = QMainWindow()
+        self.addCleanup(parent.deleteLater)
+        with patch.object(ViewerDialog, "exec", lambda self: 0):
+            for _ in range(3):
+                self.assertTrue(viewer.open_session(self.session_dir, parent=parent))
+        _qt_app.processEvents()
+
+        self.assertEqual([c for c in parent.children() if isinstance(c, QDialog)], [])
+
+    def test_browse_sessions_does_not_leave_the_picker_parented(self):
+        parent = QMainWindow()
+        self.addCleanup(parent.deleteLater)
+        with patch.object(SessionPickerDialog, "exec", lambda self: QDialog.DialogCode.Rejected):
+            for _ in range(3):
+                self.assertFalse(viewer.browse_sessions(self._tmp.name, parent=parent))
+        _qt_app.processEvents()
+
+        self.assertEqual([c for c in parent.children() if isinstance(c, QDialog)], [])
 
 
 class MmSsTest(unittest.TestCase):

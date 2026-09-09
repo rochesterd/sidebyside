@@ -355,10 +355,16 @@ def _parse_recording(path: Path, entry: object) -> RecordingConfig:
         raise ConfigError(f"{path}: 'recording' must be an object. {_FIX_HINT}")
 
     fps = entry.get("fps", DEFAULT_RECORDING_FPS)
-    if not isinstance(fps, (int, float)) or isinstance(fps, bool) or fps <= 0:
-        raise ConfigError(f"{path}: recording.fps must be a positive number. {_FIX_HINT}")
+    # Must be a whole number: it becomes the encoder's frame rate and its
+    # keyframe interval, and PyAV's add_stream(rate=...) raises on a float.
+    # A fractional value here otherwise surfaces only as a crash on the
+    # first Start, with nothing shown -- exactly the failure this file's
+    # loud-and-early validation exists to prevent. 30.0 is accepted (JSON
+    # writes whole numbers as floats) and coerced; 29.97 is rejected.
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0 or fps != int(fps):
+        raise ConfigError(f"{path}: recording.fps must be a positive whole number. {_FIX_HINT}")
 
-    return RecordingConfig(fps=fps)
+    return RecordingConfig(fps=int(fps))
 
 
 def _parse_sessions_dir(path: Path, entry: object) -> Path | None:

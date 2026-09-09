@@ -569,5 +569,41 @@ class PixelClockConfigTest(unittest.TestCase):
             load_config(self.path)
 
 
+class RecordingFpsTest(unittest.TestCase):
+    """recording.fps becomes the encoder's frame rate; PyAV's
+    add_stream(rate=...) raises on a float, so a fractional value here would
+    surface only as a crash on the first Start. It must be a whole number,
+    validated loudly at load."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.path = Path(self._tmpdir.name) / "config.json"
+
+    def _write(self, data: dict) -> None:
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_absent_section_uses_the_default(self):
+        self._write(VALID)
+        self.assertEqual(load_config(self.path).recording.fps, 30)
+
+    def test_a_whole_float_is_accepted_and_coerced_to_int(self):
+        data = json.loads(json.dumps(VALID))
+        data["recording"] = {"fps": 30.0}
+        self._write(data)
+        fps = load_config(self.path).recording.fps
+        self.assertEqual(fps, 30)
+        self.assertIsInstance(fps, int)
+
+    def test_a_fractional_or_non_numeric_fps_is_rejected(self):
+        for bad in (29.97, 0, -5, "30", True, None, [30]):
+            with self.subTest(bad=bad):
+                data = json.loads(json.dumps(VALID))
+                data["recording"] = {"fps": bad}
+                self._write(data)
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+
 if __name__ == "__main__":
     unittest.main()

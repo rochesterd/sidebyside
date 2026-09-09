@@ -3259,3 +3259,216 @@ frozen-exe entry still described relocating `config.json` to
 that work -- `config.py`'s `resolve_default_config_path()` returns
 `%ProgramData%\sidebyside\config.json` under `is_frozen()`, and stays
 CWD-relative in dev/test.
+
+---
+
+## 2026-09-09 - Harden the recording path against silent truncation
+
+A pre-ship review found three ways the recording path could fail without
+the loud-and-early signal CLAUDE.md requires. All three are now closed.
+
+**A `_StreamWriter` thread that raised mid-recording died silently.**
+`_StreamWriter._run()` had no guard around its encode loop -- unlike
+`BaseCamera._run()`, which wraps its capture loop for exactly this reason.
+A full disk or an encoder fault would kill the thread; `stop()` then found
+it already exited (so "not stuck"), `finalize()` ran as if clean, and
+`_mp4_verifies()` could even pass on the truncated file. The kiosk's
+stall/freeze detection watches the *camera*, not the writer, so nothing
+noticed. A 10-minute session could come back as a 3-minute file reported
+as complete -- CLAUDE.md's worst outcome.
+
+Now `_run()` catches, logs, and records `self._error`. `finalize()` sees
+it, keeps the MKV, never claims the stream verified, and still attempts a
+best-effort remux for convenience. `info()` carries an `error` string into
+the manifest; `app._format_summary()` turns that into "recording ended
+early: ... - .mkv kept". The two writers are independent threads, so one
+failing leaves the other's stream intact and verified.
+
+And it stops the session *immediately*, not just at Stop: `Recorder.failed_stream()`
+exposes the first writer error and `kiosk.poll_recording()` checks it
+alongside the stall and freeze checks, so a dead writer trips the same
+loud ERROR path a stalled camera does rather than letting the other
+stream run on frozen for minutes.
+
+**A UVC reconnect at a different resolution would corrupt the recording.**
+`UvcCamera._try_reconnect()` deliberately keeps the original
+`self.resolution` after a mid-stream USB drop, but `cv2.VideoCapture` can
+reopen a device at a different frame size. Post the recorder/viewer split
+the recorder encodes `frame.image` directly at a fixed size (the compositor
+no longer runs there), so a mismatched frame makes `stream.encode()` raise
+-- feeding the silent-writer-death path above. The stale "the compositor
+letterboxes a mismatched frame anyway" comment was true only before the
+split.
+
+Two layers now: `_try_reconnect()` asks for the original width/height back
+via `CAP_PROP_FRAME_WIDTH/HEIGHT` after reopening, and `_StreamWriter._encode()`
+resizes anything that still doesn't match the encoder (a one-time warning,
+then a plain resize -- a rare already-degraded path where a possibly
+aspect-distorted pane beats losing the rest of the recording).
+
+**`KioskController.stop_recording()` had no handler for a failing finalize.**
+`Recorder.stop()` can raise (a stuck writer thread; a full disk during the
+MKV->MP4 remux or the `session.json` write). Neither `stop_recording()`
+nor `app._on_stop_clicked()` caught it -- the exception hit the excepthook,
+the controller stayed in `RECORDING` with `_recorder` still set, and Stop
+stayed live. `_fail()` already handled this for mid-recording failures;
+`stop_recording()` now mirrors it: log, land in `ERROR`, name the raw-file
+location in `error_message`, keep `last_session_dir`, and return the
+`{"error": ...}` shape the summary already understands. `_on_stop_clicked()`
+shows the banner when that happens.
+
+Also, `_StreamWriter.info()` now points `file` at whichever of the MP4 /
+MKV actually exists, so a session whose remux failed outright still loads
+in the Viewer (PyAV reads either container).
+
+Tests: `test_recorder.py` gains a mid-recording writer failure (MKV kept,
+`error` flagged, other stream fine, session still loads) and a
+frame-size-change-mid-recording case (resized, not fatal, output stays at
+the declared resolution). `test_kiosk.py` gains a writer that fails
+mid-recording (session stops loudly, error banner names the instrument,
+MKV kept, other stream verified) and a `stop_recording()` whose recorder
+raises on `stop()` (lands in ERROR, doesn't propagate, names the files).
+
+From the same review: `settings.py` Save dropping config keys it doesn't
+model, a disconnected `sessions_dir` drive wedging the preflight poll, and
+a fractional `recording.fps` crashing every Start -- all three fixed in
+the next entry.
+
+---
+
+## 2026-09-09 - Config that would only fail at Start now fails at load
+
+Three ways a `config.json` a technician could plausibly produce turned a
+misconfiguration into a crash with nothing shown, instead of the
+loud-and-early message `config.py`/`kiosk.py` validation is meant to give.
+All three fixed.
+
+**A fractional `recording.fps` crashed every recording, silently.**
+`config._parse_recording()` accepted any positive number, but the value
+becomes the encoder's frame rate and PyAV's `add_stream(rate=...)` raises
+`AttributeError: 'float' object has no attribute 'numerator'` on a
+non-integer. That propagated through `Recorder.start()` ->
+`KioskController.start_recording()` -> `app._on_start_clicked()` -- none of
+which catch -- into the excepthook. State stayed READY, Start looked
+inert, every click re-crashed. Reachable by hand-editing `"fps": 29.97`,
+or even `"fps": 30.0` (JSON writes whole numbers as floats). Now
+`_parse_recording()` requires a whole number: `30.0` is accepted and
+coerced, `29.97` is a `ConfigError`. `RecordingConfig.fps` was already
+typed `int`.
+
+**A disconnected `sessions_dir` drive wedged the preflight poll.**
+`kiosk.poll_preflight()` called `shutil.disk_usage()` unguarded; if the
+configured recordings folder is on a drive that isn't there (a removed USB
+disk, an offline network share), that raises every 250ms poll. At startup
+`KioskWindow.__init__` calls `poll_preflight()`, so it was a bare crash
+with only a log line -- a technician double-clicks `app.exe` and nothing
+happens. Now the disk check is wrapped: `PreflightStatus` gains
+`disk_error`, `disk_ok` goes False, and `app._idle_reason()` shows "the
+recordings folder (E:\...) - is that drive connected?" instead of a bogus
+"0 MB free". A mid-recording drive loss is covered separately -- the
+writer's disk write fails and trips the `failed_stream()` path from the
+previous entry.
+
+**`settings.py` Save silently dropped config it has no field for.**
+`_on_save_clicked()` built a fresh dict from only the fields its two-row
+UI models, so a hand-set per-instrument `orientation` / `pixel_clock_hz`
+override (the documented escape hatches -- the same `orientation` key that
+corrects the slit lamp), a `recording` section, or a third instrument role
+were all wiped on the next Save. Now Save reads the existing `config.json`
+as raw JSON and merges its edits onto it: unknown top-level keys pass
+through, every instrument already in the file is kept, and each modelled
+instrument carries its `orientation` / `pixel_clock_hz` forward -- unless
+its `kind` changed to `net2860`, which rejects those keys. An unchecked
+retention group still removes an existing policy.
+
+Tests: `test_config.py` -- fps default / whole-float coercion / fractional
+rejection. `test_kiosk.py` -- a `disk_usage_fn` that raises is reported,
+not propagated. `test_settings.py` -- Save preserves `recording`, a
+per-instrument override and a third role; and drops an `orientation`
+override when the role becomes `net2860`.
+
+Still open from the review, lower priority: `settings.py`'s UVC
+enumeration isn't failure-wrapped the way IDS is (a bad USB device can
+stop `settings.exe` opening at all), `resolve_device()` picks silently
+among an ambiguous VID/PID match, and the small items (Watch offered for
+a manifest-less session, `MANIFEST_NAME` hardcoded in
+`retention.py`/`viewer.py`).
+
+---
+
+## 2026-09-09 - Five more found by probing the record path with real failures
+
+The previous two entries came from reading. These came from *running* the
+recorder against cameras and paths that misbehave -- which found things
+reading did not. Each was reproduced first, then fixed, then pinned by a
+test.
+
+**A camera that captured nothing took the whole session with it.** PyAV
+never creates a container until a packet is written, so a camera delivering
+no frames for an entire session leaves neither an MKV nor an MP4. `info()`
+still named a file, the manifest pointed at a phantom, and `Session.load()`
+refused the *whole* session -- including the other camera's perfectly good
+recording. One dead camera destroyed access to the surviving stream, which
+is the opposite of what "never make the irreplaceable data depend on a step
+that can fail" asks for. Now: `finalize()` says "no frames were captured"
+instead of reporting a confusing remux error, `info()` writes `file: null`
+rather than naming something absent, and `Session.load()` *skips* a stream
+whose file is missing (recording it in `Session.missing_streams`, which the
+Viewer displays) and raises only when no stream is loadable at all. That
+last part also covers a session copied to a USB stick without all its files.
+
+**An odd camera resolution recorded nothing at all.** libx264 with yuv420p
+refuses odd dimensions -- `avcodec_open2` fails outright -- so a camera
+reporting e.g. 641x481 produced an empty stream. `session_export.py` has
+had an `_even()` helper for exactly this since it was written; the *record*
+path never did. Now `_StreamWriter.start()` rounds down to even and the
+per-frame resize added in the previous entry (for the UVC reconnect case)
+handles the mismatch, so the same backstop serves both.
+
+**A sessions_dir that can't be created made Start silently inert.** The
+disk preflight measures free space on the nearest *existing* ancestor, so
+a `sessions_dir` under a path that is actually a file -- or anywhere
+unwritable -- passes preflight as READY. `Recorder.start()` then raised
+through `KioskController.start_recording()` and `app._on_start_clicked()`,
+neither of which caught it, into the excepthook: the student presses Start,
+nothing happens, forever, with no message. Now `start_recording()` catches,
+lands in ERROR with "Could not start recording: ...", and `app.py` shows
+the banner. Same shape as the `stop_recording()` fix in the previous entry;
+the two ends of a session now behave the same way.
+
+**A 0x0 resolution would have produced a "verified" 2x2 recording.** Some
+DirectShow drivers don't report a frame size until a frame has been pulled,
+and `UvcCamera._open()` never checked. `_cameras_ready()` only asks whether
+frames arrive, so preflight passed. Worse, the `_even()` floor of 2 added
+above would have turned 0x0 into a 2x2 encoder -- a recording that verifies
+and is useless, the exact "discovered a week later" failure CLAUDE.md names
+as the worst outcome. Now `UvcCamera._open()` falls back to the first
+frame's own shape and raises if that is still unusable (feeding the normal
+start()-fails/retry path), and `_StreamWriter.start()` refuses a resolution
+below 2x2 outright -- refusing to start beats recording something broken.
+
+**Every Watch left a window behind for the life of the kiosk.**
+`open_session()`/`browse_sessions()` parent their modal dialogs to the
+kiosk window and never released them, so Qt parent-child ownership kept
+each `ViewerDialog` -- and the full-size `QPixmap` rendered into it --
+alive until the process exited. Measured: five open/close cycles left five
+dialogs attached. The kiosk runs unattended for days, and Watch is the
+button this app exists for. `_release()` now unparents and schedules
+deletion; `setParent(None)` as well as `deleteLater()`, because
+`deleteLater()` alone only fires when control returns to the event loop at
+the level it was called from, which is fragile straight after a nested
+`exec()`. `open_session()` also calls the (idempotent) `_shutdown()`
+explicitly, so releasing the PyAV decoders never depends on a signal having
+fired. `settings.py`'s PreviewDialog got the same treatment.
+
+Also closed here, from the earlier review's small list: `Recorder.start()`
+now tears down any writer it already started if a later one fails, and
+removes the session directory it just created when nothing landed in it --
+otherwise a repeated failed Start littered `sessions_dir` with empty
+folders that `retention.py` deliberately never cleans up.
+
+**The lesson worth keeping:** three of these five are invisible to code
+review and obvious within seconds of running the thing. The record path
+deserves a few deliberately hostile cameras -- no frames, odd size, lying
+about its resolution -- the same way `test_recorder.py` already keeps a
+deliberately-too-fast one.

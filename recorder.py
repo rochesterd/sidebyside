@@ -30,6 +30,7 @@ from itertools import islice
 from pathlib import Path
 
 import av
+import cv2
 
 from camera import BaseCamera, Frame
 from session_format import (
@@ -73,6 +74,17 @@ _STOP_DRAIN_MAX_FRAMES = 4
 # Still limits anything meaningfully faster (a 90fps source at a 30fps
 # target passes ~1 in 3).
 _RATE_LIMIT_SLACK = 0.9
+
+
+def _even(value: int) -> int:
+    """libx264 with yuv420p refuses odd dimensions -- the encoder won't even
+    open, so a camera reporting an odd width/height would record nothing at
+    all. Rounded down here and the frames resized to match in
+    _StreamWriter._encode(). session_export.py carries the identical helper
+    for the same reason on the export side; kept separate rather than
+    imported so the writer doesn't depend on the exporter.
+    """
+    return max(2, value - (value % 2))
 
 
 def _mp4_verifies(mp4_path: Path, expected_frames: int) -> bool:
@@ -157,10 +169,18 @@ class _StreamWriter:
         self.rate_limited = 0  # frames declined for arriving faster than fps
         self.first_timestamp: float | None = None
         self.mp4_verified = False
+        # Set if the capture/encode loop raised mid-recording (a full disk,
+        # an encoder fault). The MKV still holds everything written up to
+        # that point -- it is kept, the stream is never claimed verified,
+        # and the manifest carries this string so the kiosk summary can say
+        # the recording ended early rather than reporting a truncated file
+        # as complete. See DECISIONS.md's "Harden the recording path" entry.
+        self._error: str | None = None
 
         self._last_index: int | None = None
         self._last_encoded_ts: float | None = None
         self._last_pts = -1
+        self._warned_frame_size = False
         self._container = None
         self._stream = None
         self._thread: threading.Thread | None = None
@@ -171,7 +191,23 @@ class _StreamWriter:
     def start(self) -> None:
         # Cameras are live by the time a real caller reaches here (kiosk.py
         # only starts a recording from READY), so .resolution is real.
-        self.width, self.height = self.camera.resolution
+        source_width, source_height = self.camera.resolution
+        if source_width < 2 or source_height < 2:
+            # Refuse to start rather than record something broken
+            # (CLAUDE.md). _even() floors at 2, so without this a camera
+            # reporting 0x0 -- a driver that hasn't filled in its frame
+            # size -- would yield a 2x2 encoder and a "verified" recording
+            # of nothing. kiosk.start_recording() turns this into a banner.
+            raise ValueError(
+                f"{self.role}: camera reported an unusable resolution "
+                f"{source_width}x{source_height}"
+            )
+        self.width, self.height = _even(source_width), _even(source_height)
+        if (self.width, self.height) != (source_width, source_height):
+            logger.warning(
+                "%s: camera reports %dx%d; encoding at %dx%d (libx264/yuv420p needs even dimensions)",
+                self.role, source_width, source_height, self.width, self.height,
+            )
 
         self._container = av.open(str(self.mkv_path), mode="w")
         self._stream = self._container.add_stream(self._codec, rate=self._fps)
@@ -203,6 +239,19 @@ class _StreamWriter:
     def request_stop(self) -> None:
         self._stop_event.set()
 
+    def abandon(self) -> None:
+        """Close the container without remuxing or verifying, for a session
+        that failed to start. There is nothing worth finalizing, and leaving
+        the handle open would keep an orphan MKV locked in a session
+        directory that will never get a manifest.
+        """
+        if self._container is not None:
+            try:
+                self._container.close()
+            except Exception as exc:
+                logger.warning("%s: closing an abandoned container failed: %s", self.role, exc)
+            self._container = None
+
     def join(self, timeout: float) -> bool:
         """True if the writer thread has exited."""
         if self._thread is None:
@@ -215,13 +264,55 @@ class _StreamWriter:
         delete the MKV if it verified. Only call once join() is True --
         touching the encoder while the writer thread may still be encoding
         is what produces a silently corrupt file.
+
+        If the writer loop failed mid-recording (self._error), the encoder
+        may be in an unusable state: flush and remux are still attempted
+        best-effort, but the MKV is always kept and the stream is never
+        claimed verified. The MKV is the interruption-safe copy precisely
+        for this case.
         """
         self._thread = None
-        for packet in self._stream.encode(None):
-            self._container.mux(packet)
-        self._container.close()
+        try:
+            for packet in self._stream.encode(None):
+                self._container.mux(packet)
+        except Exception as exc:
+            logger.error("%s: flushing the encoder failed: %s", self.mkv_path.name, exc)
+            if self._error is None:
+                self._error = f"encoder flush failed: {exc}"
+        finally:
+            try:
+                self._container.close()
+            except Exception as exc:
+                logger.error("%s: closing the container failed: %s", self.mkv_path.name, exc)
 
-        _remux_to_mp4(self.mkv_path, self.mp4_path)
+        if not self.mkv_path.exists():
+            # PyAV never creates the container until a packet is written, so
+            # a camera that delivered nothing for the whole session leaves no
+            # file at all. Say that, rather than letting the remux below fail
+            # with a confusing "no such file" -- and info() then omits `file`
+            # so the manifest never names something that isn't there.
+            self.mp4_verified = False
+            if self._error is None:
+                self._error = "no frames were captured from this camera"
+            logger.error("%s: no frames captured; no file written", self.role)
+            return
+
+        try:
+            _remux_to_mp4(self.mkv_path, self.mp4_path)
+        except Exception as exc:
+            logger.error("%s: remux to MP4 failed: %s", self.mp4_path.name, exc)
+            self.mp4_verified = False
+            if self._error is None:
+                self._error = f"remux to MP4 failed: {exc}"
+            return
+
+        if self._error is not None:
+            self.mp4_verified = False
+            logger.error(
+                "%s: writer failed mid-recording (%s); keeping %s as the recoverable copy",
+                self.role, self._error, self.mkv_path.name,
+            )
+            return
 
         if _mp4_verifies(self.mp4_path, self.frame_count):
             self.mp4_verified = True
@@ -234,15 +325,25 @@ class _StreamWriter:
     # --- capture thread ------------------------------------------------------
 
     def _run(self) -> None:
-        while not self._stop_event.is_set():
-            frame = self.camera.read(timeout=_READ_TIMEOUT_S)
-            if frame is not None:
+        try:
+            while not self._stop_event.is_set():
+                frame = self.camera.read(timeout=_READ_TIMEOUT_S)
+                if frame is not None:
+                    self._absorb(frame)
+            for _ in range(_STOP_DRAIN_MAX_FRAMES):
+                frame = self.camera.read(timeout=0)
+                if frame is None:
+                    break
                 self._absorb(frame)
-        for _ in range(_STOP_DRAIN_MAX_FRAMES):
-            frame = self.camera.read(timeout=0)
-            if frame is None:
-                break
-            self._absorb(frame)
+        except Exception as exc:
+            # A full disk or an encoder fault must not just kill this thread
+            # silently -- BaseCamera._run() guards its capture loop for the
+            # same reason. finalize() sees self._error, keeps the MKV, and
+            # the manifest/summary report a recording that ended early
+            # rather than a truncated file that looks complete. The other
+            # stream's writer is a separate thread and keeps going.
+            logger.exception("%s: writer loop failed after %d frames; stopping this stream", self.role, self.frame_count)
+            self._error = f"{type(exc).__name__}: {exc}"
 
     def _absorb(self, frame: Frame) -> None:
         if self.first_timestamp is None:
@@ -266,7 +367,24 @@ class _StreamWriter:
             pts = self._last_pts + 1  # bump, never drop: PTS must be strictly increasing
         self._last_pts = pts
 
-        video_frame = av.VideoFrame.from_ndarray(frame.image, format="bgr24").reformat(format="yuv420p")
+        image = frame.image
+        if image.shape[1] != self.width or image.shape[0] != self.height:
+            # The encoder context is fixed at the resolution the camera
+            # reported at start(); a frame that doesn't match it would make
+            # stream.encode() raise. UvcCamera._try_reconnect() can reopen a
+            # device at a different size after a USB drop -- resize to fit
+            # rather than lose the rest of the recording. Rare and already
+            # a degraded path, so a plain (possibly aspect-distorting)
+            # resize is the right trade against dropping the stream.
+            if not self._warned_frame_size:
+                logger.warning(
+                    "%s: got a %dx%d frame, encoder expects %dx%d; resizing to fit for the rest of the recording",
+                    self.role, image.shape[1], image.shape[0], self.width, self.height,
+                )
+                self._warned_frame_size = True
+            image = cv2.resize(image, (self.width, self.height))
+
+        video_frame = av.VideoFrame.from_ndarray(image, format="bgr24").reformat(format="yuv420p")
         video_frame.pts = pts
         video_frame.time_base = _PTS_TIME_BASE
         for packet in self._stream.encode(video_frame):
@@ -282,8 +400,22 @@ class _StreamWriter:
         return max(0.0, self._last_pts / 1000.0)
 
     def info(self) -> dict:
+        # Point `file` at whatever actually exists to play. Normally that's
+        # the verified MP4; if the remux failed it's the MKV, which the
+        # Viewer and Export both open fine (PyAV reads either). If a camera
+        # captured nothing there is no file at all -- `file` is null rather
+        # than naming a phantom, so session_reader skips this stream instead
+        # of refusing the whole session (which would throw away the other
+        # camera's good recording). See DECISIONS.md's 2026-09-09 entry.
+        mkv_exists = self.mkv_path.exists()
+        if self.mp4_path.exists():
+            playable_name: str | None = self.mp4_path.name
+        elif mkv_exists:
+            playable_name = self.mkv_path.name
+        else:
+            playable_name = None
         data = {
-            "file": self.mp4_path.name,
+            "file": playable_name,
             "label": self.label,
             "width": self.width,
             "height": self.height,
@@ -298,7 +430,9 @@ class _StreamWriter:
             "offset_s": 0.0,
             "verified": self.mp4_verified,
         }
-        if not self.mp4_verified:
+        if self._error is not None:
+            data["error"] = self._error
+        if not self.mp4_verified and mkv_exists and self.mkv_path.name != playable_name:
             data["mkv"] = self.mkv_path.name
         return data
 
@@ -351,8 +485,44 @@ class Recorder:
                 self._origin_monotonic, self.fps, self.codec, self.crf, self.preset,
             ),
         ]
+        started: list[_StreamWriter] = []
+        try:
+            for writer in self._writers:
+                writer.start()
+                started.append(writer)
+        except Exception:
+            # Don't leave a half-started session behind: an already-running
+            # writer thread would go on filling an MKV that nothing will
+            # ever finalize, in a directory that will never get a manifest.
+            for writer in started:
+                writer.request_stop()
+            for writer in started:
+                writer.join(timeout=2.0)
+                writer.abandon()
+            self._writers = []
+            # Remove the directory just created if nothing landed in it: a
+            # repeated failed Start would otherwise litter sessions_dir with
+            # empty folders, which retention.py deliberately never deletes
+            # (no session.json means "a failed session a technician should
+            # look at").
+            try:
+                if not any(self.session_dir.iterdir()):
+                    self.session_dir.rmdir()
+            except OSError as exc:
+                logger.warning("could not remove the empty session dir %s: %s", self.session_dir, exc)
+            raise
+
+    def failed_stream(self) -> tuple[str, str] | None:
+        """(role, error) of the first writer that raised mid-recording, or
+        None while both are healthy. kiosk.poll_recording() checks this so a
+        dead writer stops the session loudly and immediately, rather than
+        one stream running on frozen until Stop. See DECISIONS.md's "Harden
+        the recording path" entry.
+        """
         for writer in self._writers:
-            writer.start()
+            if writer._error is not None:
+                return writer.role, writer._error
+        return None
 
     def stop(self) -> dict:
         for writer in self._writers:

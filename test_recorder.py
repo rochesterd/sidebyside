@@ -15,9 +15,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import av
+import cv2
 
-from recorder import Recorder, _mp4_verifies
+from recorder import Recorder, _StreamWriter, _mp4_verifies
 from session_format import INSTRUMENT_STREAM, THIRD_PERSON_STREAM
+from session_reader import Session
 from synthetic_camera import SyntheticCamera
 
 FPS = 30
@@ -150,6 +152,151 @@ class TestRecorder(unittest.TestCase):
                 self.assertEqual(s["mkv"], f"{role}.mkv")
                 self.assertTrue((d / f"{role}.mkv").exists())
                 self.assertTrue((d / f"{role}.mp4").exists())
+
+    def test_a_writer_that_fails_mid_recording_keeps_its_mkv_and_the_other_stream_is_fine(self):
+        """A full disk / encoder fault mid-recording must not silently kill
+        the writer thread and leave a truncated file reported as complete.
+        The failed stream keeps its MKV, is flagged unverified with an
+        `error`, the session still loads, and the other camera's stream --
+        a separate thread -- is unaffected. See DECISIONS.md's "Harden the
+        recording path" entry.
+        """
+        real_encode = _StreamWriter._encode
+        counts: dict[str, int] = {}
+
+        def failing_encode(self, frame):
+            counts[self.role] = counts.get(self.role, 0) + 1
+            if self.role == INSTRUMENT_STREAM and counts[self.role] > 12:
+                raise OSError("simulated disk full")
+            return real_encode(self, frame)
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            with patch.object(_StreamWriter, "_encode", failing_encode):
+                recorder, info = _record(
+                    tmp_root,
+                    4,
+                    cam_a=SyntheticCamera(160, 120, name="cam-a", fps=FPS),
+                    cam_b=SyntheticCamera(160, 120, name="cam-b", fps=FPS),
+                )
+            d = recorder.session_dir
+            inst = info["streams"][INSTRUMENT_STREAM]
+            third = info["streams"][THIRD_PERSON_STREAM]
+
+            self.assertFalse(inst["verified"])
+            self.assertIn("error", inst)
+            self.assertTrue((d / "instrument.mkv").exists())
+            self.assertTrue((d / inst["file"]).exists())
+            self.assertLessEqual(inst["frame_count"], 13)
+
+            self.assertTrue(third["verified"])
+            self.assertNotIn("error", third)
+            self.assertGreater(third["frame_count"], 30)
+
+            # stop() still produced a usable manifest and the session opens.
+            session = Session.load(d)
+            self.assertEqual(set(session.streams), {INSTRUMENT_STREAM, THIRD_PERSON_STREAM})
+
+    def test_a_frame_that_changes_size_mid_recording_is_resized_not_fatal(self):
+        """UvcCamera._try_reconnect() can bring a device back at a different
+        resolution after a USB drop. The recorder's encoder is fixed at the
+        size the camera reported at start(), so a mismatched frame would
+        make encode() raise -- it resizes to fit instead, keeping the rest
+        of the recording. See DECISIONS.md's "Harden the recording path".
+        """
+
+        class _ResolutionChangingCamera(SyntheticCamera):
+            def __init__(self, *args, change_after=15, shrunk=(320, 240), **kwargs):
+                super().__init__(*args, **kwargs)
+                self._change_after = change_after
+                self._shrunk = shrunk
+
+            def _render(self, elapsed, frame_index):
+                image = super()._render(elapsed, frame_index)
+                if frame_index >= self._change_after:
+                    image = cv2.resize(image, self._shrunk)
+                return image
+
+        with tempfile.TemporaryDirectory() as tmp_root:
+            recorder, info = _record(
+                tmp_root,
+                3,
+                cam_a=_ResolutionChangingCamera(640, 480, name="reconnecting", fps=FPS),
+                cam_b=SyntheticCamera(320, 240, name="cam-b", fps=FPS),
+            )
+            d = recorder.session_dir
+            inst = info["streams"][INSTRUMENT_STREAM]
+
+            self.assertTrue(inst["verified"])
+            self.assertNotIn("error", inst)
+            self.assertEqual((inst["width"], inst["height"]), (640, 480))
+            self.assertGreater(inst["frame_count"], FPS)  # ran the whole time, not cut off at the size change
+
+            with av.open(str(d / "instrument.mp4")) as c:
+                stream = c.streams.video[0]
+                self.assertEqual((stream.width, stream.height), (640, 480))
+                sizes = {(f.width, f.height) for f in c.decode(stream)}
+            self.assertEqual(sizes, {(640, 480)})
+
+    def test_an_odd_camera_resolution_still_records(self):
+        """libx264 with yuv420p refuses odd dimensions -- the encoder won't
+        even open, so before _even() a camera reporting e.g. 641x481
+        recorded nothing at all. session_export.py already guarded the
+        export side; the record path didn't. See DECISIONS.md's 2026-09-09
+        entry.
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            recorder, info = _record(
+                tmp_root,
+                1.5,
+                cam_a=SyntheticCamera(641, 481, name="odd", fps=FPS),
+                cam_b=SyntheticCamera(320, 240, name="even", fps=FPS),
+            )
+            odd = info["streams"][INSTRUMENT_STREAM]
+
+            self.assertTrue(odd["verified"])
+            self.assertNotIn("error", odd)
+            self.assertGreater(odd["frame_count"], 10)
+            self.assertEqual((odd["width"], odd["height"]), (640, 480))
+
+            with av.open(str(recorder.session_dir / "instrument.mp4")) as container:
+                stream = container.streams.video[0]
+                self.assertEqual((stream.width, stream.height), (640, 480))
+                self.assertGreater(sum(1 for _ in container.decode(stream)), 10)
+
+    def test_a_camera_that_captures_nothing_does_not_take_the_session_with_it(self):
+        """PyAV never creates the container until a packet is written, so a
+        camera delivering nothing for the whole session leaves no file at
+        all. The manifest must say so (file: null) rather than name a
+        phantom -- naming one made Session.load refuse the whole session,
+        throwing away the *other* camera's good recording. See DECISIONS.md's
+        2026-09-09 entry.
+        """
+        with tempfile.TemporaryDirectory() as tmp_root:
+            recorder, info = _record(
+                tmp_root,
+                1.5,
+                cam_a=SyntheticCamera(160, 120, name="dead", fps=FPS, drop_rate=1.0),
+                cam_b=SyntheticCamera(160, 120, name="live", fps=FPS),
+            )
+            d = recorder.session_dir
+            dead = info["streams"][INSTRUMENT_STREAM]
+            live = info["streams"][THIRD_PERSON_STREAM]
+
+            self.assertEqual(dead["frame_count"], 0)
+            self.assertIsNone(dead["file"])
+            self.assertFalse(dead["verified"])
+            self.assertIn("no frames", dead["error"])
+            self.assertNotIn("mkv", dead)  # there is no file to keep
+            self.assertFalse((d / "instrument.mkv").exists())
+            self.assertFalse((d / "instrument.mp4").exists())
+
+            self.assertTrue(live["verified"])
+            self.assertGreater(live["frame_count"], 10)
+
+            # The surviving stream is still fully usable.
+            session = Session.load(d)
+            self.assertEqual(set(session.streams), {THIRD_PERSON_STREAM})
+            self.assertEqual(session.missing_streams, (INSTRUMENT_STREAM,))
 
     def test_mp4_verifies_rejects_a_truncated_file_and_empty_recordings(self):
         with tempfile.TemporaryDirectory() as tmp_root:

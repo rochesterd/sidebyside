@@ -294,9 +294,13 @@ class KioskWindow(QMainWindow):
     def _on_start_clicked(self) -> None:
         if self.controller.state != State.READY:
             return
-        self.controller.start_recording()
         self.error_banner.hide()
         self.summary_label.clear()
+        self.controller.start_recording()
+        if self.controller.state == State.ERROR:
+            # The recorder couldn't start (an uncreatable sessions_dir, a
+            # full disk). Say so -- otherwise Start just appears inert.
+            self._show_error()
         self._sync_ui()
 
     def _on_stop_clicked(self) -> None:
@@ -304,7 +308,13 @@ class KioskWindow(QMainWindow):
             return
         session_info = self.controller.stop_recording()
         self._sync_ui()
-        self.summary_label.setText(self._format_summary("Session complete", session_info))
+        if self.controller.state == State.ERROR:
+            # stop_recording() couldn't finalize -- show the banner, same as
+            # a mid-recording failure. last_session_dir still points at the
+            # raw capture files.
+            self._show_error()
+        else:
+            self.summary_label.setText(self._format_summary("Session complete", session_info))
 
     def _on_watch_clicked(self) -> None:
         session_dir = self.controller.last_session_dir
@@ -405,9 +415,14 @@ class KioskWindow(QMainWindow):
             else:
                 missing.append("cameras live")
         if not preflight.disk_ok:
-            free_mb = preflight.free_bytes / (1024 * 1024)
-            required_mb = preflight.required_bytes / (1024 * 1024)
-            missing.append(f"free disk space ({free_mb:.0f} MB free, {required_mb:.0f} MB required)")
+            if preflight.disk_error is not None:
+                missing.append(
+                    f"the recordings folder ({self.controller.output_root}) - is that drive connected?"
+                )
+            else:
+                free_mb = preflight.free_bytes / (1024 * 1024)
+                required_mb = preflight.required_bytes / (1024 * 1024)
+                missing.append(f"free disk space ({free_mb:.0f} MB free, {required_mb:.0f} MB required)")
         if not missing:
             return "Waiting for cameras..."
         return "Waiting for: " + "; ".join(missing)
@@ -428,7 +443,15 @@ class KioskWindow(QMainWindow):
         parts = [headline]
         for role, stream in session_info["streams"].items():
             label = stream.get("label") or self._display_names.get(role, role)
-            note = "" if stream.get("verified", True) else " (NOT verified - .mkv kept)"
+            # Only claim the .mkv was kept when there actually is one -- a
+            # camera that captured nothing leaves no file at all.
+            kept = " - .mkv kept" if stream.get("mkv") else ""
+            if stream.get("error"):
+                note = f" (recording ended early: {stream['error']}{kept})"
+            elif not stream.get("verified", True):
+                note = f" (NOT verified{kept})"
+            else:
+                note = ""
             parts.append(f"{label}: {stream['frame_count']} frames, {stream['dropped_frames']} dropped{note}")
         if self.controller.last_session_dir is not None:
             parts.append(f"saved to {self.controller.last_session_dir}")

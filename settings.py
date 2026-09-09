@@ -692,6 +692,12 @@ class DeviceRow(QWidget):
         if self.supports_calibration and dialog.white_balance_supported:
             self._red_balance_ratio = dialog.final_red_balance_ratio
             self._blue_balance_ratio = dialog.final_blue_balance_ratio
+        # Released only after its results are read. Qt parent-child
+        # ownership would otherwise keep every Preview's window and its
+        # pixmap alive for as long as Settings is open -- same reasoning as
+        # viewer._release().
+        dialog.setParent(None)
+        dialog.deleteLater()
 
 
 class SettingsWindow(QMainWindow):
@@ -961,23 +967,60 @@ class SettingsWindow(QMainWindow):
             data["blue_balance_ratio"] = blue_balance_ratio
         return data
 
+    def _existing_config_dict(self) -> dict:
+        """The current config.json as a raw dict, or {} if there's none or
+        it doesn't parse. Save merges its edits onto this so config the UI
+        has no field for -- `recording`, a per-instrument `orientation` /
+        `pixel_clock_hz` override, an extra instrument role -- survives a
+        Save instead of being silently dropped. See DECISIONS.md's
+        2026-09-09 "Config that would only fail at Start" entry.
+        """
+        if not self.config_path.exists():
+            return {}
+        try:
+            existing = json.loads(self.config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return existing if isinstance(existing, dict) else {}
+
     def _on_save_clicked(self) -> None:
         if self._duplicate_serial_roles() or not all(row.is_valid() for row in self._all_rows()):
             return
 
+        base = self._existing_config_dict()
+        prior_instruments = base.get("instruments")
+        if not isinstance(prior_instruments, dict):
+            prior_instruments = {}
+
+        # Start from every instrument already in the file (keeps a third
+        # role this two-row UI can't show), then overwrite the ones this UI
+        # owns -- carrying each one's orientation / pixel_clock_hz override
+        # forward, since there's no field for them here.
+        instruments = dict(prior_instruments)
+        for key, row in self._instrument_rows.items():
+            entry = self._instrument_data(row)
+            prior = prior_instruments.get(key)
+            if entry.get("kind") == "ids" and isinstance(prior, dict):
+                for carry in ("orientation", "pixel_clock_hz"):
+                    if carry in prior and carry not in entry:
+                        entry[carry] = prior[carry]
+            instruments[key] = entry
+
         third_person_candidate = self._third_person_row.selected_candidate()
-        data = {
-            "instruments": {key: self._instrument_data(row) for key, row in self._instrument_rows.items()},
-            "third_person": {
-                "kind": "uvc",
-                "vid_pid": third_person_candidate.key,
-                "friendly_name": third_person_candidate.source.name,
-            },
-            "sessions_dir": self.sessions_dir_edit.text(),
+        data = dict(base)  # preserve unknown top-level keys, e.g. `recording`
+        data["instruments"] = instruments
+        data["third_person"] = {
+            "kind": "uvc",
+            "vid_pid": third_person_candidate.key,
+            "friendly_name": third_person_candidate.source.name,
         }
+        data["sessions_dir"] = self.sessions_dir_edit.text()
         retention = self._retention_data()
         if retention is not None:
             data["retention"] = retention
+        else:
+            data.pop("retention", None)  # group unchecked -> remove any existing policy
+
         self.config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.status_label.setText(f"Saved to {self.config_path}. Restart app.py to apply.")
         self.warning_label.hide()

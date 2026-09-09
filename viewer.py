@@ -198,6 +198,10 @@ class ViewerDialog(QDialog):
         for stream in self.session.streams.values():
             note = "" if stream.verified else "  (unverified - see the .mkv beside it)"
             parts.append(f"{stream.label}: {stream.width}x{stream.height}, {stream.frame_count} frames{note}")
+        for role in self.session.missing_streams:
+            # Say the pane is absent rather than let it render as black and
+            # look like a bug in playback.
+            parts.append(f"{role}: no video recorded")
         return "   |   ".join(parts)
 
     # --- playback -------------------------------------------------------------
@@ -478,28 +482,63 @@ class SessionPickerDialog(QDialog):
         self._reload()
 
 
-def open_session(session_dir: Path | str, parent=None) -> ViewerDialog | None:
+def _release(dialog: QDialog) -> None:
+    """Schedule a finished modal dialog for deletion.
+
+    Qt parent-child ownership keeps a dialog alive for the life of its
+    parent, so without this every Watch / Past recordings press would leave
+    another window -- and the full-size QPixmap rendered into it -- attached
+    to the kiosk window. The kiosk runs unattended for days at a time, so
+    that accumulates. See DECISIONS.md's 2026-09-09 entry.
+
+    setParent(None) before deleteLater(), not either alone: deleteLater()
+    only fires when control returns to the event loop *at the level where
+    it was called*, which is a fragile thing to rely on right after a
+    nested exec(). Unparenting drops it from the kiosk window's children
+    immediately and hands ownership back to Python's refcount; deleteLater
+    then cleans up the C++ side on the next pass either way. The dialog is
+    already closed here, so unparenting can't make it show.
+    """
+    dialog.setParent(None)
+    dialog.deleteLater()
+
+
+def open_session(session_dir: Path | str, parent=None) -> bool:
     """Load and show a session modally, reporting a bad session with a
-    dialog rather than a traceback. Returns None if it couldn't be opened.
+    dialog rather than a traceback. True if it opened.
     """
     try:
         session = Session.load(session_dir)
     except SessionError as exc:
         QMessageBox.warning(parent, "Can't open this recording", str(exc))
         logger.warning("could not open session %s: %s", session_dir, exc)
-        return None
+        return False
     dialog = ViewerDialog(session, parent=parent)
     dialog.resize(*DEFAULT_CANVAS)
-    dialog.exec()
-    return dialog
+    try:
+        dialog.exec()
+    finally:
+        # _shutdown is idempotent and normally already ran via `finished`.
+        # Called again here so releasing the PyAV decoders never depends on
+        # a signal having fired -- the same leak class as DECISIONS.md's
+        # "settings.py Preview leaked the IDS device" entry, which is why
+        # this dialog's teardown hangs off `finished` in the first place.
+        dialog._shutdown()
+        _release(dialog)
+    return True
 
 
-def browse_sessions(sessions_dir: Path | str, parent=None) -> ViewerDialog | None:
+def browse_sessions(sessions_dir: Path | str, parent=None) -> bool:
     """Show the picker, then open whatever was chosen."""
     picker = SessionPickerDialog(sessions_dir, parent=parent)
-    if picker.exec() != QDialog.DialogCode.Accepted or picker.selected_directory is None:
-        return None
-    return open_session(picker.selected_directory, parent=parent)
+    try:
+        accepted = picker.exec() == QDialog.DialogCode.Accepted
+        chosen = picker.selected_directory
+    finally:
+        _release(picker)
+    if not accepted or chosen is None:
+        return False
+    return open_session(chosen, parent=parent)
 
 
 def default_sessions_dir() -> Path:
@@ -521,8 +560,8 @@ def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841 - keeps Qt alive
 
     if len(sys.argv) > 1:
-        return 0 if open_session(Path(sys.argv[1])) is not None else 1
-    return 0 if browse_sessions(default_sessions_dir()) is not None else 1
+        return 0 if open_session(Path(sys.argv[1])) else 1
+    return 0 if browse_sessions(default_sessions_dir()) else 1
 
 
 if __name__ == "__main__":

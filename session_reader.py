@@ -67,6 +67,11 @@ class Session:
     # opening any video. SessionPlayer re-derives this from the containers
     # themselves, which is authoritative for playback.
     duration_s: float = 0.0
+    # Roles the manifest declared but whose file isn't on disk -- a camera
+    # that captured nothing (the recorder writes no file at all then), or a
+    # session copied without all of its files. Recorded rather than dropped
+    # silently so the Viewer can say a pane is missing.
+    missing_streams: tuple[str, ...] = ()
 
     @property
     def instrument(self) -> StreamInfo | None:
@@ -103,10 +108,23 @@ class Session:
             raise SessionError(f"{manifest_path}: 'streams' must be a non-empty object.")
 
         streams: dict[str, StreamInfo] = {}
+        missing: list[str] = []
         for role, entry in streams_raw.items():
-            path = session_dir / entry["file"]
-            if not path.is_file():
-                raise SessionError(f"{manifest_path}: '{role}' names {entry['file']}, which is missing.")
+            filename = entry.get("file") if isinstance(entry, dict) else None
+            path = session_dir / filename if filename else None
+            if path is None or not path.is_file():
+                # Skipped, not fatal. One camera that captured nothing (the
+                # recorder writes no file at all then, and records the
+                # reason) must not make the *other* camera's recording
+                # unopenable -- refusing the whole session would throw away
+                # good, irreplaceable data over a partial failure. The
+                # Viewer says which pane is missing.
+                logger.warning(
+                    "%s: stream %r names %r, which is missing - skipping it",
+                    manifest_path, role, filename,
+                )
+                missing.append(role)
+                continue
             streams[role] = StreamInfo(
                 role=role,
                 path=path,
@@ -120,11 +138,20 @@ class Session:
                 offset_s=float(entry.get("offset_s", 0.0)),
             )
 
+        if not streams:
+            # Nothing at all to play -- that *is* fatal, and distinct from
+            # losing one of two panes.
+            raise SessionError(
+                f"{manifest_path}: none of its stream files are present "
+                f"(missing: {', '.join(missing) or 'unknown'})."
+            )
+
         return cls(
             directory=session_dir,
             instrument_key=raw.get("instrument", INSTRUMENT_STREAM),
             session_start_utc=raw.get("session_start_utc", ""),
             streams=streams,
+            missing_streams=tuple(missing),
             duration_s=float(raw.get("duration_s", 0.0)),
         )
 

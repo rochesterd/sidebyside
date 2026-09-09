@@ -78,9 +78,43 @@ class SessionLoadTest(unittest.TestCase):
             Session.load(d)
         self.assertIn("format_version", str(ctx.exception))
 
-    def test_missing_stream_file_raises(self):
+    def test_a_missing_stream_file_is_skipped_not_fatal(self):
+        """One camera that captured nothing (the recorder then writes no
+        file at all), or a session copied without all its files, must not
+        make the *other* camera's recording unopenable -- that would throw
+        away good, irreplaceable data over a partial failure. See
+        DECISIONS.md's 2026-09-09 "a dead camera" entry.
+        """
         d = record_session(self.root, 1)
         (d / "instrument.mp4").unlink()
+
+        session = Session.load(d)
+
+        self.assertEqual(set(session.streams), {THIRD_PERSON_STREAM})
+        self.assertEqual(session.missing_streams, (INSTRUMENT_STREAM,))
+        self.assertIsNone(session.instrument)
+        # and it still plays
+        with SessionPlayer(session) as player:
+            self.assertGreater(player.duration, 0.0)
+            self.assertIsNotNone(player.images()[THIRD_PERSON_STREAM])
+
+    def test_a_null_stream_file_is_skipped(self):
+        """What the recorder writes for a camera that captured nothing."""
+        d = record_session(self.root, 1)
+        manifest = d / "session.json"
+        raw = json.loads(manifest.read_text(encoding="utf-8"))
+        raw["streams"][INSTRUMENT_STREAM]["file"] = None
+        manifest.write_text(json.dumps(raw), encoding="utf-8")
+
+        session = Session.load(d)
+
+        self.assertEqual(set(session.streams), {THIRD_PERSON_STREAM})
+        self.assertEqual(session.missing_streams, (INSTRUMENT_STREAM,))
+
+    def test_all_stream_files_missing_raises(self):
+        d = record_session(self.root, 1)
+        (d / "instrument.mp4").unlink()
+        (d / "third_person.mp4").unlink()
         with self.assertRaises(SessionError):
             Session.load(d)
 
