@@ -2000,8 +2000,13 @@ drivers in the package are unsigned once the INF is modified) -- a
 security-posture change affecting the whole machine, for an unverified
 payoff (no guarantee this differently-designed board even initializes
 correctly under a generic reference driver). The proven CLSID/32-bit-helper
-path was already working by the time this was evaluated; not worth the
-risk for an uncertain improvement.
+path was already working by the time this was evaluated, so it stayed.
+
+Note that this paragraph rejected *one specific driver package*, on
+grounds specific to that package. It was later read as a general rule
+that the vendor driver can never be replaced and the 32-bit helper is
+permanent. It is not such a rule, and the 2026-09-09 entry below
+supersedes that reading.
 
 **Wire protocol (`net2860_protocol.py`), why not named pipe/socket/shared
 memory:** A subprocess stdout pipe with a small framed protocol (`RDY1`
@@ -3472,3 +3477,186 @@ review and obvious within seconds of running the thing. The record path
 deserves a few deliberately hostile cameras -- no frames, odd size, lying
 about its resolution -- the same way `test_recorder.py` already keeps a
 deliberately-too-fast one.
+
+
+## 2026-09-09 - The legacy BIO's vendor driver is replaceable after all
+
+### Reversal
+
+The 2026-08-26 `Net2860Camera` entry rejected a generic eMPIA driver and,
+read loosely, has since been treated as a standing rule that the NET GmbH
+vendor driver is the only option and the CLSID/32-bit-helper path is
+permanent. That reading is withdrawn. The rejection was about *one
+package*, on grounds specific to it; it never established that a
+replacement is impossible.
+
+**Why this matters at all: the vendor driver is a finite-lifetime
+dependency.** `net2860_usbx64.sys` carries no embedded signature -- the
+package is catalog-signed via `NET_2860_x64.cat`, whose signer is `CN=NET
+New Electronic Technology Vertriebs GmbH` through GlobalSign, **not**
+Microsoft. It was never WHQL-certified and is therefore **not on Windows
+Update**: a fresh Windows install will not find any driver for this device
+(interface class `0xFF`, no inbox class driver, no matching Update Catalog
+entry). It loads today only through legacy allowances -- a signing cert
+issued 2011-08-04 (before the 2015-07-29 cross-signing cutoff),
+countersigned 2011-10-17, chaining to a `CN=Microsoft Code Verification
+Root` cross-certificate that itself expired 2016-05-23, over a SHA-1
+digest. Confirmed working under Secure Boot on Windows 11 build 26200, so
+nothing is urgent -- but each of those allowances is Microsoft's to
+withdraw, and NET GmbH has left this product line, so the package can
+never be re-signed. **The exported package is the only copy that will ever
+exist; archive it.** `pnputil /export-driver oem0.inf <dir>` yields five
+files, ~300 KB; reinstall with `pnputil /add-driver net_2860_x64.inf
+/install`.
+
+**Signing is not the obstacle to a replacement.** The rejection above
+turned on machine-wide test-signing being an unacceptable security-posture
+change. That reasoning does not carry over, because it conflates two
+distinct gates. Kernel Mode Code Signing -- the gate needing an EV
+certificate and a Partner Center submission -- governs loading *your own*
+`.sys`. Binding the inbox, Microsoft-signed `winusb.sys` (present on every
+Windows install, with `winusb.inf`) ships no kernel code at all, leaving
+only PnP *package* signing, which a self-signed certificate in Trusted
+Root + Trusted Publishers satisfies. No purchase, no Partner Center, no
+test-signing mode, no Secure Boot change. "Trust driver packages from this
+publisher" is a far narrower grant than "load any unsigned kernel code",
+so the objection that killed the eMPIA option does not apply here.
+
+**There is no sensor bring-up to reverse engineer.** Board photography
+identified the two chips the 2026-08-26 entry never got far enough in to
+see: a **Sony CXD3172AR** ("Signal Processor LSI for Single CCD Color
+Camera" -- CCD drive timing, 10-bit ADC, luma/chroma processing, AE/AWB
+detection, and ITU-R BT.656 digital output) and a **Silicon Labs
+C8051F321** MCU closing the AE/AWB loop. Critically there is **no analog
+video decoder anywhere on either board**: the Sony DSP feeds BT.656
+straight into the EM2860, occupying the slot where a consumer EM28xx board
+has a SAA711x/TVP5150 needing per-board I2C bring-up. The camera images
+autonomously -- observed directly, when switching the room light on
+produced a correctly exposed frame with no host involvement whatsoever. A
+host-side driver would configure the *bridge* only, which is the half
+Linux's mainline `em28xx` documents thoroughly.
+
+**Corollary worth stating:** this is why `Net2860Camera` has no
+exposure/gain/white-balance control, unlike `IdsCamera`. That is not a gap
+in the implementation -- the AE/AWB loop lives in F321 firmware the host
+cannot address. A rewrite would inherit exactly the same limitation, so
+don't expect `exposure_calibration.py`-style control to come out of one.
+
+**What the cost actually is: isochronous transport.** The configuration
+descriptor -- read from the hub non-invasively via
+`IOCTL_USB_GET_DESCRIPTOR_FROM_NODE_CONNECTION`, without disturbing the
+running driver -- shows one vendor-specific interface with **eight**
+alternate settings and **no bulk endpoint at all**. Video is
+isochronous-only on EP `0x82`, 11.6 to 24.6 MB/s across alts 2-7,
+high-bandwidth (2-3 transactions per microframe). 720x576 x 2 bytes x
+25fps = 20.7 MB/s falls between alt 5 and alt 6, so the wire format is
+uncompressed YUV422. Sustaining that from Python on Windows -- through
+libusb's least-travelled backend, with no retry and no flow control at
+8000 microframes per second -- is the whole remaining risk, and it is the
+one thing no amount of studying the vendor driver improves.
+
+**Settled by capture, same day:** a USBPcap trace of
+`net2860_helper.py` starting up and streaming (archived, with its decoder
+scripts, at `vendor/net2860_driver/capture/`) shows the host sends the
+F321 and the Sony DSP **nothing at all**. The only vendor requests on the
+wire are `bmRequestType 0xC0 / bRequest 0x00` (register read, `wIndex` =
+register) and `0x40 / 0x01` (register write, `wIndex` = register,
+`wValue` = value) -- exactly Linux `em28xx`'s register protocol, with the
+driver reading every register straight back to verify it. Zero I2C
+transactions to any slave. **The entire initialization is 62 register
+writes** across the EM2860's `0x06`-`0x3f` space, each one recorded in
+`capture/init_sequence.txt`, and the alternate-setting selection rides a
+`URB_FUNCTION_SELECT_INTERFACE` rather than a control transfer. The
+config descriptor the driver fetches matches the one read independently
+from the hub, byte for byte.
+
+That is the whole knowledge half of a replacement, and it is replayable
+as-is. It also confirms the autonomy argument above from the wire rather
+than from inference: nothing configures the imaging, because nothing can.
+Capture was non-invasive (USBPcap sits below the driver, which kept
+streaming throughout); only *development* needs WinUSB bound, which
+unbinds `net2860_usb` and puts the camera out of service until it is
+bound back.
+
+**Not being done now, and this entry does not authorize it.** The current
+path works and the instrument is discontinued. The estimate is ~1.5-3
+weeks, dominated by the isoc pipeline and by hardening to the `BaseCamera`
+contract -- not by knowledge of the device. The cheap insurance (archived
+driver package, plus testing before any Windows upgrade on a clinic
+machine carrying this camera) covers the same risk for nothing. What
+changed is that the option is now open and costed rather than foreclosed.
+
+
+## 2026-09-09 - WinUSB spike: the legacy BIO replacement works, end to end
+
+**Decided:** nothing yet -- this records a spike, not a commitment. But the
+risk the entry above called "the whole remaining risk" is retired, so the
+estimate it carries is now wrong on the high side.
+
+Bound the camera to Microsoft's inbox `winusb.sys` (via Zadig, which
+generates a self-signed INF -- `oem24.inf`, provider `libwdi`, service
+`WinUSB`) and drove it from plain CPython through `ctypes` against inbox
+`winusb.dll`/`setupapi.dll`. **No libusb, no pyusb, no third-party runtime,
+nothing of Keeler's or NET GmbH's.** Code in `spike_net2860_winusb/`.
+
+**Stage 1 -- register protocol.** Replayed the 62 captured writes honouring
+their recorded delays, then read every touched register back: **53 of 53
+match**, and `reg 0x0a` reads `0x22` exactly as the vendor driver's capture
+saw. One correction to the capture reading: a write's SETUP payload is 9
+bytes, not 8 -- the value rides in `wValue` *and* in a trailing data byte,
+so `write_reg` must send both.
+
+**Stage 2 -- isochronous throughput, the actual unknown.** Alt setting 6,
+64 packets per transfer, 8 transfers in flight against one registered
+isoch buffer:
+
+    5.01s: 103,828,540 bytes = 20.74 MB/s
+           40,000 packets, 0 errors (every USBD status 0)
+
+720x576 YUV422 at 25fps needs 20.74 MB/s. It sustained exactly the video
+rate with **zero** packet errors, from ordinary CPython with the GIL and
+GC running -- no C shim, no special scheduling. The fear that Python
+could not hold an isochronous deadline was unfounded at this rate.
+
+**Stage 3 -- framing.** Every packet carries a 4-byte header: `22 5a <seq>
+88` starts a field, `88 88 88 88` continues one (both must be stripped).
+Measured over 4s: **50.2 field headers/s at a 20.0 ms interval** -- exactly
+PAL -- with 414,720 payload bytes between headers, which is precisely
+720x288x2, one field. Interleaving an even/odd pair and running
+`cv2.COLOR_YUV2BGR_YUY2` produces a clean 720x576 BGR frame with no shear
+or tearing. Re-verified with the BIO illuminator switched on: colour is
+correct (no chroma swap), and the frame mean moved 31.4 -> 98.3 from the
+light alone with our code sending nothing -- the onboard AE loop works
+through WinUSB exactly as through Keeler's driver, which is the last
+confirmation that this camera images autonomously. Regenerate the frame by
+running `spike_net2860_winusb/spike4.py` (the PNG is deliberately not
+committed).
+
+**Unexpected bonus: a real frame counter.** Header byte 2 increments
+monotonically 0->127 and wraps, once per field. That is a *source-provided*
+sequence number, so a WinUSB implementation could populate `Frame.index`
+from the device and get genuine dropped-frame detection -- which neither
+`UvcCamera` nor today's `Net2860Camera` has (both self-count, the
+documented deviation in CLAUDE.md). `recorder.py`'s drop accounting would
+become real for this camera rather than best-effort.
+
+**Revised estimate.** The ~1.5-3 weeks above was dominated by isochronous
+risk and frame assembly. Both are now prototyped and working. What remains
+is ordinary: wrap it in the `BaseCamera` contract with proper threading and
+buffering, reconnect handling, a production INF plus signing story to
+replace Zadig's, `config.py`/`settings.py` integration, and tests. Call it
+**1-1.5 weeks with no unknowns left**.
+
+**What this buys, restated:** no vendor driver to redistribute (so the
+Keeler permission question stops mattering), no 32-bit helper subprocess,
+no `.venv32`, no CLSID/`RunOnce` registration gotcha, no SHA-1
+cross-signed driver on borrowed time -- and `Net2860Camera` collapses into
+an ordinary in-process `BaseCamera` like `uvc_camera.py`. Every one of the
+four plug-and-play gaps identified for the vendor path disappears rather
+than being worked around.
+
+**State the dev machine is in:** the camera is bound to WinUSB, so `app.py`
+cannot use it until the vendor driver is restored (Device Manager -> Update
+driver -> `C:\Program Files (x86)\2860_Cam\driver`, byte-identical to
+`vendor/net2860_driver/`). Left on WinUSB deliberately for continued work;
+the BIO itself is awaiting a repair part regardless.
