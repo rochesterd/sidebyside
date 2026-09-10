@@ -244,6 +244,36 @@ path on a machine that already has IDS peak, and the failed-silent-install
 error dialog (the rename-`vendor\ids-peak-response.iss` test). See
 `DECISIONS.md`'s 2026-09-09 entry.
 
+## What an uninstall removes
+
+Scope is deliberate, not whatever Inno's defaults happen to do.
+
+**Removed:**
+
+- Everything under `{app}` — both frozen exes and the driver package files
+- The staged WinUSB driver package (`pnputil /delete-driver ... /uninstall`)
+- The signing certificate, from both Trusted Root and Trusted Publishers
+
+The driver's published name is `oemNN.inf`, and **the number is assigned at
+install time** — it was observed changing from `oem360` to `oem24` across
+two installs on one machine as Windows reused a freed slot. So it is looked
+up at uninstall time by scanning `pnputil /enum-drivers` for the stable
+original filename, never hardcoded or remembered from install. That also
+covers a package staged by `build_driver_package.ps1 -Install` on a dev
+box, which the installer never saw.
+
+**Kept, each for its own reason:**
+
+| | Why |
+|---|---|
+| Recordings under `sessions_dir` | Irreplaceable student work, not build output. CLAUDE.md is explicit. An uninstall must never take them. |
+| `config.json` | Holds camera assignments and calibration. A reinstall finding them intact is strictly better. |
+| The IDS peak SDK | Shared — Keeler's Kinexis uses the same install, so removing it could break unrelated software. It has its own uninstaller. |
+
+Removing the certificate matters more than it looks: self-signing was
+justified on the grounds that trusting it is a *narrow, revocable* grant.
+A grant nothing ever revokes is not narrow.
+
 ## 6. Compile the viewer-only installer
 
 Needs only step 2's `viewer.spec` build — no `vendor/` contents, no

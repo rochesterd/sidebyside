@@ -311,6 +311,99 @@ begin
       mbError, MB_OK);
 end;
 
+function FindPublishedDriverName(): String;
+(* pnputil renames a staged package to oemNN.inf, and the number is
+   assigned at install time -- observed changing from oem360 to oem24
+   across two installs on the same machine as Windows reused a freed slot.
+   So it cannot be recorded at install time and trusted later, and it
+   certainly cannot be hardcoded. Look it up by the original filename
+   instead, which is stable.
+
+   Deliberately done at uninstall time rather than remembered from the
+   install: that also covers a package staged by
+   packaging\net2860_winusb\build_driver_package.ps1 -Install on a dev
+   box, which this installer never saw. *)
+var
+  TempFile, Line, PubName: String;
+  Lines: TArrayOfString;
+  I, ResultCode: Integer;
+begin
+  Result := '';
+  TempFile := ExpandConstant('{tmp}\sidebyside-pnputil-enum.txt');
+  Exec(ExpandConstant('{cmd}'), '/c ""' + ExpandConstant('{sys}\pnputil.exe') +
+    '" /enum-drivers > "' + TempFile + '""', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not LoadStringsFromFile(TempFile, Lines) then
+    Exit;
+
+  PubName := '';
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Lines[I];
+    if Pos('Published Name:', Line) > 0 then
+      PubName := Trim(Copy(Line, Pos(':', Line) + 1, Length(Line)));
+    (* Only the "Original Name:" line carries our filename -- the published
+       name is always oemNN.inf -- so this cannot match the wrong block. *)
+    if Pos('sidebyside_net2860.inf', Line) > 0 then
+    begin
+      Result := PubName;
+      Exit;
+    end;
+  end;
+end;
+
+procedure RemoveLegacyBioDriver();
+(* Undoes exactly what InstallLegacyBioDriver() did, and nothing else.
+
+   WHAT THIS DELIBERATELY DOES NOT TOUCH, because leaving it was previously
+   an accident of what was absent from [Files] rather than a decision (see
+   ROADMAP.md's 2026-08-26 entry):
+
+     - Recordings, wherever sessions_dir points. CLAUDE.md is explicit that
+       these are irreplaceable student work, not build output. An uninstall
+       must never take them.
+     - config.json. Cheap to keep, and it holds a technician's camera
+       assignments and calibration -- a reinstall that finds them intact is
+       strictly better than one that does not.
+     - The IDS peak SDK. Shared: other software (Keeler's own Kinexis) uses
+       the same install, so removing it could break an unrelated
+       application. It also has its own uninstaller.
+
+   WHAT IT DOES REMOVE, because this installer added them and nothing else
+   uses them: the WinUSB driver package it staged, and the certificate it
+   trusted. Leaving a self-signed root certificate behind after the
+   software that justified it is gone would quietly undercut the whole
+   argument for self-signing -- that it is a narrow, revocable grant. A
+   grant nothing ever revokes is not narrow. *)
+var
+  DriverName: String;
+  ResultCode: Integer;
+begin
+  DriverName := FindPublishedDriverName();
+  if DriverName <> '' then
+    Exec(ExpandConstant('{sys}\pnputil.exe'), '/delete-driver ' + DriverName + ' /uninstall',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  (* Matches CertSubject in build_driver_package.ps1. Failures are ignored:
+     the certificate may already be gone, and an uninstall that halts
+     because a cleanup step found nothing to clean would be worse than one
+     that quietly finishes. *)
+  Exec(ExpandConstant('{sys}\certutil.exe'), '-delstore Root "NECO sidebyside driver signing"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\certutil.exe'),
+    '-delstore TrustedPublisher "NECO sidebyside driver signing"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  (* usUninstall runs before Inno removes {app}, which this needs: the
+     driver lookup reads pnputil's own enumeration rather than {app}, but
+     keeping the order explicit means a future step that does read {app}
+     is already in the right place. *)
+  if CurUninstallStep = usUninstall then
+    RemoveLegacyBioDriver();
+end;
+
 function NeedRestart(): Boolean;
 begin
   (* Inno's real native mechanism -- shows the actual restart-choice

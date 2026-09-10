@@ -3832,3 +3832,53 @@ displays what the sensor gives. A retina image has no text and no inherent
 "up", so such a difference could go unnoticed indefinitely in clinical
 use. `tools/net2860_identity.py` dumps the full fingerprint for whenever
 that question returns.
+
+
+## 2026-09-10 - Uninstall scope is now a decision, not an accident
+
+**Decided:** `sidebyside.iss` gains a `CurUninstallStepChanged` handler
+that removes the staged WinUSB driver package and the signing certificate,
+and PACKAGING.md documents what survives and why. ROADMAP.md's 2026-08-26
+entry had flagged the uninstaller's scope as "never verified or written
+down" -- a real open item rather than a shelved idea.
+
+**What forced it now.** Today's driver work added two things no uninstall
+touched: a package staged into the Windows driver store, and a self-signed
+certificate trusted into Root *and* TrustedPublisher. The second is the
+one that matters. Self-signing was justified here on the grounds that
+trusting the certificate is a **narrow, revocable** grant -- explicitly
+unlike the machine-wide test-signing that DECISIONS.md rejected for the
+eMPIA driver. A grant that nothing ever revokes is not narrow, and leaving
+a self-signed root certificate on a clinic machine after the software
+justifying it is gone would have quietly hollowed out that argument.
+
+**Kept, each for its own reason** rather than by omission:
+
+- **Recordings.** CLAUDE.md is explicit that these are irreplaceable
+  student work, not build output. An uninstall must never take them.
+- **`config.json`.** Holds a technician's camera assignments and
+  calibration. A reinstall that finds them intact is strictly better than
+  one that does not.
+- **The IDS peak SDK.** Shared -- Keeler's own Kinexis uses the same
+  install, so removing it could break unrelated software. It has its own
+  uninstaller.
+
+**The published name cannot be remembered or hardcoded.** `pnputil` renames
+a staged package to `oemNN.inf`, and the number is assigned at install
+time: observed changing from `oem360` to `oem24` across two installs on
+this machine as Windows reused a freed slot. So the uninstaller scans
+`pnputil /enum-drivers` for the stable original filename and reads the
+`Published Name:` above it. That also handles a package staged by
+`build_driver_package.ps1 -Install` on a dev box, which the installer
+never saw -- a case remembering install-time state would have missed.
+
+**Verified as far as it can be without a target machine:** the lookup
+logic was replayed against this machine's real `pnputil` output and
+returns `oem24.inf` correctly, and the certificate is present in Root
+under the exact subject the uninstaller targets. The installer compiles.
+An actual uninstall has not been run end to end -- that needs the clean
+machine the install test is also waiting on.
+
+**One Pascal trap, noted where it bit:** `Published` is a reserved word in
+Inno's Pascal Script (a class visibility specifier), so a variable of that
+name fails to compile with a bare "Identifier expected".

@@ -884,6 +884,15 @@ neither is committed work.
   stance that recordings are irreplaceable. Real open item, unlike the
   shelved tool above — just not yet acted on.
 
+  **Acted on 2026-09-10.** `sidebyside.iss` now has a
+  `CurUninstallStepChanged` handler, and PACKAGING.md documents the scope,
+  so what survives an uninstall is a decision rather than an accident.
+  Recordings, `config.json` and the IDS peak SDK are kept, each for its own
+  stated reason. What forced the issue was the WinUSB driver work: it added
+  a staged driver package *and* a trusted self-signed root certificate, and
+  a certificate nothing ever revokes is not the "narrow, revocable grant"
+  that justified self-signing in the first place. Both are now removed.
+
 ---
 
 ## 2026-08-26 — Recorder/Viewer split under consideration (architecture, not decided)
