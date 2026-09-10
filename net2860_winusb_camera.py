@@ -42,7 +42,7 @@ import time
 import cv2
 import numpy as np
 
-from camera import ORIENTATION_FLIP_VERTICAL, BaseCamera
+from camera import ORIENTATION_ROTATE_180, BaseCamera
 from net2860_init import START_WRITES, STOP_WRITES
 from winusb import IsochReader, WinUsbDevice, WinUsbError
 
@@ -99,16 +99,27 @@ class Net2860WinUsbCamera(BaseCamera):
         self,
         label: str = "bio-legacy",
         queue_size: int = 2,
-        orientation: str | None = ORIENTATION_FLIP_VERTICAL,
+        orientation: str | None = ORIENTATION_ROTATE_180,
         alt: int = DEFAULT_ALT,
         packets_per_transfer: int = 64,
         transfer_depth: int = 8,
     ):
-        # flip_vertical by default: the instrument's optics deliver a
-        # vertically-flipped image -- the same flip device_presets.py
-        # applies to the newer BIO, and that the removed vendor-driver
-        # helper hardcoded as a bare np.flip. Routed through BaseCamera's
-        # orientation mechanic here so every consumer sees it the same way.
+        # rotate_180, NOT flip_vertical: observed on the instrument, the raw
+        # sensor image is reversed on *both* axes, which is a 180-degree
+        # rotation rather than two separate flips (see camera.py's
+        # VALID_ORIENTATIONS note).
+        #
+        # This deliberately differs from what the removed vendor-driver
+        # helper did -- it hardcoded a bare np.flip(axis=0), a vertical flip
+        # only. The likeliest explanation is that the vendor's DirectShow
+        # filter already mirrored horizontally before handing frames over,
+        # so a vertical flip was all that remained to add. This path bypasses
+        # that filter entirely and sees the raw sensor, so it needs both.
+        # Unverified as an explanation, but the observation it accounts for
+        # is not in doubt.
+        #
+        # Routed through BaseCamera's orientation mechanic rather than a
+        # hardcoded flip, so every consumer sees it applied identically.
         super().__init__(queue_size=queue_size, label=label, orientation=orientation)
         self._alt = alt
         self._packets = packets_per_transfer

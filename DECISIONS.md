@@ -3718,3 +3718,46 @@ product code, and the capture remains the provenance for the init sequence.
 
 Full suite 320 passing, down from 349 -- the removed tests were the vendor
 path's own plus duplicates of coverage the WinUSB tests already provide.
+
+
+## 2026-09-10 - The legacy BIO needs rotate_180, not flip_vertical
+
+**Decided:** `Net2860WinUsbCamera`'s default orientation is
+`rotate_180`. Reported from the instrument: the image was reversed on
+*both* axes, up/down and left/right. That is one 180-degree rotation, not
+two flips -- see camera.py's `VALID_ORIENTATIONS` note.
+
+**Why the earlier value was wrong, and why it looked right.** The camera
+was given `flip_vertical` on the reasoning that the removed vendor-driver
+helper hardcoded `np.flip(img, axis=0)`, and that the newer BIO's IDS
+camera uses `flip_vertical` in `device_presets.py`. Both were real
+precedents and both were misleading here.
+
+It was then "confirmed" by looking at a captured frame whose only legible
+feature was text running *vertically* up the right-hand edge. For
+90-degree-rotated text a vertical flip and a horizontal flip are hard to
+tell apart by eye, so that check could not have distinguished
+`flip_vertical` from `rotate_180` -- it produced a confident conclusion
+from evidence that did not support one. **Orientation needs a scene with
+horizontal text or an obvious left/right asymmetry; a featureless glow or
+rotated text cannot settle it.** Two later attempts to verify the fix
+failed for exactly this reason: the illuminator was pointed at nothing
+structured, so all four transforms looked equally plausible.
+
+**Why the vendor path only needed a vertical flip.** Most likely the
+vendor's DirectShow filter (`netvecam4.ax`) already mirrored horizontally
+before handing frames over, leaving the helper only the vertical flip to
+add. The WinUSB path bypasses that filter entirely and sees the raw sensor
+output, so it has to do both. Unverified as an explanation -- the filter is
+gone and there is nothing left to test it against -- but it accounts for
+the discrepancy without either observation being wrong.
+
+**The generalisable point:** the two Vantage Plus BIOs do *not* share an
+orientation correction, despite being the same instrument family. The
+docs asserted they did, in three places. A shared instrument model is not
+evidence of a shared sensor mounting, and the transform belongs to the
+camera and its mount rather than to the instrument's name.
+
+`rotate_180` lives in `net2860_winusb_camera.py`'s default rather than in
+`device_presets.py`, which keys off IDS model strings this camera does not
+have.

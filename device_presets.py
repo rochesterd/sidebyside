@@ -4,8 +4,10 @@ a technician having to discover and configure them.
 
 Today this is only image orientation. The Keeler Vantage Plus Digital BIO
 delivers a vertically-flipped image (the instrument's optical path mirrors
-it, and it's the same on every unit -- the older BIO camera needs the
-identical flip, see net2860_winusb_camera.py). That's a property of the
+it, and it's the same on every unit. The older BIO's camera needs a
+different correction -- rotate_180, not flip_vertical -- and sets its own
+default in net2860_winusb_camera.py, since it has no IDS model string for
+this table to match). That's a property of the
 product, not a per-clinic variation, so it belongs here and not in
 config.json. A config.json `orientation` value still overrides this (see
 config.py / app.py) as an escape hatch for a non-standard mounting. See
