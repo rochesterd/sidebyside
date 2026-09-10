@@ -64,6 +64,11 @@ class SP_DEVICE_INTERFACE_DATA(C.Structure):
                 ("Flags", W.DWORD), ("Reserved", C.POINTER(C.c_ulonglong))]
 
 
+class SP_DEVINFO_DATA(C.Structure):
+    _fields_ = [("cbSize", W.DWORD), ("ClassGuid", GUID),
+                ("DevInst", W.DWORD), ("Reserved", C.POINTER(C.c_ulonglong))]
+
+
 class WINUSB_SETUP_PACKET(C.Structure):
     _pack_ = 1
     _fields_ = [("RequestType", C.c_ubyte), ("Request", C.c_ubyte),
@@ -93,6 +98,8 @@ setupapi.SetupDiEnumDeviceInterfaces.argtypes = [C.c_void_p, C.c_void_p, C.c_voi
 setupapi.SetupDiGetDeviceInterfaceDetailW.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p,
                                                       W.DWORD, C.c_void_p, C.c_void_p]
 setupapi.SetupDiDestroyDeviceInfoList.argtypes = [C.c_void_p]
+setupapi.SetupDiGetDeviceInstanceIdW.argtypes = [C.c_void_p, C.c_void_p, C.c_wchar_p,
+                                                 W.DWORD, C.c_void_p]
 kernel32.CreateFileW.restype = C.c_void_p
 kernel32.CreateEventW.restype = C.c_void_p
 kernel32.CloseHandle.argtypes = [C.c_void_p]
@@ -140,29 +147,51 @@ def _service(instance_id: str) -> str:
         return ""
 
 
-def _path_for_guid(guid_str: str) -> str | None:
+def _interfaces_for_guid(guid_str: str) -> list[tuple[str, str]]:
+    """Every present device interface for a GUID, as (instance_id, path).
+
+    Enumerates *all* of them and reads each one's owning device instance
+    from the enumeration rather than assuming one interface per GUID. Our
+    INF declares a single fixed DeviceInterfaceGUID, so every unit of this
+    camera model shares it -- looking only at index 0 would return the same
+    device once per instance that happened to be registered, which is
+    exactly the duplicate that made find_by_vid_pid() report "2 devices"
+    with one camera attached.
+    """
     guid = GUID.from_string(guid_str)
     h = setupapi.SetupDiGetClassDevsW(C.byref(guid), None, None,
                                       DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
     if not h or h == INVALID_HANDLE:
-        return None
+        return []
+    out: list[tuple[str, str]] = []
     try:
-        did = SP_DEVICE_INTERFACE_DATA()
-        did.cbSize = C.sizeof(did)
-        if not setupapi.SetupDiEnumDeviceInterfaces(h, None, C.byref(guid), 0, C.byref(did)):
-            return None
-        need = W.DWORD()
-        setupapi.SetupDiGetDeviceInterfaceDetailW(h, C.byref(did), None, 0, C.byref(need), None)
-        buf = C.create_string_buffer(need.value)
-        # cbSize of the fixed part of SP_DEVICE_INTERFACE_DETAIL_DATA_W, which
-        # is 8 on 64-bit (DWORD + WCHAR[ANYSIZE] with 8-byte alignment).
-        C.cast(buf, C.POINTER(W.DWORD))[0] = 8
-        if not setupapi.SetupDiGetDeviceInterfaceDetailW(h, C.byref(did), C.cast(buf, C.c_void_p),
-                                                         need, C.byref(need), None):
-            return None
-        return C.wstring_at(C.addressof(buf) + 4)
+        index = 0
+        while True:
+            did = SP_DEVICE_INTERFACE_DATA()
+            did.cbSize = C.sizeof(did)
+            if not setupapi.SetupDiEnumDeviceInterfaces(h, None, C.byref(guid), index, C.byref(did)):
+                break
+            index += 1
+            need = W.DWORD()
+            devinfo = SP_DEVINFO_DATA()
+            devinfo.cbSize = C.sizeof(devinfo)
+            setupapi.SetupDiGetDeviceInterfaceDetailW(h, C.byref(did), None, 0, C.byref(need), None)
+            buf = C.create_string_buffer(need.value)
+            # cbSize of the fixed part of SP_DEVICE_INTERFACE_DETAIL_DATA_W,
+            # which is 8 on 64-bit (DWORD + WCHAR[ANYSIZE], 8-byte aligned).
+            C.cast(buf, C.POINTER(W.DWORD))[0] = 8
+            if not setupapi.SetupDiGetDeviceInterfaceDetailW(
+                    h, C.byref(did), C.cast(buf, C.c_void_p), need, C.byref(need),
+                    C.byref(devinfo)):
+                continue
+            path = C.wstring_at(C.addressof(buf) + 4)
+            idbuf = C.create_unicode_buffer(512)
+            if not setupapi.SetupDiGetDeviceInstanceIdW(h, C.byref(devinfo), idbuf, 512, None):
+                continue
+            out.append((idbuf.value, path))
     finally:
         setupapi.SetupDiDestroyDeviceInfoList(h)
+    return out
 
 
 def find_by_vid_pid(vid: int, pid: int) -> list[tuple[str, str]]:
@@ -174,7 +203,13 @@ def find_by_vid_pid(vid: int, pid: int) -> list[tuple[str, str]]:
     re-plugs, and is the classic way a setup like this breaks silently.
     """
     enum_key = "SYSTEM\\CurrentControlSet\\Enum\\USB\\VID_%04X&PID_%04X" % (vid, pid)
-    found: list[tuple[str, str]] = []
+    prefix = "USB\\VID_%04X&PID_%04X\\" % (vid, pid)
+
+    # Registry pass: which instances of this VID/PID are bound to WinUSB, and
+    # which interface GUID(s) their INF registered. This says nothing about
+    # whether the device is actually plugged in -- stale instances from other
+    # USB ports persist here indefinitely.
+    guids: set[str] = set()
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, enum_key) as k:
             i = 0
@@ -184,17 +219,21 @@ def find_by_vid_pid(vid: int, pid: int) -> list[tuple[str, str]]:
                 except OSError:
                     break
                 i += 1
-                instance = "USB\\VID_%04X&PID_%04X\\%s" % (vid, pid, sub)
-                if _service(instance).lower() != "winusb":
-                    continue
-                for guid in _interface_guids(instance):
-                    path = _path_for_guid(guid)
-                    if path:
-                        found.append((instance, path))
-                        break
+                instance = prefix + sub
+                if _service(instance).lower() == "winusb":
+                    guids.update(_interface_guids(instance))
     except OSError:
         pass
-    return found
+
+    # Interface pass: which of them are present *now*. This is what decides
+    # the answer -- SetupAPI enumerates live interfaces, so a stale registry
+    # instance contributes nothing here.
+    found: dict[str, tuple[str, str]] = {}
+    for guid in guids:
+        for instance, path in _interfaces_for_guid(guid):
+            if instance.upper().startswith(prefix.upper()):
+                found.setdefault(path, (instance, path))
+    return sorted(found.values())
 
 
 class WinUsbDevice:
