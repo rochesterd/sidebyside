@@ -3796,3 +3796,39 @@ CLAUDE.md is explicit that the coordination between the hands and the
 instrument view is the entire point of the recording. `none` happens to
 satisfy both readings for the bench scene tested here, so nothing is
 blocked, but a retina view through the real optics has not been checked.
+
+## 2026-09-10 - The two BIOs' orientation difference was a missing mirror
+
+**Closes the question left open by the entry above.** Two Vantage Plus
+BIOs appeared to present images 180 degrees apart through the same driver
+and the same VID/PID, which raised a real design question: if units differ
+by generation, orientation could be a per-revision preset; if they differ
+per-unit, it has to become a technician setting in `config.json`, which
+would have reversed the decision to keep it out of the settings dialog.
+
+Neither. The workbench unit had its mirror removed pending a repair. **A
+single plane mirror is orientation-reversing** -- it flips handedness, so
+the view through one 45-degree mirror is a mirror image of the direct
+view, and no rotation restores it. The instinct that "looking down through
+a mirror at 45 degrees is the same as looking straight ahead" is wrong for
+exactly this reason.
+
+`ORIENTATION_NONE` therefore stands, `orientation` stays out of
+`config.json` for this kind, and no per-revision preset is needed.
+
+**Worth keeping from the false alarm:** a 180-degree rotation and a mirror
+flip are different failures with different causes, and they are trivially
+separable without software -- rotated text becomes readable by turning
+your head, mirrored text does not. Every orientation mistake made today
+came from evidence that could not distinguish the two cases. That test
+should be the first thing tried, not the last.
+
+Also established while chasing it: this camera's USB identity surface is
+almost empty -- `bcdDevice 0x0100` is the only populated field, with no
+manufacturer, product or serial string. If two units ever *do* differ,
+Keeler's Kapture has essentially nothing to detect it with either, which
+suggests Kapture does not compensate for orientation at all and simply
+displays what the sensor gives. A retina image has no text and no inherent
+"up", so such a difference could go unnoticed indefinitely in clinical
+use. `tools/net2860_identity.py` dumps the full fingerprint for whenever
+that question returns.

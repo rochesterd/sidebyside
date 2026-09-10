@@ -1,12 +1,18 @@
 r"""Dump everything the host can learn about a legacy BIO camera, so two
 physical units can be compared.
 
-Why this exists: two Keeler Vantage Plus BIOs in service at NECO present
-images 180 degrees apart from each other, through the same driver and the
-same VID/PID. If the difference is visible to the host, orientation can be
-a per-revision preset (the way device_presets.py keys off IDS model
-names). If it is not, orientation is a per-unit fact that only a
-technician can know, and it has to become a config.json setting.
+Why this exists: two Keeler Vantage Plus BIOs appeared to present images
+180 degrees apart, raising the question of whether units differ by
+generation in a way the host could detect. That turned out to be a false
+alarm -- one unit simply had its mirror removed for repair, and a single
+plane mirror reverses the image (see DECISIONS.md 2026-09-10). No
+per-unit difference is known.
+
+The tool is kept because the question will recur the next time two units
+disagree, and because the answer decides the design: if units differ over
+USB, orientation can be a per-revision preset the way device_presets.py
+keys off IDS model names; if they do not, it has to become a technician
+setting in config.json.
 
 Run it with one unit attached, save the output, swap units, run it again,
 and diff:
