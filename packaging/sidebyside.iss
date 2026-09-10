@@ -75,6 +75,18 @@ Source: "..\vendor\ids-peak-win-extended-setup-64.exe"; DestDir: "{tmp}"; Flags:
 Source: "..\vendor\{#IdsPeakResponseFile}"; DestDir: "{tmp}"; Flags: dontcopy
 Source: "dist\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "dist\settings\*"; DestDir: "{app}\settings"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The WinUSB driver package for the older Vantage Plus BIO's camera --
+; built and self-signed by packaging\net2860_winusb\build_driver_package.ps1,
+; which must be run before compiling this script (the .cat and .cer are
+; gitignored build outputs, so a fresh checkout does not have them).
+;
+; Installed permanently under {app} rather than extracted to {tmp}: a
+; technician who needs to re-bind the camera later (say after someone
+; reinstalls Keeler's Kapture over it) can then do it from the installed
+; copy, without the setup exe.
+Source: "net2860_winusb\sidebyside_net2860.inf"; DestDir: "{app}\driver"; Flags: ignoreversion
+Source: "net2860_winusb\sidebyside_net2860.cat"; DestDir: "{app}\driver"; Flags: ignoreversion
+Source: "net2860_winusb\sidebyside_net2860.cer"; DestDir: "{app}\driver"; Flags: ignoreversion
 
 [Icons]
 ; app.exe only on the Desktop -- this is what closes the "how does a
@@ -221,6 +233,84 @@ begin
   IdsPeakInstalledThisRun := True;
 end;
 
+procedure InstallLegacyBioDriver();
+(* Installs the WinUSB driver package that binds the older Vantage Plus
+   BIO's camera (NET GmbH KS722OUP / eMPIA EM2860). Two steps: trust the
+   certificate that signed the package, then stage the package itself.
+
+   WHY A CERTIFICATE HAS TO BE TRUSTED AT ALL: the package contains no
+   binaries -- every install section is an Include/Needs into the inbox
+   winusb.inf, so the only kernel driver involved is Microsoft's own
+   already-signed winusb.sys. That means Kernel Mode Code Signing (the
+   gate needing an EV certificate and a Partner Center submission) never
+   applies, and what remains is ordinary PnP *package* signing, which a
+   self-signed certificate satisfies. Adding it to Root and
+   TrustedPublisher is a narrow grant -- "trust driver packages from this
+   publisher" -- and specifically NOT machine-wide test-signing, which
+   DECISIONS.md rejected for a different driver on exactly this axis.
+
+   NOT FATAL ON FAILURE, deliberately: this camera is optional hardware.
+   A clinic with only IDS instruments must not have its install aborted
+   because an optional driver step failed. But it is reported rather than
+   swallowed -- a silently missing driver would surface much later as a
+   camera that simply never appears in settings.py's dropdown.
+
+   Staged even when no such camera is attached. pnputil staging is
+   harmless without the device -- the package just sits in the driver
+   store and binds if one is ever plugged in -- and that is what makes
+   the camera plug-and-play afterwards rather than needing a second
+   visit. *)
+var
+  DriverDir, CerPath, InfPath: String;
+  ResultCode: Integer;
+begin
+  DriverDir := ExpandConstant('{app}\driver');
+  CerPath := DriverDir + '\sidebyside_net2860.cer';
+  InfPath := DriverDir + '\sidebyside_net2860.inf';
+
+  if not FileExists(InfPath) or not FileExists(CerPath) then
+  begin
+    (* #13#10 kept mid-line, never at the start of one: ISPP reads a '#'
+       in the first non-whitespace position as a preprocessor directive
+       and aborts the compile. *)
+    MsgBox('The legacy BIO camera driver was not included in this installer, ' +
+      'so that camera will not be available. Every other camera is ' +
+      'unaffected.' + #13#10 + #13#10 + 'This means the installer was built ' +
+      'without running packaging\net2860_winusb\build_driver_package.ps1 ' +
+      'first -- see PACKAGING.md.', mbInformation, MB_OK);
+    Exit;
+  end;
+
+  (* Root and TrustedPublisher both: Root makes the chain verify at all,
+     TrustedPublisher stops Windows prompting the technician to confirm
+     the publisher during a silent install. *)
+  Exec(ExpandConstant('{sys}\certutil.exe'), '-addstore -f Root "' + CerPath + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode = 0 then
+    Exec(ExpandConstant('{sys}\certutil.exe'), '-addstore -f TrustedPublisher "' + CerPath + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  if ResultCode <> 0 then
+  begin
+    MsgBox('Could not trust the driver signing certificate (exit code ' +
+      IntToStr(ResultCode) + '). The older BIO camera will not be available; ' +
+      'every other camera is unaffected.', mbError, MB_OK);
+    Exit;
+  end;
+
+  (* /install binds it to a matching device that is already attached, as
+     well as staging it for one plugged in later. Confirmed to take over
+     from Keeler's vendor driver in a single call, with no removal step
+     needed -- see DECISIONS.md's 2026-09-10 entry. *)
+  Exec(ExpandConstant('{sys}\pnputil.exe'), '/add-driver "' + InfPath + '" /install',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then
+    MsgBox('Could not install the older BIO camera driver (pnputil exit code ' +
+      IntToStr(ResultCode) + '). That camera will not be available; every other ' +
+      'camera is unaffected. The driver can be installed later from ' + DriverDir + '.',
+      mbError, MB_OK);
+end;
+
 function NeedRestart(): Boolean;
 begin
   (* Inno's real native mechanism -- shows the actual restart-choice
@@ -240,4 +330,11 @@ begin
      reversed. *)
   if CurStep = ssInstall then
     InstallIdsPeakSilently();
+
+  (* ssPostInstall, unlike the IDS step above: this one reads files out of
+     {app}\driver, which Inno has not copied yet at ssInstall time. It also
+     has no NeedRestart() interaction to be early for -- binding WinUSB
+     takes effect immediately. *)
+  if CurStep = ssPostInstall then
+    InstallLegacyBioDriver();
 end;

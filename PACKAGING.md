@@ -30,6 +30,20 @@ a separate Windows tool): `winget install --id JRSoftware.InnoSetup -e`,
 or download from https://jrsoftware.org. Its command-line compiler,
 `ISCC.exe`, installs to `%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe`.
 
+You also need the tools that sign the legacy BIO's WinUSB driver package.
+They come from **two different kits**, and installing only the SDK is the
+easy mistake — it gets you `signtool` and leaves `Inf2Cat` missing:
+
+| Tool | Kit |
+|---|---|
+| `signtool.exe` | Windows **SDK** — tick only "Windows SDK Signing Tools for Desktop Apps"; the rest of that installer's 3.6 GB is irrelevant here |
+| `Inf2Cat.exe` | Windows **WDK** — `winget install Microsoft.WindowsWDK.10.0.<version>` |
+
+The WDK version must match the **SDK** version you installed, not the OS
+build. Install the SDK first; the WDK checks for it as a prerequisite.
+
+Clinic machines need none of this — only the three files step 2b produces.
+
 ## Two installers
 
 This procedure produces **two** distributables, for two different
@@ -85,6 +99,41 @@ machine can't satisfy. Confirmed on the 2026-09-02 build — the frozen
   `viewer.exe` with no arguments must show the picker (it logs "no usable
   config.json … using the default recordings folder" and lists nothing —
   that's the correct review-machine path, not a failure).
+
+## 2b. Build and sign the legacy BIO driver package
+
+```powershell
+powershell -File packaging\net2860_winusb\build_driver_package.ps1
+```
+
+Produces three files next to that script, which `sidebyside.iss` copies
+into the install:
+
+```
+sidebyside_net2860.inf   binds Microsoft's inbox winusb.sys to the camera
+sidebyside_net2860.cat   its catalogue, signed and timestamped
+sidebyside_net2860.cer   the public certificate, trusted at install time
+```
+
+**The `.cat` and `.cer` are gitignored build outputs**, so a fresh checkout
+does not have them and `ISCC.exe` will fail at step 5 with a missing-source
+error if this step is skipped. That is deliberate — a missing file at
+compile time is a much better failure than an installer that silently ships
+without a driver.
+
+The script is re-runnable and reuses an existing certificate rather than
+minting a new one. **Back that certificate up** (`Export-PfxCertificate` —
+the command is in the script's header). It lives in the build user's
+certificate store, and losing it means the next build signs as a *different*
+publisher: machines that already trust the old certificate will reject the
+new package until the new `.cer` is installed there too. The installer does
+install the `.cer`, so this self-heals on a reinstall rather than bricking
+anything — but it turns a driver update into a certificate rollout.
+
+Why self-signed is enough: the package ships no binaries of its own (every
+install section is an `Include`/`Needs` into the inbox `winusb.inf`), so
+Kernel Mode Code Signing — the gate needing an EV certificate and a Partner
+Center submission — never applies. See DECISIONS.md's 2026-09-09 entries.
 
 ## 3. Get the IDS peak extended installer into `vendor/`
 

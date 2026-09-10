@@ -21,6 +21,12 @@
 # edit makes the viewer import ids_camera or uvc_enumeration, this build
 # fails loudly instead of silently gaining a 300MB SDK dependency the
 # review machine can't satisfy.
+#
+# winusb/net2860_winusb_camera are listed for the same reason rather than
+# for size -- they are small, pure-Python and would cost nothing to ship.
+# The point is that the viewer reaching them would mean the review build
+# had grown a camera dependency, and a review machine has no cameras and
+# no driver package installed.
 
 a = Analysis(
     ['../viewer.py'],
@@ -31,7 +37,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['ids_peak', 'ids_peak_ipl', 'pygrabber', 'comtypes'],
+    excludes=['ids_peak', 'ids_peak_ipl', 'pygrabber', 'comtypes',
+              'winusb', 'net2860_winusb_camera'],
     noarchive=False,
     optimize=0,
 )
