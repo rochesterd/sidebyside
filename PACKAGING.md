@@ -122,13 +122,22 @@ compile time is a much better failure than an installer that silently ships
 without a driver.
 
 The script is re-runnable and reuses an existing certificate rather than
-minting a new one. **Back that certificate up** (`Export-PfxCertificate` —
-the command is in the script's header). It lives in the build user's
-certificate store, and losing it means the next build signs as a *different*
-publisher: machines that already trust the old certificate will reject the
-new package until the new `.cer` is installed there too. The installer does
-install the `.cer`, so this self-heals on a reinstall rather than bricking
-anything — but it turns a driver update into a certificate rollout.
+minting a new one. That certificate's private key lives only in the build
+user's certificate store on the build machine — **it is deliberately not
+backed up** (decided 2026-09-10).
+
+The consequence, so it isn't a surprise: lose that machine and the next
+build signs as a *different* publisher. Nothing bricks, because the
+installer ships and trusts the new `.cer` alongside the driver, so a normal
+reinstall self-heals. What you give up is the ability to push a
+**driver-only** update — a one-file fix becomes "re-run the full installer
+everywhere, to roll out the new certificate too". That was judged an
+acceptable trade against the alternatives (backing up a private key
+indefinitely, or paying for a commercial OV certificate whose CA can
+re-issue).
+
+If you ever do want to preserve it, `Export-PfxCertificate` — the command
+is in the script's header.
 
 Why self-signed is enough: the package ships no binaries of its own (every
 install section is an `Include`/`Needs` into the inbox `winusb.inf`), so

@@ -27,14 +27,14 @@
 # Re-runnable: reuses an existing certificate with the same subject rather
 # than minting a new one, so a rebuild does not invalidate installs.
 #
-# BACK THE SIGNING KEY UP. It lives in this user's certificate store, not in
-# the repo, and it is the build machine's signing identity. Lose it and the
-# next build signs with a *different* identity, so every clinic machine that
-# already trusts the old certificate will reject the new package until the
-# new .cer is installed there too. The installer does install the .cer, so
-# this self-heals on a reinstall rather than bricking anything -- but it
-# turns a driver update into a certificate rollout. Export once and keep it
-# somewhere safe:
+# THE SIGNING KEY IS DELIBERATELY NOT BACKED UP (decided 2026-09-10). It
+# lives only in this user's certificate store on this machine. Lose it and
+# the next build signs as a *different* publisher; nothing bricks, because
+# the installer ships and trusts the new .cer alongside the driver, so a
+# normal reinstall self-heals. What is given up is a **driver-only** update:
+# a one-file fix becomes "re-run the full installer everywhere". Judged an
+# acceptable trade rather than keeping a private key indefinitely or buying
+# a commercial OV certificate. To preserve it after all:
 #
 #   $c = Get-ChildItem Cert:\CurrentUser\My |
 #        Where-Object { $_.Subject -eq "CN=NECO sidebyside driver signing" }
