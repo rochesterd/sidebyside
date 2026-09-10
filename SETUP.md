@@ -208,3 +208,9 @@ session.
 Instrument cameras have no autofocus — once focus looks right in Preview,
 physically secure/tighten the lens focus ring so it can't drift during a
 session.
+
+Role assignment is only half of what a room needs. Each instrument camera
+also has to be calibrated against a real view through that instrument —
+see `CALIBRATION.md`, which is the procedure a technician follows on a
+clinic machine and applies just as well to a dev machine with hardware
+attached.

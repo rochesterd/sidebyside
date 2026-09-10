@@ -274,6 +274,15 @@ Removing the certificate matters more than it looks: self-signing was
 justified on the grounds that trusting it is a *narrow, revocable* grant.
 A grant nothing ever revokes is not narrow.
 
+## What the technician does next
+
+The clinic installer leaves a machine with the software in place and no
+camera assigned to any role. `CALIBRATION.md` is the ~15-minute procedure
+that finishes the job: assign each role, calibrate each instrument camera
+against a real view through the instrument, and prove the room with one
+test recording. Hand that document over with the installer — it assumes no
+imaging knowledge and no access to this repo.
+
 ## 6. Compile the viewer-only installer
 
 Needs only step 2's `viewer.spec` build — no `vendor/` contents, no

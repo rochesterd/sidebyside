@@ -41,7 +41,11 @@ Design consequences:
   the third-person camera are both confirmed live, and there is enough disk
   space. No instrument selected counts as not ready — Start stays disabled
   and the status line prompts for a selection, the same way it prompts for
-  a missing camera.
+  a missing camera. Readiness gates cover what a student *can't* see — a
+  camera that isn't running, a frozen picture, a full disk. A visibly wrong
+  picture is not a gate: the live preview already shows it, and stranding
+  an unsupervised student with a disabled Start is its own failure. See
+  DECISIONS.md's 2026-09-10 entry.
 - Never make the irreplaceable data depend on a step that can fail. Frames
   get written as they arrive; anything derived comes afterward.
 
@@ -223,6 +227,9 @@ compositing changes without going through a full record/stop cycle —
 never point a student at it, it has no Start/Stop discipline.
 `settings.py` is a technician tool — same rule: never point a student at
 it (it gets a Start-menu entry on a clinic machine, no Desktop shortcut).
+`CALIBRATION.md` is the post-install procedure a technician follows
+through it: role assignment, per-instrument exposure calibration against a
+real view, and a test recording to prove the room.
 So are `setup.ps1`/`setup_wizard.py`, but those aren't part of a clinic
 machine's path at all anymore — they're developer tooling for working on
 source (see `SETUP.md`), separate from `PACKAGING.md`'s build-the-

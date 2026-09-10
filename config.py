@@ -75,11 +75,16 @@ class InstrumentConfig:
     # DECISIONS.md). Required (non-None) for kind="ids".
     serial: str | None
     label: str
-    # Set only for a camera with no ExposureAuto/GainAuto (the slit lamp) --
-    # see ids_camera.py's needs_manual_calibration() and ROADMAP.md's
-    # "In-app exposure/gain calibration" entry. None means "let
-    # _converge_auto_nodes() handle this axis," the same as before these
-    # fields existed -- every config.json written before this is still valid.
+    # A technician's one-time calibration for this instrument, written by
+    # settings.py's Preview dialog -- see ids_camera.py's
+    # supports_manual_calibration() and ROADMAP.md's "In-app exposure/gain
+    # calibration" entry. Offered for any camera whose ExposureTime/Gain can
+    # be written, which since 2026-09-10 includes the ones that *do* have
+    # ExposureAuto/GainAuto: those converge at camera open, which is the
+    # moment a student taps the picker, not a moment the scene is real.
+    # None still means "let _converge_auto_nodes() handle this axis," the
+    # same as before these fields existed -- every config.json written
+    # before this is still valid.
     exposure_time_us: float | None = None
     gain: float | None = None
     # Set only for a camera with no BalanceWhiteAuto -- see ids_camera.py's

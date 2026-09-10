@@ -600,17 +600,17 @@ class PreviewDialogTest(unittest.TestCase):
         from settings import PreviewDialog
 
         camera = SyntheticCamera(160, 120, fps=30)
-        camera.needs_manual_calibration = lambda: True
+        camera.supports_manual_calibration = lambda: True
         camera.exposure_time_range_us = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
 
         with self.assertRaises(RuntimeError):
             PreviewDialog(camera, "Test")
         self.assertIsNone(camera._thread)  # released despite the raise
 
-    def test_camera_without_needs_manual_calibration_shows_no_calibration_controls(self):
+    def test_camera_without_supports_manual_calibration_shows_no_calibration_controls(self):
         from settings import PreviewDialog
 
-        camera = SyntheticCamera(160, 120, fps=30)  # no needs_manual_calibration() at all
+        camera = SyntheticCamera(160, 120, fps=30)  # no supports_manual_calibration() at all
         dialog = PreviewDialog(camera, "Test")
         try:
             self.assertFalse(dialog.calibration_supported)
@@ -620,12 +620,12 @@ class PreviewDialogTest(unittest.TestCase):
 
 
 class _FakeCalibratableCamera(SyntheticCamera):
-    """Stands in for an IdsCamera lacking ExposureAuto/GainAuto/
-    BalanceWhiteAuto (the slit lamp plausibly lacks all three) -- exercises
-    PreviewDialog's exposure/gain *and* white-balance branches headlessly,
-    without the IDS peak SDK. Extended in place (rather than a second fake)
-    specifically so the "both blocks visible at once" case is directly
-    testable against one camera.
+    """Stands in for an IdsCamera whose ExposureTime/Gain a technician can
+    write, and which also lacks BalanceWhiteAuto (the slit lamp) --
+    exercises PreviewDialog's exposure/gain *and* white-balance branches
+    headlessly, without the IDS peak SDK. Extended in place (rather than a
+    second fake) specifically so the "both blocks visible at once" case is
+    directly testable against one camera.
     """
 
     def __init__(self):
@@ -635,7 +635,7 @@ class _FakeCalibratableCamera(SyntheticCamera):
         self._red_balance_ratio = 1.5
         self._blue_balance_ratio = 1.2
 
-    def needs_manual_calibration(self) -> bool:
+    def supports_manual_calibration(self) -> bool:
         return True
 
     def get_exposure_time_us(self) -> float:

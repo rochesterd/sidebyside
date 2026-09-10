@@ -3882,3 +3882,87 @@ machine the install test is also waiting on.
 **One Pascal trap, noted where it bit:** `Published` is a reserved word in
 Inno's Pascal Script (a class visibility specifier), so a variable of that
 name fails to compile with a bare "Identifier expected".
+
+---
+
+## 2026-09-10 — Converge-at-open was the wrong thing to trust for the Keeler BIO
+
+**Decided:** Offer a technician's exposure/gain calibration for *any* IDS
+camera whose `ExposureTime`/`Gain` can be written — not only one that
+lacks `ExposureAuto`/`GainAuto`. A camera that converges on its own does so
+at the wrong moment, and there is no right moment to move it to.
+
+**Why:** The Keeler U3-327xCP-C has working `ExposureAuto`/`GainAuto`, so
+`_converge_auto_nodes()` converged it once at camera open and locked the
+result for the session. That looked like "nothing for a technician to
+calibrate", and `needs_manual_calibration()` reported exactly that, hiding
+the sliders and Auto-Calibrate for this camera. The reasoning was wrong
+about *when* open happens. `kiosk.select_instrument()` opens the camera the
+instant a student taps the instrument on the picker — BIO still on the
+desk, illumination off, pointed at nothing. `Once` then leaves that
+result locked, and the camera is never reopened, so switching the lamp on
+afterwards changes nothing. A whole session gets an exposure metered
+against a dark desk.
+
+**Why not converge at a better moment instead:** there isn't one. Start is
+no better than picker-tap — students press Start and *then* raise the
+instrument to the eye. The only representative moment is during the
+recording, which is the one moment nothing may be adjusted: re-converging
+there inserts a step that can fail immediately before an irreplaceable
+capture, and `Continuous` would let exposure hunt mid-session and drift
+against the frame-rate budget (the reason `_converge_auto_nodes()` chose
+`Once` in the first place). That is what makes a technician-calibrated
+`config.json` value the only answer that is right *at record time*: it is
+the same conclusion CLAUDE.md's "the app holds the values, the camera
+doesn't" already reaches for the slit lamp, arrived at from the other
+direction.
+
+The mechanism needed no new code. `_open()` was already per-axis: an axis
+with a config value gets `_ensure_manual_*()` and is dropped from the
+converge list, so config already won cleanly and device-side convergence
+already remained the fallback for an uncalibrated install. Only the
+question `settings.py` asked was wrong, so `needs_manual_calibration()`
+("does this camera lack auto?") became `supports_manual_calibration()`
+("can a technician set this at all?"), which both cameras answer True.
+
+**Considered, built, and then rejected: a preflight darkness gate.** The
+idea was that no exposure value saves "the BIO is switched off", and
+nothing in preflight can tell — the camera runs, `Frame.index` climbs, and
+sensor noise keeps the pixels changing frame to frame, so liveness, stall
+and freshness all read healthy while the session records a black pane. It
+metered each active camera's highlight level and disabled Start below 20
+of 255.
+
+What killed it is that this is the one failure the existing checks don't
+need to cover, because it is *visible*. The freeze check earns its place
+precisely because a frozen picture looks like a perfectly good picture. A
+black pane looks like nothing at all, on a live preview the student is
+already looking at as they reach for Start — and an unlit instrument stops
+the student before it stops the app, since they cannot perform the skill
+through a dark BIO either. Against that, the gate carried real cost: the
+threshold was a guess (nothing here has metered a real fundus reflex), the
+student is unsupervised with no instructor to override it, and a false
+positive leaves a working room unable to record at all. Refusing to start
+is the right answer for what a student cannot see. It is the wrong answer
+for the most obvious thing on the screen.
+
+**Also rejected, as the other way to cover the same case:** letting the
+camera re-meter continuously in real time. The vendor's auto-exposure
+meters an average, and these views are ~98% black by design — the same
+reason `METERING_HIGHLIGHT` exists — so it drives exposure to the ceiling
+and blows out the beam, and hunts visibly as the beam moves, in exactly
+the footage the recording exists to show.
+
+**What makes both safe to leave out:** reviewing the recording *is* the
+point of the recording. A student who records a black pane sees it in
+Watch seconds later and can record again — this app is self-checking in a
+way ordinary capture software is not. The technician's test recording (see
+`CALIBRATION.md`) is the same backstop at install time.
+
+**Still open, same bug class:** `BalanceWhiteAuto` also converges at open,
+against that same dark desk. `config.json`'s `red_balance_ratio`/
+`blue_balance_ratio` exist and `_open()` already honours them, but
+`needs_manual_white_balance()` still answers False for the Keeler, and
+exercising the manual `BalanceRatio` path means finally verifying code
+that has never run against hardware (see `ids_camera.py`'s module
+docstring).

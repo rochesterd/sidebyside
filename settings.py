@@ -202,13 +202,17 @@ class PreviewDialog(QDialog):
     attempt while ids_peak.Library's Initialize/Close reentrancy across
     nested calls is unverified (not in vendor/ids_peak_api.txt's scope).
 
-    For an instrument camera with no ExposureAuto/GainAuto (detected via
-    `camera.needs_manual_calibration()`, duck-typed rather than an
-    isinstance(IdsCamera) check so this module never needs to import
-    ids_camera at all -- see CLAUDE.md's Environment section on why that
-    import must stay lazy), also shows exposure/gain sliders and an
+    For an instrument camera whose ExposureTime/Gain can be written at all
+    (detected via `camera.supports_manual_calibration()`, duck-typed rather
+    than an isinstance(IdsCamera) check so this module never needs to
+    import ids_camera at all -- see CLAUDE.md's Environment section on why
+    that import must stay lazy), also shows exposure/gain sliders and an
     Auto-Calibrate button. See ROADMAP.md's "In-app exposure/gain
-    calibration" entry for the full design.
+    calibration" entry for the full design, and DECISIONS.md's 2026-09-10
+    entry for why this is no longer limited to cameras that lack
+    ExposureAuto/GainAuto -- a camera that converges on its own does so at
+    open, which is the moment a student taps the picker, with the
+    instrument not yet in use.
 
     Same treatment, independently, for a camera with no BalanceWhiteAuto
     (`camera.needs_manual_white_balance()`): red/blue balance-ratio sliders
@@ -272,7 +276,7 @@ class PreviewDialog(QDialog):
 
         try:
             self._camera.start()
-            self.calibration_supported = bool(getattr(camera, "needs_manual_calibration", lambda: False)())
+            self.calibration_supported = bool(getattr(camera, "supports_manual_calibration", lambda: False)())
             self.white_balance_supported = bool(
                 getattr(camera, "needs_manual_white_balance", lambda: False)()
             )

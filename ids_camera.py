@@ -30,10 +30,14 @@ doesn't implement DataStream.PayloadSize() (_payload_size() falls back to
 the NodeMap) and has no ExposureAuto/GainAuto (_converge_auto_nodes()
 skips both gracefully) -- the slit lamp camera needs a one-time
 exposure/gain calibration once mounted on the instrument. That calibration
-is done in-app now (needs_manual_calibration()/auto_calibrate()/the manual
-get_/set_exposure_time_us()/get_/set_gain() pair below, driven by
+is done in-app now (supports_manual_calibration()/auto_calibrate()/the
+manual get_/set_exposure_time_us()/get_/set_gain() pair below, driven by
 settings.py's PreviewDialog), not via an external tool like IDS peak
 Cockpit -- see ROADMAP.md's "In-app exposure/gain calibration" entry.
+Since 2026-09-10 that calibration is offered for *any* camera whose
+ExposureTime/Gain a technician can write, not only one with no
+ExposureAuto/GainAuto -- see supports_manual_calibration() for why the
+Keeler's converge-at-open turned out to be the wrong thing to rely on.
 
 White balance (needs_manual_white_balance()/auto_white_balance()/the manual
 get_/set_red_balance_ratio()/get_/set_blue_balance_ratio() pair) and the
@@ -405,22 +409,40 @@ class IdsCamera(BaseCamera):
             f"{_AUTO_CONVERGE_TIMEOUT_S}s for serial {self._serial!r}"
         )
 
-    def needs_manual_calibration(self) -> bool:
-        """True when this camera has neither ExposureAuto nor GainAuto (the
-        slit lamp camera, per CLAUDE.md's Hardware table) -- the case
-        settings.py's PreviewDialog shows exposure/gain sliders and the
-        auto-calibrate button for, instead of just a static preview. A
-        camera with working auto-exposure (the Keeler) converges on its own
-        every session and has nothing for a technician to calibrate.
-        Mirrors the same IsAvailable() check _converge_auto_nodes() makes
-        per axis. Must be called after start() -- self._node_map doesn't
+    def supports_manual_calibration(self) -> bool:
+        """True when a technician can set ExposureTime/Gain on this camera
+        at all -- the case settings.py's PreviewDialog shows the sliders
+        and the Auto-Calibrate button for, instead of just a static
+        preview. Must be called after start() -- self._node_map doesn't
         exist before _open() has run.
+
+        This deliberately asks a *different* question than it used to.
+        The old one (needs_manual_calibration(): "does this camera lack
+        ExposureAuto/GainAuto?") answered False for the Keeler, on the
+        reasoning that a camera which converges on its own has nothing for
+        a technician to calibrate. That reasoning was wrong about *when*
+        it converges. _converge_auto_nodes() runs inside _open(), which
+        kiosk.select_instrument() calls the instant a student taps the
+        instrument on the picker -- with the BIO still on the desk, its
+        illumination off, pointed at nothing. `Once` then leaves that
+        result locked for the whole session, and the camera is never
+        reopened, so switching the lamp on afterwards changes nothing.
+        There is no pre-recording moment when the scene is representative
+        (students press Start *before* raising the instrument to the eye),
+        which is what makes a technician-calibrated config value the only
+        answer that is right at record time. See DECISIONS.md's
+        2026-09-10 entry.
+
+        Device-side auto-convergence remains the fallback: _open() drops
+        an axis from _converge_auto_nodes() only when config.json actually
+        supplied a value for it, so an uncalibrated install behaves
+        exactly as before.
         """
-        exposure_node = self._node_map.TryFindNode("ExposureAuto")
-        has_auto_exposure = exposure_node is not None and exposure_node.IsAvailable()
-        gain_node = self._node_map.TryFindNode("GainAuto")
-        has_auto_gain = gain_node is not None and gain_node.IsAvailable()
-        return not has_auto_exposure and not has_auto_gain
+        return self._is_writeable("ExposureTime") and self._is_writeable("Gain")
+
+    def _is_writeable(self, node_name: str) -> bool:
+        node = self._node_map.TryFindNode(node_name)
+        return node is not None and node.IsAvailable() and node.IsWriteable()
 
     def needs_manual_white_balance(self) -> bool:
         """True when this camera has no BalanceWhiteAuto *and* does expose
@@ -680,10 +702,10 @@ class IdsCamera(BaseCamera):
         target_fps: float | None = None,
         metering: str = METERING_HIGHLIGHT,
     ) -> bool:
-        """One-shot software auto-exposure for a camera with no
-        ExposureAuto/GainAuto (see needs_manual_calibration()) -- run once
-        when a technician clicks settings.py's Auto-Calibrate button, not a
-        continuous loop during real recording. See exposure_calibration.py
+        """One-shot software auto-exposure, run once when a technician
+        clicks settings.py's Auto-Calibrate button (see
+        supports_manual_calibration()) -- not a continuous loop during
+        real recording. See exposure_calibration.py
         for the actual median-brightness/correction-step math and
         ROADMAP.md's calibration-UX entry for the full design rationale.
 
