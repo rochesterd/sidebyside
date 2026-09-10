@@ -1,0 +1,14 @@
+# Line endings that are load-bearing, not a style preference.
+#
+# The legacy BIO driver package's catalogue (built by
+# packaging/net2860_winusb/build_driver_package.ps1, gitignored) hashes the
+# INF's *bytes*. Without a rule here, git rewrites that file to whatever the
+# local core.autocrlf happens to say, so an ordinary checkout or branch
+# switch can silently invalidate an already-signed catalogue.
+#
+# That is not hypothetical: it happened on 2026-09-10 and surfaced only on a
+# clinic machine, as `pnputil` exit code -536870325 (0xE000024B,
+# SPAPI_E_FILE_HASH_NOT_IN_CATALOG) during install. Pinning the working-tree
+# form makes the checked-out bytes identical on every machine regardless of
+# local git config, which is what the catalogue needs. See DECISIONS.md.
+*.inf text eol=crlf

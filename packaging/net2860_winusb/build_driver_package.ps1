@@ -139,6 +139,43 @@ if ($LASTEXITCODE -ne 0) { Fail "signtool failed ($LASTEXITCODE)" }
 # the certificate expires. That is precisely how NET GmbH's 2011 driver
 # still loads today -- see DECISIONS.md.
 
+# --- verify the catalogue actually covers the INF ------------------------
+# The catalogue hashes the INF's *bytes*, so anything that rewrites that
+# file after this point invalidates it while leaving both files present and
+# apparently fine. A line-ending conversion on git checkout is the one that
+# actually bit (2026-09-10): the installer compiled, shipped, and failed on
+# a clinic machine with pnputil -536870325 (0xE000024B,
+# SPAPI_E_FILE_HASH_NOT_IN_CATALOG). .gitattributes now pins the INF's
+# working-tree form; this is the check that would have caught it anyway, at
+# build time, where a failure costs a rebuild instead of a site visit.
+Write-Host "Verifying the catalogue covers the INF..."
+$infPath = Join-Path $PSScriptRoot $infName
+$verifyOutput = & $signtool verify /pa /v /c $cat $infPath 2>&1 | Out-String
+$verifyExit = $LASTEXITCODE
+if ($verifyOutput -match "not found in the specified catalog") {
+    Write-Host $verifyOutput
+    Fail @"
+The signed catalogue does not cover $infName.
+
+The two files are out of step: the catalogue was hashed against different
+bytes than the INF now on disk. Anything that rewrote the INF -- an edit, or
+a git checkout converting its line endings -- does this.
+
+Check the INF is the one you mean, then re-run this script so the catalogue
+is regenerated against it.
+"@
+}
+if ($verifyExit -ne 0) {
+    # The catalogue covers the INF (checked above); what failed is the trust
+    # chain, because this machine has not been asked to trust the signing
+    # certificate. Expected on a build machine that has never run -Install --
+    # the clinic installer trusts the shipped .cer on the target. Not a
+    # reason to fail the build.
+    Write-Host "Catalogue covers the INF. (This machine does not trust the signing certificate itself -- normal on a build-only machine.)" -ForegroundColor Yellow
+} else {
+    Write-Host "Verified: the catalogue covers the INF." -ForegroundColor Green
+}
+
 $cer = Join-Path $OutDir "sidebyside_net2860.cer"
 Export-Certificate -Cert $cert -FilePath $cer -Force | Out-Null
 Write-Host "Exported public certificate -> $cer"

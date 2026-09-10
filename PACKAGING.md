@@ -121,6 +121,24 @@ error if this step is skipped. That is deliberate — a missing file at
 compile time is a much better failure than an installer that silently ships
 without a driver.
 
+**A *stale* `.cat` is the failure that actually happened**, and it is quieter
+than a missing one: the catalogue hashes the INF's bytes, so anything that
+rewrites that file afterwards leaves both files present, the installer
+compiling happily, and `pnputil` refusing the package on the clinic machine
+with exit code `-536870325` (`0xE000024B`,
+`SPAPI_E_FILE_HASH_NOT_IN_CATALOG`). Two things now stand against it, and
+neither removes the need to **re-run this step after any change to the
+INF**:
+
+- `.gitattributes` pins `*.inf` to CRLF in the working tree, so a checkout
+  or branch switch can no longer change the bytes the catalogue was signed
+  against — a git line-ending conversion is what did it (see DECISIONS.md).
+- the script itself now runs `signtool verify /pa /c` on the pair and fails
+  the build if the catalogue doesn't cover the INF. On a build machine that
+  has never trusted the signing certificate it prints a note about the trust
+  chain and continues; that is expected, since the installer trusts the
+  shipped `.cer` on the target.
+
 The script is re-runnable and reuses an existing certificate rather than
 minting a new one. That certificate's private key lives only in the build
 user's certificate store on the build machine — **it is deliberately not

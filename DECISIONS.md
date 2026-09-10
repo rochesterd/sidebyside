@@ -3966,3 +3966,52 @@ against that same dark desk. `config.json`'s `red_balance_ratio`/
 exercising the manual `BalanceRatio` path means finally verifying code
 that has never run against hardware (see `ids_camera.py`'s module
 docstring).
+
+---
+
+## 2026-09-10 — A signed driver catalogue is invalidated by a line-ending conversion
+
+**Found:** the clinic installer reported `could not install the older BIO
+camera driver (pnputil exit code -536870325)`. That is `0xE000024B`,
+`SPAPI_E_FILE_HASH_NOT_IN_CATALOG`: the INF's hash was not in the catalogue
+shipped beside it, so Windows treated the package as tampered with and
+refused to stage it. Signing, certificate and trust chain were all fine.
+
+**Cause:** `sidebyside_net2860.cat` was signed against an LF copy of
+`sidebyside_net2860.inf` (2261 bytes); the installer shipped the CRLF copy
+(2322 bytes). `core.autocrlf=true` with no `.gitattributes` means git
+stores the INF as LF and writes it out as CRLF, so an ordinary checkout —
+a branch switch, in this case, a day after the catalogue was built —
+rewrote the file and invalidated the hash. The content never changed. 61
+bytes of line endings did, and a catalogue hashes bytes.
+
+Confirmed rather than inferred: the same catalogue reports `File not found
+in the specified catalog` against the CRLF INF and `Successfully verified`
+against an LF copy of the identical text.
+
+**Decided, two parts:**
+
+- `.gitattributes` pins `*.inf` to `text eol=crlf`. The working-tree bytes
+  no longer depend on each machine's `core.autocrlf`, which is what a
+  signed catalogue needs. Verified end to end: deleting the INF and letting
+  git restore it — the exact operation that broke it — now leaves a file
+  the rebuilt catalogue still verifies.
+- `build_driver_package.ps1` runs `signtool verify /pa /c` on the pair
+  immediately after signing and fails the build if the catalogue doesn't
+  cover the INF.
+
+**Why the second part, given the first:** pinning the line endings fixes
+this cause; the verify catches the *class*. Any future edit to the INF
+without a rebuild produces the identical failure, and the whole point of
+the check is where the failure surfaces. This one cost a site visit to
+learn something one command answers at build time. It is the same reasoning
+that already makes a missing `.cat` fail the installer compile loudly — a
+stale one was simply the case nobody had thought of.
+
+**On the trust chain:** `signtool verify /pa` checks the certificate as
+well as the hash, and a build machine has no reason to trust this
+self-signed certificate — the *installer* trusts the shipped `.cer` on the
+target. So the check distinguishes the two: a hash mismatch fails the
+build, an untrusted chain prints a note and continues. Failing a build over
+the build machine's own trust state would be wrong, and would push someone
+toward trusting a signing certificate on a machine that has no reason to.
