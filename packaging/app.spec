@@ -19,11 +19,15 @@
 # which is a real risk on a locked-down clinic machine and not worth the
 # smaller file size.
 
+# The icon is listed twice on purpose: `icon=` writes the exe resource
+# (Explorer, taskbar, shortcuts), `datas` ships the file itself for
+# QApplication.setWindowIcon(), which can't read that resource back.
+
 a = Analysis(
     ['../app.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('../assets/sidebyside.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -50,6 +54,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='../assets/sidebyside.ico',
 )
 coll = COLLECT(
     exe,

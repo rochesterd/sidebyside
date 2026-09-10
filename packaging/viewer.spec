@@ -28,11 +28,15 @@
 # had grown a camera dependency, and a review machine has no cameras and
 # no driver package installed.
 
+# The icon is listed twice on purpose: `icon=` writes the exe resource
+# (Explorer, taskbar, shortcuts), `datas` ships the file itself for
+# QApplication.setWindowIcon(), which can't read that resource back.
+
 a = Analysis(
     ['../viewer.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('../assets/sidebyside-viewer.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -60,6 +64,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='../assets/sidebyside-viewer.ico',
 )
 coll = COLLECT(
     exe,

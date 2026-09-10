@@ -58,8 +58,9 @@ OutputDir=installer_output
 OutputBaseFilename=sidebyside-setup
 Compression=lzma2
 SolidCompression=yes
-; No SetupIconFile -- this project has no icon assets anywhere (confirmed
-; during planning); Inno Setup's own default icon is used instead.
+SetupIconFile=..\assets\sidebyside.ico
+; Without this, Add/Remove Programs shows unins000.exe's generic icon.
+UninstallDisplayIcon={app}\app\app.exe
 
 [Files]
 ; dontcopy, listed first (solid-compression decompression cost grows with

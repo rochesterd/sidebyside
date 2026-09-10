@@ -21,6 +21,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -32,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app_icon import ICON_APP, icon_path
 from camera import BaseCamera
 from compositor import side_by_side
 from config import (
@@ -588,6 +590,9 @@ def main() -> int:
     # module import time (see test_app.py) -- in real usage there's never
     # an existing instance before main() runs, so this is a no-op there.
     app = QApplication.instance() or QApplication(sys.argv)
+    # Application-wide, so every dialog this process opens (including the
+    # viewer behind Watch) inherits it.
+    app.setWindowIcon(QIcon(str(icon_path(ICON_APP))))
     try:
         cfg = load_config()
     except ConfigError as exc:

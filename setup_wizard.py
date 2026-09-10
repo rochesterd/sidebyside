@@ -21,6 +21,8 @@ import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 
+from app_icon import ICON_APP, icon_path
+
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 SETUP_PS1 = os.path.join(REPO_ROOT, "setup.ps1")
 VENV_PYTHON = os.path.join(REPO_ROOT, ".venv", "Scripts", "python.exe")
@@ -216,6 +218,11 @@ class Wizard(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("sidebyside Setup")
+        # tkinter raises on a missing file, where Qt gives a null icon.
+        try:
+            self.iconbitmap(str(icon_path(ICON_APP)))
+        except tk.TclError:
+            pass
         self.geometry("640x520")
         self.minsize(640, 520)
 

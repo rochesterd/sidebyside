@@ -43,8 +43,10 @@ OutputDir=installer_output
 OutputBaseFilename=sidebyside-viewer-setup
 Compression=lzma2
 SolidCompression=yes
-; No SetupIconFile -- this project has no icon assets (same as
-; sidebyside.iss); Inno Setup's own default is used.
+; The viewer's own mark, not app.exe's -- both installers can land on
+; the same machine, so they need telling apart in a Downloads folder.
+SetupIconFile=..\assets\sidebyside-viewer.ico
+UninstallDisplayIcon={app}\viewer.exe
 
 [Files]
 Source: "dist\viewer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

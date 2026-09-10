@@ -4,11 +4,15 @@
 # rationale). Confirmed by actually running the frozen settings.exe --
 # opens cleanly with no import errors.
 
+# The icon is listed twice on purpose: `icon=` writes the exe resource
+# (Explorer, taskbar, shortcuts), `datas` ships the file itself for
+# QApplication.setWindowIcon(), which can't read that resource back.
+
 a = Analysis(
     ['../settings.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('../assets/sidebyside-settings.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,6 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='../assets/sidebyside-settings.ico',
 )
 coll = COLLECT(
     exe,

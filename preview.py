@@ -7,6 +7,7 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app_icon import ICON_APP, icon_path
 from compositor import draw_timer, picture_in_picture, side_by_side
 from qt_image import bgr_to_pixmap
 from synthetic_camera import SyntheticCamera
@@ -99,6 +101,7 @@ class PreviewWindow(QMainWindow):
 
 def main() -> int:
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(icon_path(ICON_APP))))
     window = PreviewWindow()
     window.resize(*CANVAS_SIZE)
     window.show()

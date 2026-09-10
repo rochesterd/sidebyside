@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -40,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app_icon import ICON_SETTINGS, icon_path
 from camera import BaseCamera
 from config import (
     DEFAULT_CONFIG_PATH,
@@ -1126,6 +1128,7 @@ class SettingsWindow(QMainWindow):
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(icon_path(ICON_SETTINGS))))
     window = SettingsWindow()
     window.show()
     return app.exec()

@@ -4015,3 +4015,35 @@ target. So the check distinguishes the two: a hash mismatch fails the
 build, an untrusted chain prints a note and continues. Failing a build over
 the build machine's own trust state would be wrong, and would push someone
 toward trusting a signing certificate on a machine that has no reason to.
+
+---
+
+## 2026-09-10 — Three icons, not one
+
+**Decided:** `assets/sidebyside.ico`, `sidebyside-viewer.ico` and
+`sidebyside-settings.ico`, wired into both installers, all three
+PyInstaller specs, and every Qt entry point.
+
+**Why three:** CLAUDE.md's rule that a student must never be pointed at
+`settings.py` is enforced by where its shortcut goes — Start menu, no
+Desktop icon. But a Start menu lists all three programs together, so the
+technician tool is deliberately drab (slate, a gear) while the two
+student-facing marks stay teal. The viewer gets its own for a different
+reason: the clinic and viewer-only installers can sit on the same
+machine, and two identical setup exes in a Downloads folder is a support
+call.
+
+**Why each spec names the icon twice:** `icon=` writes the Windows
+executable resource (Explorer, taskbar, shortcuts). Qt can't read that
+back, so `QApplication.setWindowIcon()` needs the file itself — hence the
+`datas` entry putting the same `.ico` under `sys._MEIPASS/assets`. Two
+mechanisms; one can break while the other looks fine, so PACKAGING.md's
+verification step names both.
+
+**Why a missing icon isn't fatal:** `QIcon` on a nonexistent path is a
+null icon, not an exception, and `app_icon.py` doesn't add a check.
+Elsewhere this project prefers refusing to start over running degraded,
+but that rule exists to protect an irreplaceable recording. A kiosk that
+won't launch because a decoration is missing is worse than a plain one.
+`setup_wizard.py` needs an explicit guard only because tkinter's
+`iconbitmap()` does raise.

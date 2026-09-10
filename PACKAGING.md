@@ -99,6 +99,9 @@ machine can't satisfy. Confirmed on the 2026-09-02 build — the frozen
   `viewer.exe` with no arguments must show the picker (it logs "no usable
   config.json … using the default recordings folder" and lists nothing —
   that's the correct review-machine path, not a failure).
+- Each exe must show its icon in Explorer **and** in its own title bar
+  once running — those are two different mechanisms (exe resource vs.
+  the bundled `.ico`), so one can be broken while the other looks fine.
 
 ## 2b. Build and sign the legacy BIO driver package
 

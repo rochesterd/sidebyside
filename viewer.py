@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -42,6 +43,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from app_icon import ICON_VIEWER, icon_path
 from compositor import LAYOUT_MODES, LAYOUT_TITLES, compose_layout
 from config import ConfigError, load_config, resolve_default_sessions_dir
 from qt_image import bgr_to_pixmap
@@ -558,6 +560,9 @@ def default_sessions_dir() -> Path:
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841 - keeps Qt alive
+    # Standalone viewer.exe only -- opened as a dialog from app.py this
+    # main() never runs, and the dialog inherits the kiosk's icon.
+    app.setWindowIcon(QIcon(str(icon_path(ICON_VIEWER))))
 
     if len(sys.argv) > 1:
         return 0 if open_session(Path(sys.argv[1])) else 1
