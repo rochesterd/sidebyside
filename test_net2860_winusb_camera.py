@@ -20,7 +20,7 @@ import unittest
 import numpy as np
 
 import net2860_winusb_camera as m
-from camera import ORIENTATION_ROTATE_180
+from camera import ORIENTATION_NONE
 from winusb import GUID
 
 
@@ -121,14 +121,13 @@ class FieldAssemblyTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
-    def test_rotate_180_is_the_default_orientation(self):
-        # Observed on the instrument: the raw sensor image is reversed on
-        # both axes, which is one 180-degree rotation rather than two
-        # flips. Notably *not* the vertical-only flip the removed
-        # vendor-driver helper hardcoded -- that path went through a
-        # DirectShow filter which had most likely already mirrored
-        # horizontally; this one sees the raw sensor.
-        self.assertEqual(m.Net2860WinUsbCamera()._orientation, ORIENTATION_ROTATE_180)
+    def test_no_orientation_transform_by_default(self):
+        # Verified against a scene with horizontal text: the raw sensor
+        # output reads upright and correctly, and every one of the three
+        # transforms mirrors or inverts it. This default was wrong twice
+        # (flip_vertical, then rotate_180) before being checked that way --
+        # see DECISIONS.md's 2026-09-10 orientation entries.
+        self.assertEqual(m.Net2860WinUsbCamera()._orientation, ORIENTATION_NONE)
 
     def test_resolution_is_pal(self):
         self.assertEqual(m.Net2860WinUsbCamera().resolution, (720, 576))

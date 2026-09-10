@@ -3761,3 +3761,38 @@ camera and its mount rather than to the instrument's name.
 `rotate_180` lives in `net2860_winusb_camera.py`'s default rather than in
 `device_presets.py`, which keys off IDS model strings this camera does not
 have.
+
+
+## 2026-09-10 - Correction: the legacy BIO needs no orientation transform
+
+**Supersedes the rotate_180 entry directly above.** Captured against a
+scene with horizontal text (a "Perkins Tono" label), rendered through all
+four `VALID_ORIENTATIONS` and compared: only `none` reads upright and
+unmirrored. `flip_vertical`, `flip_horizontal` and `rotate_180` each mirror
+or invert it. `Net2860WinUsbCamera` now defaults to `ORIENTATION_NONE`.
+
+**This default was wrong twice.** First `flip_vertical`, reasoned from the
+removed vendor helper's `np.flip(axis=0)` and from the newer BIO's
+`device_presets.py` preset. Then `rotate_180`, from a report that the
+image was reversed on both axes. Both were plausible; neither survived a
+scene that could actually distinguish them.
+
+**The method lesson, which cost three attempts:** orientation is only
+testable against horizontal text or a strong left/right asymmetry.
+Vertically-running text cannot separate a vertical from a horizontal flip.
+A featureless field -- which the BIO illuminator produces whenever it is
+not pointed at something structured -- cannot separate any of them, and two
+verification attempts failed for exactly that reason before a label was put
+in front of the instrument. **Do not accept an orientation claim, including
+a human one, that was not made against text.**
+
+**Still open, and a domain question rather than a technical one:** whether
+"correct" here means *text reads upright* or *matches what the student sees
+through the eyepieces*. Indirect ophthalmoscopy inherently presents an
+inverted, laterally-reversed image, and students are trained for it. If the
+camera shares that optical path, a recording that silently un-inverts it
+would no longer match the view the student was working from -- and
+CLAUDE.md is explicit that the coordination between the hands and the
+instrument view is the entire point of the recording. `none` happens to
+satisfy both readings for the bench scene tested here, so nothing is
+blocked, but a retina view through the real optics has not been checked.
