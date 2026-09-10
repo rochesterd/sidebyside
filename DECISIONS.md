@@ -3660,3 +3660,61 @@ cannot use it until the vendor driver is restored (Device Manager -> Update
 driver -> `C:\Program Files (x86)\2860_Cam\driver`, byte-identical to
 `vendor/net2860_driver/`). Left on WinUSB deliberately for continued work;
 the BIO itself is awaiting a repair part regardless.
+
+
+## 2026-09-10 - The legacy BIO's vendor-driver route is removed
+
+**Decided:** deleted `net2860_camera.py`, `net2860_helper.py`,
+`net2860_protocol.py`, `setup_net2860_helper.ps1`,
+`requirements-net2860.txt`, their tests, and `tools/smoke_test_net2860_camera.py`.
+`kind: "net2860"` is no longer valid. `net2860_winusb_camera.py` is the only
+way to this camera.
+
+**Why now.** Yesterday's entries kept both routes deliberately, so a machine
+could move over without the old one vanishing underneath it. That caution
+has expired: the WinUSB route now records real sessions, is wired through
+`config.py`/`settings.py`/`app.py`, ships a signed driver package, and has
+been verified to take over cleanly from Keeler's driver in a single
+`pnputil /add-driver /install` with no removal step.
+
+The decisive argument is that **the vendor route never worked in a frozen
+build at all.** `app.spec` has `datas=[]`, so `net2860_helper.py` was never
+bundled, and `net2860_camera.py` resolved its interpreter to
+`<_MEIPASS>/.venv32/python.exe` -- a path that cannot exist in a frozen
+install. A clinic machine selecting that camera got an error telling it to
+run a PowerShell script that wasn't on the machine. Keeping it would have
+meant *adding* work -- freezing a 32-bit helper, bundling Keeler's driver,
+fixing the `RunOnce` COM-registration gap -- purely to preserve a fallback
+the replacement had already superseded.
+
+**What is genuinely lost.** The vendor path was the only other way to reach
+this camera, so if the WinUSB route regresses in the field there is no
+in-tree fallback. Mitigations: it is all in git history; Keeler's driver
+package is archived (and separately backed up) and reinstalling it is a
+Device Manager operation; and our INF overrides rather than replaces it in
+the driver store, so falling back is non-destructive.
+
+**Migration is named, not generic.** `config.py` rejects `kind: "net2860"`
+with a message that says to change it to `"net2860_winusb"` and that
+nothing else in the entry needs to change, rather than letting it fall into
+the generic unknown-kind error. Anyone meeting it is looking at a config
+that used to work, and the useful thing to tell them is the replacement.
+
+**A ROADMAP entry closed rather than carried.** The 2026-08-26
+"`Net2860Camera` brightness/gain control (surveyed, not decided)" entry
+proposed checking whether the vendor DirectShow filter exposed
+`IAMVideoProcAmp`. That question is now moot in a stronger way than
+"the module is gone": the AE/AWB loop runs in firmware on the camera board
+(Sony CXD3172AR + Silicon Labs C8051F321), the USB capture shows the host
+sends it nothing at all, and switching the room light on moved the frame
+mean from 31 to 98 with our code sending nothing. **No driver for this
+camera can offer exposure control**, so the WinUSB rewrite inherits the
+same limitation and the entry is closed rather than inherited.
+
+**Not removed:** `vendor/net2860_driver/` (the archived Keeler package and
+the USB capture `net2860_init.py` is generated from) and
+`spike_net2860_winusb/`. Both are gitignored or exploratory rather than
+product code, and the capture remains the provenance for the init sequence.
+
+Full suite 320 passing, down from 349 -- the removed tests were the vendor
+path's own plus duplicates of coverage the WinUSB tests already provide.

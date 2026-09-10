@@ -1,10 +1,10 @@
 """BaseCamera for the older Vantage Plus BIO's camera over WinUSB.
 
-Replaces net2860_camera.py's route to the same hardware. That one drives
-Keeler's vendor driver through a 32-bit COM filter in a helper subprocess;
-this one talks to the eMPIA EM2860 bridge directly through Microsoft's
-inbox winusb.sys, in-process, with nothing of Keeler's or NET GmbH's
-involved. See DECISIONS.md's 2026-09-09 WinUSB entries for why -- briefly:
+Replaced the vendor-driver route, removed 2026-09-10, which reached the
+same hardware through Keeler's driver and a 32-bit COM filter in a helper
+subprocess. This talks to the eMPIA EM2860 bridge directly through
+Microsoft's inbox winusb.sys, in-process, with nothing of Keeler's or NET
+GmbH's involved. See DECISIONS.md's 2026-09-09 WinUSB entries for why -- briefly:
 the vendor driver is unobtainable, not on Windows Update, and loads only
 through legacy signing allowances that Microsoft can withdraw.
 
@@ -23,10 +23,10 @@ Consequences worth knowing:
   address, so no driver for this camera can offer it.
 - Frame.index comes from the *hardware*: each field header carries a
   counter that wraps at 128, unwrapped here into a monotonic frame number.
-  Unlike UvcCamera and net2860_camera.py -- both of which self-count and
-  therefore look drop-free by construction -- gaps in this index are real
-  source-side drops, which is exactly what camera.py's _grab() contract
-  asks for and what recorder.py's drop accounting needs.
+  Unlike UvcCamera -- which self-counts and therefore looks drop-free by
+  construction -- gaps in this index are real source-side drops, which is
+  exactly what camera.py's _grab() contract asks for and what recorder.py's
+  drop accounting needs.
 
 Video arrives as isochronous transfers only (there is no bulk endpoint).
 Each packet carries a 4-byte header: "22 5a <seq> 88" starts a field,
@@ -105,10 +105,10 @@ class Net2860WinUsbCamera(BaseCamera):
         transfer_depth: int = 8,
     ):
         # flip_vertical by default: the instrument's optics deliver a
-        # vertically-flipped image, the same fix net2860_helper.py applies
-        # with a hardcoded np.flip and device_presets.py applies to the
-        # newer BIO. Routed through BaseCamera's orientation mechanic here
-        # so every consumer sees it applied the same way.
+        # vertically-flipped image -- the same flip device_presets.py
+        # applies to the newer BIO, and that the removed vendor-driver
+        # helper hardcoded as a bare np.flip. Routed through BaseCamera's
+        # orientation mechanic here so every consumer sees it the same way.
         super().__init__(queue_size=queue_size, label=label, orientation=orientation)
         self._alt = alt
         self._packets = packets_per_transfer

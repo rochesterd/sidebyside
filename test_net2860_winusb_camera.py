@@ -10,8 +10,7 @@ WinUSB. Constructing the camera does not touch hardware; only _open() does.
 The ctypes layer in winusb.py is deliberately not mocked here. Mocking it
 would only assert that we call the functions we already call; what actually
 breaks a ctypes binding (a wrong restype truncating a handle) is invisible
-to a mock and was caught against real hardware instead. Same reasoning
-test_net2860_camera.py gives for mocking at the subprocess boundary.
+to a mock and was caught against real hardware instead.
 """
 
 from __future__ import annotations
@@ -123,8 +122,8 @@ class FieldAssemblyTests(unittest.TestCase):
 
 class ConfigurationTests(unittest.TestCase):
     def test_flip_vertical_is_the_default_orientation(self):
-        # The instrument's optics deliver a vertically-flipped image; the
-        # vendor path hardcodes the same flip in net2860_helper.py.
+        # The instrument's optics deliver a vertically-flipped image, the
+        # same flip device_presets.py applies to the newer BIO.
         self.assertEqual(m.Net2860WinUsbCamera()._orientation, ORIENTATION_FLIP_VERTICAL)
 
     def test_resolution_is_pal(self):

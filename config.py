@@ -70,9 +70,9 @@ class ConfigError(RuntimeError):
 @dataclass
 class InstrumentConfig:
     kind: str
-    # None only for kind="net2860" -- that camera has no serial (there's
-    # exactly one of it, no identification scheme; see DECISIONS.md's
-    # "Net2860Camera" entry). Required (non-None) for kind="ids".
+    # None only for kind="net2860_winusb" -- that camera has no serial
+    # (there's exactly one of it, no identification scheme; see
+    # DECISIONS.md). Required (non-None) for kind="ids".
     serial: str | None
     label: str
     # Set only for a camera with no ExposureAuto/GainAuto (the slit lamp) --
@@ -229,21 +229,29 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         raise ConfigError(f"{path}: instruments.{key} must be an object. {_FIX_HINT}")
 
     kind = entry.get("kind")
-    if kind not in ("ids", "net2860", "net2860_winusb"):
+    if kind == "net2860":
+        # Named specifically rather than falling into the generic "unknown
+        # kind" message below: this one used to be valid, so a technician
+        # meeting it is looking at a config that worked before, and the
+        # useful thing to tell them is the one-word replacement.
         raise ConfigError(
-            f"{path}: instruments.{key}.kind must be \"ids\", \"net2860\" or "
-            f"\"net2860_winusb\", got {kind!r}. {_FIX_HINT}"
+            f"{path}: instruments.{key}.kind \"net2860\" reached the legacy BIO through "
+            f"Keeler's vendor driver, which has been removed. Change it to "
+            f"\"net2860_winusb\" -- the same camera, through WinUSB, with no other "
+            f"configuration change needed. {_FIX_HINT}"
+        )
+    if kind not in ("ids", "net2860_winusb"):
+        raise ConfigError(
+            f"{path}: instruments.{key}.kind must be \"ids\" or \"net2860_winusb\", "
+            f"got {kind!r}. {_FIX_HINT}"
         )
 
     label = entry.get("label")
     if not isinstance(label, str) or not label:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
 
-    if kind in ("net2860", "net2860_winusb"):
-        # Both routes to the same legacy BIO camera: "net2860" through
-        # Keeler's vendor driver and a 32-bit helper, "net2860_winusb"
-        # through Microsoft's inbox winusb.sys in-process. They take the
-        # same (empty) configuration for the same reasons.
+    if kind == "net2860_winusb":
+        # The legacy BIO, through Microsoft's inbox winusb.sys in-process.
         #
         # No serial: there's exactly one of this camera and no
         # identification scheme -- see DECISIONS.md's "Net2860Camera"

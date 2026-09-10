@@ -100,39 +100,18 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError):
             load_config(self.path)
 
-    def test_net2860_instrument_loads_with_no_serial(self):
+    def test_the_removed_vendor_driver_kind_names_its_replacement(self):
+        # "net2860" was valid until the vendor-driver route was removed, so
+        # anyone meeting this error has a config that used to work. Telling
+        # them the replacement is the whole point of not letting it fall
+        # into the generic unknown-kind message.
         data = json.loads(json.dumps(VALID))
         data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO"}
         self._write(data)
 
-        cfg = load_config(self.path)
-
-        self.assertEqual(cfg.instruments["bio"].kind, "net2860")
-        self.assertIsNone(cfg.instruments["bio"].serial)
-        self.assertEqual(cfg.instruments["bio"].label, "BIO")
-
-    def test_net2860_instrument_rejects_serial(self):
-        data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "serial": "222"}
-        self._write(data)
-
-        with self.assertRaises(ConfigError):
+        with self.assertRaises(ConfigError) as ctx:
             load_config(self.path)
-
-    def test_net2860_instrument_rejects_calibration_fields(self):
-        for field, value in [
-            ("exposure_time_us", 1000.0),
-            ("gain", 2.0),
-            ("red_balance_ratio", 1.5),
-            ("blue_balance_ratio", 1.5),
-        ]:
-            with self.subTest(field=field):
-                data = json.loads(json.dumps(VALID))
-                data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", field: value}
-                self._write(data)
-
-                with self.assertRaises(ConfigError):
-                    load_config(self.path)
+        self.assertIn("net2860_winusb", str(ctx.exception))
 
     def test_net2860_winusb_instrument_loads_with_no_serial(self):
         data = json.loads(json.dumps(VALID))
@@ -166,7 +145,7 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
-    def test_an_unknown_kind_names_all_three(self):
+    def test_an_unknown_kind_names_the_valid_ones(self):
         data = json.loads(json.dumps(VALID))
         data["instruments"]["bio"] = {"kind": "net2860_usb", "label": "BIO"}
         self._write(data)
@@ -174,12 +153,12 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ConfigError) as ctx:
             load_config(self.path)
         message = str(ctx.exception)
-        for kind in ("ids", "net2860", "net2860_winusb"):
+        for kind in ("ids", "net2860_winusb"):
             self.assertIn(kind, message)
 
-    def test_net2860_instrument_still_requires_label(self):
+    def test_net2860_winusb_instrument_still_requires_label(self):
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"] = {"kind": "net2860"}
+        data["instruments"]["bio"] = {"kind": "net2860_winusb"}
         self._write(data)
 
         with self.assertRaises(ConfigError):
@@ -382,9 +361,9 @@ class ConfigTest(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
-    def test_net2860_instrument_rejects_orientation(self):
+    def test_net2860_winusb_instrument_rejects_orientation(self):
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "orientation": "flip_vertical"}
+        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO", "orientation": "flip_vertical"}
         self._write(data)
 
         with self.assertRaises(ConfigError):
@@ -604,9 +583,9 @@ class PixelClockConfigTest(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
-    def test_net2860_rejects_it(self):
+    def test_net2860_winusb_rejects_it(self):
         data = json.loads(json.dumps(VALID))
-        data["instruments"]["bio"] = {"kind": "net2860", "label": "BIO", "pixel_clock_hz": 60_000_000}
+        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO", "pixel_clock_hz": 60_000_000}
         self._write(data)
         with self.assertRaises(ConfigError):
             load_config(self.path)

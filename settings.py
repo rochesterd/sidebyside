@@ -66,11 +66,11 @@ class RowCandidate:
     # UI-level selection identity (dropdown matching, is_valid()'s "something
     # is selected" check) -- None if this device can't be saved (see uvc_pid
     # note). NOT always literally what's written to config.json's "serial":
-    # for kind="net2860" this is a fixed sentinel ("net2860"), since
+    # for kind="net2860_winusb" this is a fixed sentinel, since
     # _instrument_data() writes that kind's config shape from `kind` alone,
     # not from this key.
     key: str | None
-    kind: str  # "ids" / "uvc" / "net2860" -- which BaseCamera subclass this becomes
+    kind: str  # "ids" / "uvc" / "net2860_winusb" -- which BaseCamera subclass this becomes
     display_name: str
     preview_target: object  # e.g. serial (ids) / device index (uvc) -- what the preview factory pulls out of this candidate
     source: object  # the original IdsDeviceInfo/UvcDeviceInfo, for pulling extra fields (e.g. friendly_name) at Save time
@@ -93,14 +93,6 @@ def _default_make_ids_camera(candidate: RowCandidate) -> BaseCamera:
 
 def _default_make_uvc_camera(candidate: RowCandidate) -> BaseCamera:
     return UvcCamera(device=candidate.preview_target, name="preview")
-
-
-def _default_make_net2860_camera(_candidate: RowCandidate) -> BaseCamera:
-    # Lazy import -- see app.py's _make_camera for why (net2860_camera.py's
-    # default paths assume .venv32/ exists).
-    from net2860_camera import Net2860Camera
-
-    return Net2860Camera(label="preview")
 
 
 def _default_make_net2860_winusb_camera(_candidate: RowCandidate) -> BaseCamera:
@@ -132,12 +124,9 @@ def _default_list_net2860_winusb() -> list:
 def _default_make_instrument_camera(candidate: RowCandidate) -> BaseCamera:
     """Shared preview factory for both instrument rows (slit lamp, BIO) --
     branches per-candidate rather than per-row, since the BIO row can offer
-    both "ids" and "net2860" candidates. See DECISIONS.md's "Net2860Camera"
-    entry."""
+    both "ids" and "net2860_winusb" candidates."""
     if candidate.kind == "net2860_winusb":
         return _default_make_net2860_winusb_camera(candidate)
-    if candidate.kind == "net2860":
-        return _default_make_net2860_camera(candidate)
     return _default_make_ids_camera(candidate)
 
 
@@ -154,33 +143,18 @@ def _ids_candidates(devices: list) -> list[RowCandidate]:
     ]
 
 
-def _net2860_candidates() -> list[RowCandidate]:
-    """Not device-scanned, unlike _ids_candidates()/_uvc_candidates() --
-    this camera has no device-manager-visible category to enumerate without
-    actually spinning up the 32-bit helper subprocess (see DECISIONS.md's
-    "Net2860Camera" entry), so it's a single static candidate always offered
-    on the BIO row instead. key="net2860" doubles as its own sentinel: there's
-    exactly one of this camera, so no real identity to key off of."""
-    return [
-        RowCandidate(
-            key="net2860",
-            kind="net2860",
-            display_name="Legacy BIO (NET GmbH KS722OUP)",
-            preview_target=None,
-            source=None,
-        )
-    ]
-
-
 def _net2860_winusb_candidates(devices: list) -> list[RowCandidate]:
-    """The same camera as _net2860_candidates(), reached through WinUSB.
+    """The legacy BIO, reached through WinUSB.
 
-    This one *is* device-scanned: a WinUSB-bound device has an enumerable
-    interface, so an empty list here means something real -- either the
-    camera isn't plugged in, or the driver package hasn't been installed on
-    this machine. Offering nothing is the honest answer in both cases,
-    which is why this is not a static candidate the way the vendor-driver
-    one has to be.
+    Device-scanned, like _ids_candidates()/_uvc_candidates(): a WinUSB-bound
+    device has an enumerable interface, so an empty list here means
+    something real -- either the camera isn't plugged in, or the driver
+    package hasn't been installed on this machine. Offering nothing is the
+    honest answer in both cases.
+
+    key doubles as its own sentinel, the way the removed vendor-driver
+    candidate's did: there's exactly one of this camera, so there is no real
+    identity to key off.
     """
     return [
         RowCandidate(
@@ -560,7 +534,7 @@ class DeviceRow(QWidget):
     """One role's dropdown + (optional) label field + Preview button.
 
     Generic over instrument roles (editable label, one or more candidate
-    kinds -- IDS devices, or IDS devices plus the static net2860 candidate
+    kinds -- IDS devices, or IDS devices plus the legacy BIO candidate
     on the BIO row) and the third-person role (UVC devices, no label,
     key=vid_pid) -- the difference is entirely in the candidates/factory
     passed in, not in this class's behavior. A row's candidates can mix
@@ -940,8 +914,8 @@ class SettingsWindow(QMainWindow):
             inst = cfg.instruments.get(key)
             if inst is not None:
                 row.set_label_text(inst.label)
-                # inst.serial is None for kind="net2860" -- that candidate's
-                # key is the sentinel "net2860" (== inst.kind), not a serial.
+                # inst.serial is None for kind="net2860_winusb" -- that
+                # candidate's key is a sentinel (== inst.kind), not a serial.
                 pending_key = inst.serial if inst.kind == "ids" else inst.kind
                 row.set_pending_selection(pending_key)
                 row.set_calibration(inst.exposure_time_us, inst.gain)
@@ -971,8 +945,7 @@ class SettingsWindow(QMainWindow):
             # bound; the vendor-driver one is always offered because it
             # can't be scanned for.
             if key == "bio":
-                candidates = (ids_candidates + _net2860_winusb_candidates(winusb_devices)
-                              + _net2860_candidates())
+                candidates = ids_candidates + _net2860_winusb_candidates(winusb_devices)
             else:
                 candidates = ids_candidates
             row.set_candidates(candidates, status=ids_status)
@@ -1061,9 +1034,9 @@ class SettingsWindow(QMainWindow):
 
     def _instrument_data(self, row: DeviceRow) -> dict:
         candidate = row.selected_candidate()
-        if candidate is not None and candidate.kind in ("net2860", "net2860_winusb"):
-            # Both take the same empty shape -- no serial, no calibration,
-            # no orientation. See config.py's _parse_instrument.
+        if candidate is not None and candidate.kind == "net2860_winusb":
+            # Empty shape -- no serial, no calibration, no orientation.
+            # See config.py's _parse_instrument.
             return {"kind": candidate.kind, "label": row.label_text()}
 
         data = {"kind": "ids", "serial": row.selected_key(), "label": row.label_text()}

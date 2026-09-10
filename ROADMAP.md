@@ -830,12 +830,22 @@ fault, once a bright light was used. Not acted on: whether the vendor
 DirectShow filter exposes `IAMVideoProcAmp` (the standard DirectShow
 interface for brightness/gain/exposure, distinct from `IAMStreamConfig`,
 which `DECISIONS.md` already ruled out for frame-rate control on this
-camera) is unknown — never checked. If it does, `net2860_helper.py` could
-expose `settings.py`-driven controls mirroring the IDS cameras' manual
-calibration path (see the 2026-08-18 entry above) rather than requiring a
-bright external light source every time. Candidate for whenever this
-camera is revisited — e.g. alongside packaging (`DECISIONS.md`'s
-"What's still NOT done" note on the wiring entry).
+camera) is unknown — never checked.
+
+**Closed 2026-09-10: this cannot be built, on any driver.** Opening the
+unit identified a Sony CXD3172AR CCD signal processor with a Silicon Labs
+C8051F321 beside it, and a USB capture of the vendor driver showed the host
+sends the camera board *nothing* — 62 bridge register writes, zero I2C
+transactions. Exposure, gain and white balance are decided by an AE/AWB
+loop running in firmware on the camera board, which the host cannot
+address. Confirmed on the wire and then observed directly: switching the
+room light on moved the frame mean from 31 to 98 with our code sending
+nothing at all.
+
+So `IAMVideoProcAmp` was never the question, and the WinUSB rewrite that
+replaced the vendor driver inherits exactly the same limitation. A bright
+light at the instrument remains the only control there is. See
+`DECISIONS.md`'s 2026-09-09/10 WinUSB entries.
 
 ---
 
