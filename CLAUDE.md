@@ -289,3 +289,21 @@ deliverable handed to a student — data, never something to regenerate.
   dependency. Prefer integration-style tests that spin up real
   `SyntheticCamera` instances and check real decoded output over mocking
   internals; that's what caught the remux bug above.
+
+## Documentation
+
+| File | For | Budget | Holds |
+|---|---|---|---|
+| `CLAUDE.md` | Claude Code, contributors | ≤310 lines, ≤26 KB | Rules and pointers, not stories. A Modules row is a role plus the one constraint a reader would break; tests, `tools/` and spikes get none. |
+| `DECISIONS.md` | contributors | ≤60 lines per entry | Why, dated, append-only — including a spike's findings and where its irreplaceable inputs are backed up. |
+| `ROADMAP.md` | the developer | ≤150 lines | Open plans only. The commit that adds a plan's DECISIONS entry deletes it and repoints anything citing it. |
+| `SETUP.md`, `PACKAGING.md` | contributors | ≤190 / ≤340 lines | Steps and warnings; no dated status paragraphs. |
+| `CALIBRATION.md` | technician | ≤185 lines | A self-contained procedure — its reader has no repo. |
+| `SUPPORTED_HARDWARE.md` | other institutions | ≤90 lines, ≤6 KB | One row per tested device, and the measured bandwidth. |
+
+- Over budget means cut before adding. One fact, one home; everything else
+  points at it.
+- Spike code is deleted when its production module lands. No per-folder
+  READMEs, and no new `.md` without a row here.
+- Audit by hand now and then: sizes against these budgets, backticked names
+  that no longer exist, and facts stated twice.
