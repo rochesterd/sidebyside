@@ -354,7 +354,8 @@ class TestBranding(unittest.TestCase):
 
                 image = window.video_label.pixmap().toImage()
                 left_pane_center = image.pixelColor(app.PREVIEW_CANVAS_SIZE[0] // 4, app.PREVIEW_CANVAS_SIZE[1] // 2)
-                self.assertEqual(left_pane_center.name().upper(), theme.BURGUNDY)
+                # Placeholder is black, blending with the video background
+                self.assertEqual(left_pane_center.name().upper(), "#000000")
             finally:
                 third_person.stop()
                 instrument.stop()

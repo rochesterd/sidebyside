@@ -73,11 +73,10 @@ PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recordi
 HEADER_MARK_SIZE = 36
 
 # Stands in for the instrument pane until there's an instrument frame to
-# show beside the third-person preview. Exactly the left pane's size
-# (side_by_side splits at width // 2), so it fills the pane with no
-# letterbox bars -- the bars around real frames stay black.
-_INSTRUMENT_PLACEHOLDER = np.full(
-    (PREVIEW_CANVAS_SIZE[1], PREVIEW_CANVAS_SIZE[0] // 2, 3), BURGUNDY_BGR, dtype=np.uint8
+# show beside the third-person preview. Black, like the letterbox bars
+# around real frames, so the placeholder blends in.
+_INSTRUMENT_PLACEHOLDER = np.zeros(
+    (PREVIEW_CANVAS_SIZE[1], PREVIEW_CANVAS_SIZE[0] // 2, 3), dtype=np.uint8
 )
 
 # See config.py's resolve_default_config_path()/resolve_default_sessions_dir()
