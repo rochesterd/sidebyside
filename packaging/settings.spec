@@ -12,7 +12,7 @@ a = Analysis(
     ['../settings.py'],
     pathex=[],
     binaries=[],
-    datas=[('../assets/sidebyside-settings.ico', 'assets')],
+    datas=[('../assets/reflex-settings.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -39,7 +39,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='../assets/sidebyside-settings.ico',
+    icon='../assets/reflex-settings.ico',
 )
 coll = COLLECT(
     exe,

@@ -32,7 +32,7 @@ What each camera needs:
 
 ### 1. Open Settings
 
-Start menu → **sidebyside** → **Camera Settings**. You'll see one row per
+Start menu → **Reflex Settings**. You'll see one row per
 camera: **Slit Lamp**, **BIO**, **Third-Person**.
 
 If a row's dropdown is empty or missing a camera, plug it in and press

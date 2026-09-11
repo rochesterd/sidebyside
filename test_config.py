@@ -479,7 +479,7 @@ class DefaultPathsTest(unittest.TestCase):
             "os.environ", {"ProgramData": "C:\\ProgramData"}
         ):
             self.assertEqual(
-                resolve_default_config_path(), Path("C:\\ProgramData") / "sidebyside" / "config.json"
+                resolve_default_config_path(), Path("C:\\ProgramData") / "Reflex" / "config.json"
             )
 
     def test_dev_mode_sessions_dir_is_relative_to_cwd(self):
@@ -490,7 +490,7 @@ class DefaultPathsTest(unittest.TestCase):
         with patch("sys.frozen", True, create=True), patch.dict("os.environ", {"PUBLIC": "C:\\Users\\Public"}):
             self.assertEqual(
                 resolve_default_sessions_dir(),
-                Path("C:\\Users\\Public") / "Documents" / "sidebyside" / "sessions",
+                Path("C:\\Users\\Public") / "Documents" / "Reflex" / "sessions",
             )
 
 

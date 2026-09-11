@@ -499,7 +499,7 @@ The clauses that actually settle this:
   integrate part or all of the Software in [Licensee's] own products
   *only if they operate with IDS cameras*" and to "duplicate or
   reproduce... and distribute these products to end users or third
-  parties." sidebyside qualifies directly — it only ever operates with
+  parties." Reflex qualifies directly — it only ever operates with
   IDS cameras.
 - **No clause anywhere requires interactive, per-installation
   acceptance.** Clause 5.1 ties the license's effective date to
@@ -618,7 +618,7 @@ code, no terminal, ever touched by them.
 - **`config.json` relocates off the source tree.** There's no repo
   checkout on a target machine in this model, so `config.py`'s path
   resolution needs a real home for it — likely
-  `%ProgramData%\sidebyside\config.json`. **Implemented** in
+  `%ProgramData%\Reflex\config.json`. **Implemented** in
   `config.py`'s `resolve_default_config_path()` (gated on `is_frozen()`);
   dev/test stays CWD-relative, and `load_config()`/`config.example.json`
   behavior is otherwise unaffected.
@@ -688,7 +688,7 @@ route to uEye camera drivers). Rejected in favor of extended alone:
 entry for what was actually implemented, what got revised along the way
 (`sessions_dir` became technician-configurable rather than a fixed
 default — see that entry), and the empirical PyInstaller findings.
-`packaging/installer_output/sidebyside-setup.exe` compiles successfully
+`packaging/installer_output/reflex-setup.exe` compiles successfully
 end to end; running the resulting installer on a real/disposable machine
 to verify the full technician-facing flow is the one remaining step, not
 done as part of this work — see `PACKAGING.md`'s "before handing this to
@@ -858,7 +858,7 @@ neither is committed work.
 - **A technician-facing "Doctor"/health-check tool** — one pass
   consolidating diagnostics that already exist but are scattered and
   reactive: an `IdsPeakAlreadyInstalled()`-equivalent SDK version check
-  (today buried in `packaging/sidebyside.iss`, install-time only),
+  (today buried in `packaging/reflex.iss`, install-time only),
   `config.py`'s validation (today only fires when `app.exe` happens to
   launch), `settings.py`'s per-camera "not connected" detection (today only
   visible if a technician opens it), `kiosk.py`'s disk-space preflight
@@ -876,7 +876,7 @@ neither is committed work.
 - **The default Inno Setup uninstaller's actual scope was never verified
   or written down.** It only removes what `[Files]` explicitly copied
   under `{app}` — today that means it has no awareness of
-  `%ProgramData%\sidebyside\config.json`, `%PUBLIC%\Documents\sidebyside\
+  `%ProgramData%\Reflex\config.json`, `%PUBLIC%\Documents\Reflex\
   sessions\`, or the separately-installed IDS peak SDK. Leaving recordings
   and the IDS SDK untouched is almost certainly correct behavior, but right
   now that's an accident of what's absent from `[Files]`, not a tested,
@@ -884,7 +884,7 @@ neither is committed work.
   stance that recordings are irreplaceable. Real open item, unlike the
   shelved tool above — just not yet acted on.
 
-  **Acted on 2026-09-10.** `sidebyside.iss` now has a
+  **Acted on 2026-09-10.** `reflex.iss` now has a
   `CurUninstallStepChanged` handler, and PACKAGING.md documents the scope,
   so what survives an uninstall is a decision rather than an accident.
   Recordings, `config.json` and the IDS peak SDK are kept, each for its own
@@ -918,7 +918,7 @@ specific moment). Two stated motivations:
 - **Flexible review.** A student (or instructor) could choose how to watch
   a session after the fact, rather than being locked into whatever layout
   was chosen at record time.
-- **Future integration.** If sidebyside is ever asked to feed recordings
+- **Future integration.** If Reflex is ever asked to feed recordings
   into Canvas (NECO's LMS, used for sharing media with students) or another
   external system, having each camera's stream separately addressable is a
   fundamentally better starting point than trying to extract one view back
@@ -1163,7 +1163,7 @@ still ships *inside* the clinic app, but it **also** gets its own
 standalone installer, because the machine that reviews a recording often
 isn't the machine that made it.
 
-**Built and verified on the build machine.** `sidebyside-viewer-setup.exe`
+**Built and verified on the build machine.** `reflex-viewer-setup.exe`
 came out at **92 MB** against the clinic installer's 513 MB. Two things
 went better than planned:
 
@@ -1177,18 +1177,18 @@ went better than planned:
   so the frozen `viewer.exe` contains none of `recorder`, `camera`,
   `kiosk`, `ids_camera` or `uvc_camera` — not just no `ids_peak`.
 
-Still outstanding: an install test of `sidebyside-viewer-setup.exe` on a
-machine that has never had sidebyside on it (see PACKAGING.md step 6's
+Still outstanding: an install test of `reflex-viewer-setup.exe` on a
+machine that has never had Reflex on it (see PACKAGING.md step 6's
 checklist — especially that "Open a recording folder…" finds a session
 copied from a USB stick, which is the path that actually matters there).
 
-| | `sidebyside-setup.exe` (clinic) | `sidebyside-viewer-setup.exe` (review) |
+| | `reflex-setup.exe` (clinic) | `reflex-viewer-setup.exe` (review) |
 |---|---|---|
 | Contents | `app.exe`, `settings.exe`, `viewer.exe` | `viewer.exe` only |
 | IDS peak SDK | bundled + silently installed (~356 MB) | **none** |
 | Size | ~490 MB | tens of MB |
 | Privileges | admin (Program Files, camera drivers) | **per-user**, no admin |
-| Installs to | `{autopf}\sidebyside` | `{localappdata}\sidebyside-viewer` |
+| Installs to | `{autopf}\Reflex` | `{localappdata}\Reflex Viewer` |
 | Shortcuts | Desktop: `app.exe`; Start: all three | Desktop + Start: `viewer.exe` |
 | Audience | the clinic room machine | a student's or instructor's own laptop |
 
@@ -1208,7 +1208,7 @@ should assert that with an explicit `excludes` rather than relying on it.
 
 **Blocking prerequisite, in phase 3:** the standalone viewer cannot
 assume `config.json` exists, and cannot assume recordings live under
-`%PUBLIC%\Documents\sidebyside\sessions` — on a review machine they'll
+`%PUBLIC%\Documents\Reflex\sessions` — on a review machine they'll
 have been copied to a USB stick, a Downloads folder, anywhere. So the
 Past-recordings screen needs an explicit **"Open a recording folder…"**
 browse alongside the default-location list, and the viewer must degrade

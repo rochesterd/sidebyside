@@ -3,7 +3,7 @@
 # PySide6/cv2/av, same upx=False antivirus rationale).
 #
 # This is the *only* spec built for the viewer-only installer
-# (packaging/sidebyside-viewer.iss), which ships to machines with no
+# (packaging/reflex-viewer.iss), which ships to machines with no
 # cameras, no IDS peak SDK and usually no admin rights -- see ROADMAP.md's
 # "Phase 4: two installers" entry.
 #
@@ -36,7 +36,7 @@ a = Analysis(
     ['../viewer.py'],
     pathex=[],
     binaries=[],
-    datas=[('../assets/sidebyside-viewer.ico', 'assets')],
+    datas=[('../assets/reflex-viewer.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -64,7 +64,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='../assets/sidebyside-viewer.ico',
+    icon='../assets/reflex-viewer.ico',
 )
 coll = COLLECT(
     exe,

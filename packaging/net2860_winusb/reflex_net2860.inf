@@ -1,4 +1,4 @@
-; sidebyside_net2860.inf
+; reflex_net2860.inf
 ;
 ; Binds the older Keeler Vantage Plus BIO's camera (NET GmbH KS722OUP, an
 ; eMPIA EM2860 bridge) to Microsoft's inbox WinUSB driver, so
@@ -20,8 +20,8 @@ Signature   = "$Windows NT$"
 Class       = USBDevice
 ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}
 Provider    = %ProviderName%
-CatalogFile = sidebyside_net2860.cat
-DriverVer   = 09/09/2026,1.0.0.0
+CatalogFile = reflex_net2860.cat
+DriverVer   = 09/11/2026,1.0.1.0
 PnpLockdown = 1
 
 [Manufacturer]
@@ -57,5 +57,5 @@ AddReg  = Dev_AddReg
 HKR,,DeviceInterfaceGUIDs,0x10000,"{CE873099-195F-4601-9800-F9748A92CB41}"
 
 [Strings]
-ProviderName = "NECO sidebyside"
-DeviceName   = "Keeler Vantage Plus BIO camera (sidebyside WinUSB)"
+ProviderName = "NECO Reflex"
+DeviceName   = "Keeler Vantage Plus BIO camera (Reflex WinUSB)"

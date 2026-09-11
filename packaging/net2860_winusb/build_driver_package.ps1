@@ -1,12 +1,12 @@
 # build_driver_package.ps1
 #
 # Builds and self-signs the WinUSB driver package that binds the legacy BIO
-# camera (see sidebyside_net2860.inf). Produces three files the clinic
+# camera (see reflex_net2860.inf). Produces three files the clinic
 # installer ships:
 #
-#   sidebyside_net2860.inf   the package itself (no binaries -- see the INF)
-#   sidebyside_net2860.cat   its catalogue, signed
-#   sidebyside_net2860.cer   the public certificate, to be trusted at install
+#   reflex_net2860.inf   the package itself (no binaries -- see the INF)
+#   reflex_net2860.cat   its catalogue, signed
+#   reflex_net2860.cer   the public certificate, to be trusted at install
 #
 # The private key never leaves this machine; only the .cer ships.
 #
@@ -37,7 +37,7 @@
 # a commercial OV certificate. To preserve it after all:
 #
 #   $c = Get-ChildItem Cert:\CurrentUser\My |
-#        Where-Object { $_.Subject -eq "CN=NECO sidebyside driver signing" }
+#        Where-Object { $_.Subject -eq "CN=NECO Reflex driver signing" }
 #   Export-PfxCertificate -Cert $c -FilePath signing-key.pfx `
 #                         -Password (Read-Host -AsSecureString)
 #
@@ -46,7 +46,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$CertSubject = "CN=NECO sidebyside driver signing",
+    [string]$CertSubject = "CN=NECO Reflex driver signing",
     # Left empty and resolved in the body: $PSScriptRoot is not reliably
     # this script's directory while parameter defaults are being bound --
     # with a PowerShell profile loaded it resolves to the profile's folder,
@@ -121,14 +121,14 @@ if ($cert) {
 }
 
 # --- catalogue -----------------------------------------------------------
-$infName = "sidebyside_net2860.inf"
+$infName = "reflex_net2860.inf"
 if (-not (Test-Path (Join-Path $PSScriptRoot $infName))) { Fail "$infName not found beside this script." }
 
 Write-Host "Generating catalogue..."
 & $inf2cat /driver:"$PSScriptRoot" /os:10_X64 /verbose
 if ($LASTEXITCODE -ne 0) { Fail "Inf2Cat failed ($LASTEXITCODE). An INF syntax error is the usual cause." }
 
-$cat = Join-Path $PSScriptRoot "sidebyside_net2860.cat"
+$cat = Join-Path $PSScriptRoot "reflex_net2860.cat"
 if (-not (Test-Path $cat)) { Fail "Inf2Cat reported success but produced no .cat" }
 
 Write-Host "Signing catalogue..."
@@ -176,7 +176,7 @@ if ($verifyExit -ne 0) {
     Write-Host "Verified: the catalogue covers the INF." -ForegroundColor Green
 }
 
-$cer = Join-Path $OutDir "sidebyside_net2860.cer"
+$cer = Join-Path $OutDir "reflex_net2860.cer"
 Export-Certificate -Cert $cert -FilePath $cer -Force | Out-Null
 Write-Host "Exported public certificate -> $cer"
 

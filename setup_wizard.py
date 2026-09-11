@@ -42,7 +42,7 @@ class WelcomePage(Page):
         self.wizard = wizard
 
         ttk.Label(
-            self, text="sidebyside Setup", font=("Segoe UI", 16, "bold")
+            self, text="Reflex Setup", font=("Segoe UI", 16, "bold")
         ).pack(anchor="w", pady=(0, 12))
         ttk.Label(
             self,
@@ -217,7 +217,7 @@ class Wizard(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("sidebyside Setup")
+        self.title("Reflex Setup")
         # tkinter raises on a missing file, where Qt gives a null icon.
         try:
             self.iconbitmap(str(icon_path(ICON_APP)))

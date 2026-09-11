@@ -42,7 +42,7 @@ def resolve_default_config_path() -> Path:
     (relative to CWD) is unchanged.
     """
     if is_frozen():
-        return Path(os.environ["ProgramData"]) / "sidebyside" / "config.json"
+        return Path(os.environ["ProgramData"]) / "Reflex" / "config.json"
     return Path("config.json")
 
 
@@ -56,7 +56,7 @@ def resolve_default_sessions_dir() -> Path:
     once a technician saves a choice, that explicit value always wins.
     """
     if is_frozen():
-        return Path(os.environ["PUBLIC"]) / "Documents" / "sidebyside" / "sessions"
+        return Path(os.environ["PUBLIC"]) / "Documents" / "Reflex" / "sessions"
     return Path("sessions")
 
 

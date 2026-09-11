@@ -4,7 +4,7 @@ Standing context for this project. Read this before making changes.
 
 ## What this is
 
-`sidebyside` records two cameras simultaneously and produces a single
+Reflex records two cameras simultaneously and produces a single
 composited video, so optometry students at NECO can watch themselves 
 from a third person view alongside the view through the instrument they're 
 using.
@@ -82,7 +82,7 @@ third instrument or a second concurrent camera is ever added.
 
 Neither instrument camera is a Keeler or Haag-Streit camera. Both are
 generic IDS machine-vision cameras mounted on those instruments, and
-sidebyside talks to IDS peak directly — it does **not** go through
+Reflex talks to IDS peak directly — it does **not** go through
 Keeler's Kinexis. So there is no instrument-maker sensor configuration to
 inherit, and IDS's own power-on defaults were measured unusable here:
 `ExposureTime ~15ms / Gain 1.0` produced a near-black frame pointed
@@ -197,8 +197,8 @@ a UI poll loop can stall the display waiting on a queue.
 | `setup.ps1` | Bootstraps a **developer's** machine for working on source: venv + `requirements.txt` + `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. Not part of any path a clinic machine goes through — see `PACKAGING.md`/ROADMAP.md's "Distribute a frozen-exe installer" entry. |
 | `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. Same developer-only scope as `setup.ps1`. |
 | `packaging/app.spec`, `packaging/settings.spec`, `packaging/viewer.spec` | PyInstaller specs freezing `app.py`/`settings.py`/`viewer.py` into standalone exes — no Python, venv, or `pip install` needed on the machine that runs them. `viewer.spec`'s `excludes` (`ids_peak`, `ids_peak_ipl`, `pygrabber`, `comtypes`) is an assertion, not a size tweak: if the viewer ever reaches something camera-facing, that build fails loudly instead of silently gaining an SDK the review machine can't satisfy. See `PACKAGING.md`. |
-| `packaging/sidebyside.iss` | Inno Setup script for the **clinic** installer: copies `app.exe`/`settings.exe` into Program Files, creates `app.exe`'s Desktop/Start-menu shortcut (`settings.exe` gets Start-menu only — never point a student at it, same rule as below) and silently installs a bundled copy of the IDS peak *extended* installer. Deliberately ships no `viewer.exe` — `app.exe` already contains the viewer. Leaves `AppId` implicit; changing that would orphan existing installs. See `PACKAGING.md`. |
-| `packaging/sidebyside-viewer.iss` | Inno Setup script for the **viewer-only** installer (~90 MB vs ~490 MB): `viewer.exe` alone, no IDS peak, installed per-user under `%LOCALAPPDATA%` with `PrivilegesRequired=lowest` so it needs no admin, with a Desktop shortcut (students *are* its audience). Distinct `AppId`, so it coexists with a clinic install. See `PACKAGING.md` and ROADMAP.md's "Phase 4: two installers" entry. |
+| `packaging/reflex.iss` | Inno Setup script for the **clinic** installer: copies `app.exe`/`settings.exe` into Program Files, creates `app.exe`'s Desktop/Start-menu shortcut (`settings.exe` gets Start-menu only — never point a student at it, same rule as below) and silently installs a bundled copy of the IDS peak *extended* installer. Deliberately ships no `viewer.exe` — `app.exe` already contains the viewer. `AppId` is pinned (`reflex`) rather than derived from `AppName`; changing it would orphan existing installs. See `PACKAGING.md`. |
+| `packaging/reflex-viewer.iss` | Inno Setup script for the **viewer-only** installer (~90 MB vs ~490 MB): `viewer.exe` alone, no IDS peak, installed per-user under `%LOCALAPPDATA%` with `PrivilegesRequired=lowest` so it needs no admin, with a Desktop shortcut (students *are* its audience). Distinct `AppId`, so it coexists with a clinic install. See `PACKAGING.md` and ROADMAP.md's "Phase 4: two installers" entry. |
 | `test_session_export.py` | Exports real recorded sessions: every layout produces a decodable MP4 at the right natural size and frame count, dimensions are always even (yuv420p), progress reaches its total, and a cancelled *or* failed export leaves neither an output nor a `.partial` behind. Also that it refuses to overwrite a stream file. |
 | `test_session_reader.py` | Records real `SyntheticCamera` sessions and reads them back: manifest parsing, a non-v2 `format_version` refused, `list_sessions` ordering/junk-skipping, and playback — advancing moves both streams, seek lands at or before the target and is repeatable, mismatched camera rates stay aligned. |
 | `test_viewer.py` | Headless tests for `ViewerDialog`/`SessionPickerDialog` against real recorded sessions (no `.show()`/`.exec()`): every layout mode renders, scrub pauses-then-resumes, playback stops at the end, `reject()` (the Esc path) releases the PyAV decoders, Export honours the chosen path and reports every outcome (including "no outcome" — never reported as success), and the picker lists newest-first, browses, and tolerates being pointed straight at one recording. |
@@ -241,7 +241,7 @@ installer procedure that actually produces what a technician runs.
 Each recording writes to `<sessions_dir>/<YYYY-MM-DD_HHMM>/`
 (minute-collision gets a `_2`, `_3`, ... suffix rather than overwriting).
 `sessions_dir` defaults to a relative `sessions/` folder in dev/test, or
-`%PUBLIC%\Documents\sidebyside\sessions` in a frozen install unless a
+`%PUBLIC%\Documents\Reflex\sessions` in a frozen install unless a
 technician picked somewhere else via `settings.py`'s Browse field — see
 `config.py`'s `resolve_default_sessions_dir()` and ROADMAP.md's
 "Distribute a frozen-exe installer" entry for why this needs to be

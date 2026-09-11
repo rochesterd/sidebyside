@@ -1,7 +1,7 @@
 # SETUP.md
 
 **This is the developer/source-checkout setup procedure** — building
-sidebyside from source to work on it. If you're setting up a clinic
+Reflex from source to work on it. If you're setting up a clinic
 machine to actually run the app, you want the distributable installer a
 developer builds via `PACKAGING.md`, not this file — see ROADMAP.md's
 "Distribute a frozen-exe installer, not a Python source bootstrap" entry

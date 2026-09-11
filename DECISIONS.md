@@ -1249,7 +1249,7 @@ dev machine has always done.
 **Decided:** Executed ROADMAP.md's "Distribute a frozen-exe installer,
 not a Python source bootstrap" plan. `app.py`/`settings.py` freeze into
 `app.exe`/`settings.exe` via `packaging/app.spec`/`packaging/
-settings.spec`; `packaging/sidebyside.iss` (Inno Setup) packages those
+settings.spec`; `packaging/reflex.iss` (Inno Setup) packages those
 plus a bundled, interactively-launched copy of the IDS peak *extended*
 installer into one real installer. `config.py` gained
 `resolve_default_config_path()`/`resolve_default_sessions_dir()`,
@@ -1264,7 +1264,7 @@ field, technician-set via a new Browse-button field in `settings.py`
 a clinic machine goes through.
 
 **Why sessions_dir needed to become config-driven, not just relocated:**
-originally planned as a fixed `%PUBLIC%\Documents\sidebyside\sessions`
+originally planned as a fixed `%PUBLIC%\Documents\Reflex\sessions`
 default (mirroring `config.json`'s `%ProgramData%` placement) — revised
 during implementation because recordings are literally "the actual
 deliverable handed to a student" (CLAUDE.md), and a technician needs to
@@ -1289,7 +1289,7 @@ synthetic path), `--third-person-synthetic` (forces the real `from
 ids_camera import IdsCamera` import and `ids_peak`/`ids_peak_ipl` module
 load at startup, using this dev machine's real slit-lamp/BIO serials from
 `config.example.json`), and confirming both `config.json` and `logs/`
-correctly resolved to `%ProgramData%\sidebyside\...` once frozen. All
+correctly resolved to `%ProgramData%\Reflex\...` once frozen. All
 three ran cleanly with no import or DLL-load errors. Real-camera-attached
 verification of `IdsCamera.start()` itself is still a follow-up for
 whoever has hardware attached, same caveat this project always carries
@@ -1321,7 +1321,7 @@ locked-down clinic machine and not worth the smaller file size.
   independent than checking a specific product GUID in the Uninstall
   registry key, which changes across IDS peak releases.
 - Compiled successfully end to end (`packaging/installer_output/
-  sidebyside-setup.exe`, ~513MB — expected, given it embeds the 356MB
+  reflex-setup.exe`, ~513MB — expected, given it embeds the 356MB
   IDS installer). **Not run** on this machine as part of this work — that
   writes to Program Files/Start Menu and chain-launches a real
   third-party installer, confirmed as a deliberate stop point before
@@ -1337,7 +1337,7 @@ over assumed-correct configuration.
 
 ## 2026-08-25 — Missing-config startup failure was silent in the frozen exe
 
-Found by actually running `sidebyside-setup.exe` on a machine with no
+Found by actually running `reflex-setup.exe` on a machine with no
 `config.json` yet (a fresh Windows Sandbox session, standing in for a
 never-before-configured clinic machine) — exactly the "not verified" gap
 the 2026-08-20 entry above flagged. The installer itself worked correctly
@@ -1354,7 +1354,7 @@ app.spec` builds `app.exe` with `console=False` (deliberately, for a
 windowed kiosk app), and Explorer launches a Desktop shortcut with no
 console attached at all — so that `stderr` write reaches nobody. The
 `RotatingFileHandler` still captured the error durably in `LOG_FILE`
-(`%ProgramData%\sidebyside\logs\app.log`), so the information wasn't
+(`%ProgramData%\Reflex\logs\app.log`), so the information wasn't
 *lost*, but nothing pointed a technician at it. This directly contradicts
 CLAUDE.md's "failures must be loud and early" — a double-click producing
 literally nothing is quieter than the "black pane" that principle already
@@ -1373,7 +1373,7 @@ pattern), with no behavior change in real usage where no instance exists
 yet when `main()` runs.
 
 Verified by rerunning the frozen `app.exe` directly with no
-`%ProgramData%\sidebyside\config.json` present: the process now stays
+`%ProgramData%\Reflex\config.json` present: the process now stays
 alive holding a blocking dialog open, instead of exiting within
 milliseconds as it did before the fix. Installer recompiled with the
 fixed `app.exe`; re-verification on a clean machine is the immediate
@@ -1413,7 +1413,7 @@ table) found:
 **2.9.0.0** — a version far older than `26.06.1`, what
 `vendor/ids-peak-win-extended-setup-64.exe` currently bundles — into the
 same `{pf}\IDS\ids_peak` location `IdsPeakAlreadyInstalled()` in
-`packaging/sidebyside.iss` was checking with a bare `DirExists()`. A real
+`packaging/reflex.iss` was checking with a bare `DirExists()`. A real
 clinic machine that's only ever run Kinexis (plausible, since it's
 Keeler's own software for the same BIO) would have that check wrongly
 report "already installed" and skip the bundled installer entirely,
@@ -1450,7 +1450,7 @@ syntax inside comments in general going forward.
 **Decision on the restart/silent-install question this whole thread
 started from:** unchanged — still keep IDS's own bundled installer
 interactive, with "choose Restart Later if prompted" as the
-documentation fix (sidebyside's own files/shortcuts are already
+documentation fix (Reflex's own files/shortcuts are already
 installed by the time `[Run]` fires `ids-peak-win-extended-setup-64.exe`,
 so nothing functionally depends on that restart happening immediately).
 Kinexis proves silent driving is *possible* — a real vendor ships it —
@@ -1465,7 +1465,7 @@ counterargument to it.
 
 The entry directly above concluded "stays manual," and the 2026-08-19
 entry before that reached the same conclusion for `setup.ps1`. Both are
-now superseded: `packaging/sidebyside.iss` drives IDS peak's installer
+now superseded: `packaging/reflex.iss` drives IDS peak's installer
 **silently**. What actually changed the calculus, across this
 conversation's back-and-forth:
 
@@ -1488,7 +1488,7 @@ conversation's back-and-forth:
 
 ### What was built
 
-`InstallIdsPeakSilently()` in `packaging/sidebyside.iss`'s `[Code]`
+`InstallIdsPeakSilently()` in `packaging/reflex.iss`'s `[Code]`
 section, called from `CurStepChanged(ssPostInstall)` (replacing the old
 declarative interactive Run entry entirely):
 
@@ -1569,7 +1569,7 @@ comment style. Take away for next time: avoid literal `{constant}` and
 
 ### Status
 
-Built and compiles cleanly (`packaging\installer_output\sidebyside-setup.exe`).
+Built and compiles cleanly (`packaging\installer_output\reflex-setup.exe`).
 **Not yet verified end-to-end** on a real clean machine -- the sandbox
 session used to record the response file now has IDS peak installed from
 that recording, so it can't also be the clean-machine test for the silent
@@ -1582,7 +1582,7 @@ fire instead of silently continuing).
 
 First real Sandbox test of the silent-install build (previous entry)
 surfaced a bug: after a genuinely fresh, verified-successful silent IDS
-peak install, Setup went straight to the plain "Completing the sidebyside
+peak install, Setup went straight to the plain "Completing the Reflex
 Setup Wizard" Finished page -- no restart-choice radio buttons, even
 though `NeedRestart()` returned `IdsPeakInstalledThisRun`, which
 `InstallIdsPeakSilently()` had just set `True`. No error dialog either,
@@ -1628,9 +1628,9 @@ That would fix the ordering, but reopens the exact risk `ssPostInstall`
 was chosen to avoid: `ssInstall` fires *before* `[Files]`/`[Icons]` are
 written, so if the silent `Exec()` call ever hung indefinitely (not just
 returned a nonzero code, which is already handled either way) rather
-than erroring, sidebyside's own `app.exe`/`settings.exe`/shortcuts might
+than erroring, Reflex's own `app.exe`/`settings.exe`/shortcuts might
 never get installed at all. Keeping the IDS install in `ssPostInstall`
-preserves "sidebyside itself is safe regardless of what happens to the
+preserves "Reflex itself is safe regardless of what happens to the
 bundled IDS installer" from the original 2026-08-20 frozen-exe entry.
 
 ### Fix
@@ -1645,7 +1645,7 @@ timing gotcha this project only found by instrumenting it directly.
 Matches CLAUDE.md's general "loud and early" bias better than the
 native mechanism did anyway.
 
-Verified against the real `sidebyside.iss` compiling cleanly; **not yet
+Verified against the real `reflex.iss` compiling cleanly; **not yet
 re-verified in an actual fresh Sandbox** that the MsgBox appears at the
 right moment -- that's the next real test, along with the
 still-outstanding deliberate-failure-path check from the previous entry.
@@ -1687,7 +1687,7 @@ from `ssInstall`) confirmed the full chain works: `NeedRestart()` sees the
 flag as `True`, and Setup's own log shows `Need to restart Windows? Yes`.
 
 **The real tradeoff, worked through with direct pushback, not glossed
-over:** moving the silent IDS install to `ssInstall` means sidebyside's
+over:** moving the silent IDS install to `ssInstall` means Reflex's
 own files/shortcuts are no longer guaranteed installed before it runs --
 the entire reason `ssPostInstall` was chosen in the first place. Several
 rounds of direct questioning actually about what this protects against in
@@ -1702,8 +1702,8 @@ practice:
   written.
 - Without a working system-wide IDS peak install, neither `app.exe` (no
   instrument cameras) nor `settings.exe` (no IDS devices to detect) can
-  do their real job anyway -- "sidebyside is installed" was overstating
-  the benefit as "sidebyside works," which it doesn't, without IDS peak.
+  do their real job anyway -- "Reflex is installed" was overstating
+  the benefit as "Reflex works," which it doesn't, without IDS peak.
 - The odds of an actual indefinite hang (as opposed to a clean, already-
   handled error) are low, and `WizardForm.StatusLabel.Caption` already
   identifies which step is running if a technician comes back to a stuck
@@ -1716,7 +1716,7 @@ protects against doesn't resolve cleanly under either ordering regardless,
 and the native restart-page UX was worth that narrower tradeoff. Decision:
 switched to `ssInstall`.
 
-**What changed in `packaging/sidebyside.iss`:**
+**What changed in `packaging/reflex.iss`:**
 - `vendor\ids-peak-win-extended-setup-64.exe` and
   `vendor\{#IdsPeakResponseFile}`'s `[Files]` entries: `deleteafterinstall`
   → `dontcopy`, moved to the top of `[Files]` (solid-compression
@@ -1978,7 +1978,7 @@ never revisited (the kernel driver is dated 2009, already 64-bit; the
 technical requirement -- the product line appears dead since (NET GmbH's
 current site has moved on to unrelated GenICam/USB3/GigE Vision products).
 The project's venv Python is 64-bit, so this camera's capture code cannot
-run in the same process as the rest of `sidebyside`; `net2860_camera.py`
+run in the same process as the rest of `Reflex`; `net2860_camera.py`
 launches a 32-bit Python subprocess (`net2860_helper.py`, under a separate
 `.venv32/` -- see `setup_net2860_helper.ps1`) that does the actual
 DirectShow work and streams frames back over a pipe. This mirrors
@@ -2678,11 +2678,11 @@ manifests, and a side-by-side export of the 5s session produced a real
 
 ## 2026-09-02 - Recorder/Viewer split, phase 4: two installers
 
-**Decided:** the build produces `sidebyside-setup.exe` (clinic: app +
+**Decided:** the build produces `reflex-setup.exe` (clinic: app +
 settings + bundled IDS peak, admin, Program Files) and
-`sidebyside-viewer-setup.exe` (review: `viewer.exe` only, no IDS peak,
+`reflex-viewer-setup.exe` (review: `viewer.exe` only, no IDS peak,
 per-user under `%LOCALAPPDATA%`, no admin). New `packaging/viewer.spec`
-and `packaging/sidebyside-viewer.iss`; `PACKAGING.md` gains a "Two
+and `packaging/reflex-viewer.iss`; `PACKAGING.md` gains a "Two
 installers" table and a step 6. Completes the Recorder/Viewer split.
 
 **Why a second installer rather than "just run the full one":** the
@@ -2714,10 +2714,10 @@ admin would be friction with no purpose -- and students frequently don't
 have it on their own machines. It gets a Desktop shortcut, unlike
 `settings.exe`: students *are* this program's audience.
 
-**Distinct `AppId` on the viewer installer only.** `sidebyside.iss`
+**Distinct `AppId` on the viewer installer only.** `reflex.iss`
 deliberately leaves `AppId` implicit (Inno derives it from `AppName`);
 adding one now would stop existing clinic installs being recognised as
-upgradable. The viewer installer sets `AppId=sidebyside-viewer`
+upgradable. The viewer installer sets `AppId=reflex-viewer`
 explicitly so the separation is deliberate and documented rather than an
 accident of differing `AppName`s.
 
@@ -2726,7 +2726,7 @@ it; `viewer.exe` with no arguments logs "no usable config.json ... using
 the default recordings folder" and shows the picker rather than erroring
 -- the correct review-machine path, since there is legitimately no
 config there. **Not yet verified:** installing
-`sidebyside-viewer-setup.exe` on a machine that has never had sidebyside
+`reflex-viewer-setup.exe` on a machine that has never had Reflex
 on it (PACKAGING.md step 6's checklist).
 
 ---
@@ -2816,7 +2816,7 @@ that sat in `config.json` for weeks.
 these sensors better than we could, so the sensor layer is already
 handled. Neither is true. Both instrument cameras are generic **IDS**
 machine-vision cameras that the instrument makers merely mount, and
-sidebyside talks to IDS peak directly rather than through Keeler's
+Reflex talks to IDS peak directly rather than through Keeler's
 Kinexis -- so there is no instrument-maker configuration to inherit. And
 IDS's own defaults were measured unusable here: the 2026-08-12 hardware
 smoke test found `ExposureTime ~15ms / Gain 1.0` gave a near-black frame
@@ -3237,7 +3237,7 @@ Verification milestone, not a new decision -- recorded so the caveats it
 closes leave a trail, same as the 2026-09-08 doc catch-up entry above.
 
 **The full clinic installer was run end to end on a second machine.**
-`sidebyside-setup.exe` installed, both the Desktop and Start-menu
+`reflex-setup.exe` installed, both the Desktop and Start-menu
 shortcuts launched their `.exe`s, the bundled IDS peak SDK installed
 silently, the Finished page showed the native restart choice, and the
 installed `app.exe` recorded a real session with the slit lamp camera
@@ -3262,7 +3262,7 @@ bottom, using the real BI 900 camera: correctly oriented. That entry's
 frozen-exe entry still described relocating `config.json` to
 `%ProgramData%` as "not yet implemented." It has been implemented since
 that work -- `config.py`'s `resolve_default_config_path()` returns
-`%ProgramData%\sidebyside\config.json` under `is_frozen()`, and stays
+`%ProgramData%\Reflex\config.json` under `is_frozen()`, and stays
 CWD-relative in dev/test.
 
 ---
@@ -3836,7 +3836,7 @@ that question returns.
 
 ## 2026-09-10 - Uninstall scope is now a decision, not an accident
 
-**Decided:** `sidebyside.iss` gains a `CurUninstallStepChanged` handler
+**Decided:** `reflex.iss` gains a `CurUninstallStepChanged` handler
 that removes the staged WinUSB driver package and the signing certificate,
 and PACKAGING.md documents what survives and why. ROADMAP.md's 2026-08-26
 entry had flagged the uninstaller's scope as "never verified or written
@@ -3977,8 +3977,8 @@ camera driver (pnputil exit code -536870325)`. That is `0xE000024B`,
 shipped beside it, so Windows treated the package as tampered with and
 refused to stage it. Signing, certificate and trust chain were all fine.
 
-**Cause:** `sidebyside_net2860.cat` was signed against an LF copy of
-`sidebyside_net2860.inf` (2261 bytes); the installer shipped the CRLF copy
+**Cause:** `reflex_net2860.cat` was signed against an LF copy of
+`reflex_net2860.inf` (2261 bytes); the installer shipped the CRLF copy
 (2322 bytes). `core.autocrlf=true` with no `.gitattributes` means git
 stores the INF as LF and writes it out as CRLF, so an ordinary checkout —
 a branch switch, in this case, a day after the catalogue was built —
@@ -4020,8 +4020,8 @@ toward trusting a signing certificate on a machine that has no reason to.
 
 ## 2026-09-10 — Three icons, not one
 
-**Decided:** `assets/sidebyside.ico`, `sidebyside-viewer.ico` and
-`sidebyside-settings.ico`, wired into both installers, all three
+**Decided:** `assets/reflex.ico`, `reflex-viewer.ico` and
+`reflex-settings.ico`, wired into both installers, all three
 PyInstaller specs, and every Qt entry point.
 
 **Why three:** CLAUDE.md's rule that a student must never be pointed at
@@ -4047,3 +4047,39 @@ but that rule exists to protect an irreplaceable recording. A kiosk that
 won't launch because a decoration is missing is worse than a plain one.
 `setup_wizard.py` needs an explicit guard only because tkinter's
 `iconbitmap()` does raise.
+
+---
+
+## 2026-09-11 — The app is now Reflex
+
+**Decided:** every name the app shows or leaves on a machine changes from
+`sidebyside` to Reflex — window titles, shortcuts, installer names and
+outputs, install folders, `%ProgramData%\Reflex` (config and logs),
+`%PUBLIC%\Documents\Reflex\sessions`, the icon filenames, and the legacy
+BIO driver package (`reflex_net2860.inf`, its catalogue and certificate,
+signed as "NECO Reflex driver signing"), and the GitHub repo and project
+folder (`reflex`). Unchanged: Python module names, and the `side_by_side`
+layout mode, which names a layout, not the app. Entries above this one were
+rewritten to the new names too, so a filename there names today's file;
+details such as byte counts still describe that file as it was then.
+
+**Why a clean break rather than an upgrade path:** no recording that
+matters exists yet, so carrying the old folder names forward would keep
+`sidebyside` on disk indefinitely to protect nothing. The cost is a
+one-time manual step per machine that has the old install (PACKAGING.md
+step 5): uninstall `sidebyside` — its uninstaller already removes its
+driver package and certificate — install Reflex, then restore
+`config.json` or redo CALIBRATION.md.
+
+**`AppId` is now pinned** (`reflex`, `reflex-viewer`). The clinic installer
+used to leave it unset, so Inno derived it from `AppName` and the old
+display name *was* its identity. Keeping old installs upgradable would have
+meant pinning it to `sidebyside`; with a clean break happening anyway it is
+pinned to the new name instead, and a later display-name change needs no
+break at all.
+
+**The driver's `DriverVer` moved to 09/11/2026, 1.0.1.0.** Its INF changed,
+and on a machine where the old package was never removed, the newer date is
+what makes Windows rank this package above the old one for the same
+hardware ID. The first `build_driver_package.ps1` run after this mints a new
+signing certificate, because it looks the certificate up by subject.

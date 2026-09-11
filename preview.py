@@ -32,7 +32,7 @@ CANVAS_SIZE = (1280, 720)
 class PreviewWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Side by Side Preview")
+        self.setWindowTitle("Reflex Preview")
 
         self.camera_a = SyntheticCamera(*CAMERA_A_RESOLUTION, name="cam-a", fps=30)
         self.camera_b = SyntheticCamera(*CAMERA_B_RESOLUTION, name="cam-b", fps=30)

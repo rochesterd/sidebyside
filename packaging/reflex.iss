@@ -1,4 +1,4 @@
-; Inno Setup script for the sidebyside clinic-machine installer -- see
+; Inno Setup script for the Reflex clinic-machine installer -- see
 ; PACKAGING.md for the full build procedure and ROADMAP.md's "Distribute
 ; a frozen-exe installer" entry for why this exists instead of shipping
 ; Python source + setup.ps1 to clinic machines.
@@ -44,21 +44,25 @@
 #define IdsPeakResponseFile "ids-peak-response.iss"
 
 [Setup]
-AppName=sidebyside
+; Pinned rather than left to default: Inno derives an unset AppId from
+; AppName, so the display name could not change without orphaning every
+; existing install. See DECISIONS.md's 2026-09-11 rename entry.
+AppId=reflex
+AppName=Reflex
 AppVersion={#AppVersion}
 AppPublisher=NECO
-DefaultDirName={autopf}\sidebyside
-DefaultGroupName=sidebyside
+DefaultDirName={autopf}\Reflex
+DefaultGroupName=Reflex
 DisableProgramGroupPage=yes
 ; Writes to Program Files and chain-launches the IDS installer (which
 ; itself needs admin for driver installation) -- both need elevation.
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=installer_output
-OutputBaseFilename=sidebyside-setup
+OutputBaseFilename=reflex-setup
 Compression=lzma2
 SolidCompression=yes
-SetupIconFile=..\assets\sidebyside.ico
+SetupIconFile=..\assets\reflex.ico
 ; Without this, Add/Remove Programs shows unins000.exe's generic icon.
 UninstallDisplayIcon={app}\app\app.exe
 
@@ -66,7 +70,7 @@ UninstallDisplayIcon={app}\app\app.exe
 ; dontcopy, listed first (solid-compression decompression cost grows with
 ; position -- see PACKAGING.md): these two are pulled out early via
 ; ExtractTemporaryFile() in CurStepChanged's ssInstall handler below,
-; *before* sidebyside's own Files/Icons are written, not during Setup's
+; *before* Reflex's own Files/Icons are written, not during Setup's
 ; normal automatic copy phase. That's what lets the silent IDS install run
 ; early enough for NeedRestart() to see its result -- see DECISIONS.md's
 ; "Silent IDS peak install: native restart page" entry. dontcopy-extracted
@@ -85,18 +89,18 @@ Source: "dist\settings\*"; DestDir: "{app}\settings"; Flags: ignoreversion recur
 ; technician who needs to re-bind the camera later (say after someone
 ; reinstalls Keeler's Kapture over it) can then do it from the installed
 ; copy, without the setup exe.
-Source: "net2860_winusb\sidebyside_net2860.inf"; DestDir: "{app}\driver"; Flags: ignoreversion
-Source: "net2860_winusb\sidebyside_net2860.cat"; DestDir: "{app}\driver"; Flags: ignoreversion
-Source: "net2860_winusb\sidebyside_net2860.cer"; DestDir: "{app}\driver"; Flags: ignoreversion
+Source: "net2860_winusb\reflex_net2860.inf"; DestDir: "{app}\driver"; Flags: ignoreversion
+Source: "net2860_winusb\reflex_net2860.cat"; DestDir: "{app}\driver"; Flags: ignoreversion
+Source: "net2860_winusb\reflex_net2860.cer"; DestDir: "{app}\driver"; Flags: ignoreversion
 
 [Icons]
 ; app.exe only on the Desktop -- this is what closes the "how does a
 ; student launch this" gap (see ROADMAP.md's entry: no such shortcut
 ; existed anywhere before this). settings.exe gets a Start Menu entry
 ; only, no Desktop icon -- CLAUDE.md: "never point a student at it."
-Name: "{autodesktop}\sidebyside"; Filename: "{app}\app\app.exe"
-Name: "{autoprograms}\sidebyside"; Filename: "{app}\app\app.exe"
-Name: "{autoprograms}\sidebyside Settings"; Filename: "{app}\settings\settings.exe"
+Name: "{autodesktop}\Reflex"; Filename: "{app}\app\app.exe"
+Name: "{autoprograms}\Reflex"; Filename: "{app}\app\app.exe"
+Name: "{autoprograms}\Reflex Settings"; Filename: "{app}\settings\settings.exe"
 
 [Code]
 var
@@ -119,14 +123,14 @@ begin
   (* A bare DirExists check (this function's original form) treats *any*
      version as good enough, including a much older one silently installed
      by other IDS-camera-adjacent software already on the machine before
-     sidebyside ever runs -- confirmed for real, not hypothetical: Keeler's
+     Reflex ever runs -- confirmed for real, not hypothetical: Keeler's
      own Kinexis/Vantage Plus Digital installer silently drives IDS peak
      2.9.0.0 (see DECISIONS.md) into this exact Program Files\IDS\ids_peak
      location, a version far older than what
      vendor/ids-peak-win-extended-setup-64.exe currently bundles. A
      technician on a machine that's only ever run Kinexis would have this
      check wrongly skip the bundled installer, silently leaving that old
-     SDK in place instead of the current one sidebyside's pinned
+     SDK in place instead of the current one Reflex's pinned
      requirements-ids.txt bindings actually expect.
      ids_peak\program\ids_peak.dll's own FileVersion is what's compared --
      the extended setup's actual install location for that specific file,
@@ -164,11 +168,11 @@ procedure InstallIdsPeakSilently();
         ids_peak.dll version check afterward, not by trusting the exit
         code.
 
-   Runs from ssInstall, before sidebyside's own Files/Icons -- a
+   Runs from ssInstall, before Reflex's own Files/Icons -- a
    deliberate reversal of the original ssPostInstall-based design (see
    DECISIONS.md's "Silent IDS peak install" and "...: native restart
    page" entries for the full back-and-forth). The original ordering
-   protected sidebyside's own install from an indefinite hang in this
+   protected Reflex's own install from an indefinite hang in this
    step; that protection is given up here in exchange for the restart
    choice working as Inno's real native Finished-page mechanism instead
    of a separate popup -- a deliberate call, not an oversight, made after
@@ -201,9 +205,9 @@ begin
   if not Exec(ExePath, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     MsgBox('The IDS peak SDK installer could not be launched (Windows error ' +
-      IntToStr(ResultCode) + '). sidebyside needs IDS peak to control the ' +
+      IntToStr(ResultCode) + '). Reflex needs IDS peak to control the ' +
       'instrument cameras -- see SETUP.md to install it manually, then ' +
-      'restart sidebyside.', mbError, MB_OK);
+      'restart Reflex.', mbError, MB_OK);
     Exit;
   end;
 
@@ -214,20 +218,20 @@ begin
   if ResultCode <> 0 then
   begin
     MsgBox('The IDS peak SDK installer reported an error (exit code ' +
-      IntToStr(ResultCode) + '). sidebyside needs IDS peak to control the ' +
+      IntToStr(ResultCode) + '). Reflex needs IDS peak to control the ' +
       'instrument cameras -- see SETUP.md to install it manually, then ' +
-      'restart sidebyside.' + #13#10 + #13#10 + 'Installer log: ' + LogPath,
+      'restart Reflex.' + #13#10 + #13#10 + 'Installer log: ' + LogPath,
       mbError, MB_OK);
     Exit;
   end;
 
   if not IdsPeakAlreadyInstalled() then
   begin
-    MsgBox('The IDS peak SDK installer finished, but sidebyside could not ' +
+    MsgBox('The IDS peak SDK installer finished, but Reflex could not ' +
       'verify it installed the expected components (this can happen if ' +
       'vendor\ids-peak-response.iss is out of date for the bundled IDS ' +
       'peak version). Please install IDS peak manually via SETUP.md ' +
-      'before using sidebyside, or contact the developer.', mbError, MB_OK);
+      'before using Reflex, or contact the developer.', mbError, MB_OK);
     Exit;
   end;
 
@@ -266,8 +270,8 @@ var
   ResultCode: Integer;
 begin
   DriverDir := ExpandConstant('{app}\driver');
-  CerPath := DriverDir + '\sidebyside_net2860.cer';
-  InfPath := DriverDir + '\sidebyside_net2860.inf';
+  CerPath := DriverDir + '\reflex_net2860.cer';
+  InfPath := DriverDir + '\reflex_net2860.inf';
 
   if not FileExists(InfPath) or not FileExists(CerPath) then
   begin
@@ -330,7 +334,7 @@ var
   I, ResultCode: Integer;
 begin
   Result := '';
-  TempFile := ExpandConstant('{tmp}\sidebyside-pnputil-enum.txt');
+  TempFile := ExpandConstant('{tmp}\reflex-pnputil-enum.txt');
   Exec(ExpandConstant('{cmd}'), '/c ""' + ExpandConstant('{sys}\pnputil.exe') +
     '" /enum-drivers > "' + TempFile + '""', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if not LoadStringsFromFile(TempFile, Lines) then
@@ -344,7 +348,7 @@ begin
       PubName := Trim(Copy(Line, Pos(':', Line) + 1, Length(Line)));
     (* Only the "Original Name:" line carries our filename -- the published
        name is always oemNN.inf -- so this cannot match the wrong block. *)
-    if Pos('sidebyside_net2860.inf', Line) > 0 then
+    if Pos('reflex_net2860.inf', Line) > 0 then
     begin
       Result := PubName;
       Exit;
@@ -388,10 +392,10 @@ begin
      the certificate may already be gone, and an uninstall that halts
      because a cleanup step found nothing to clean would be worse than one
      that quietly finishes. *)
-  Exec(ExpandConstant('{sys}\certutil.exe'), '-delstore Root "NECO sidebyside driver signing"',
+  Exec(ExpandConstant('{sys}\certutil.exe'), '-delstore Root "NECO Reflex driver signing"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\certutil.exe'),
-    '-delstore TrustedPublisher "NECO sidebyside driver signing"',
+    '-delstore TrustedPublisher "NECO Reflex driver signing"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 

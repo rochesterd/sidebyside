@@ -1,4 +1,4 @@
 # Build outputs of build_driver_package.ps1. Regenerated on demand, and the
 # .cat is only meaningful alongside the certificate that signed it.
-sidebyside_net2860.cat
-sidebyside_net2860.cer
+reflex_net2860.cat
+reflex_net2860.cer

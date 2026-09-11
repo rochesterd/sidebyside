@@ -9,9 +9,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ICON_APP = "sidebyside.ico"
-ICON_VIEWER = "sidebyside-viewer.ico"
-ICON_SETTINGS = "sidebyside-settings.ico"
+ICON_APP = "reflex.ico"
+ICON_VIEWER = "reflex-viewer.ico"
+ICON_SETTINGS = "reflex-settings.ico"
 
 
 def icon_path(name: str = ICON_APP) -> Path:

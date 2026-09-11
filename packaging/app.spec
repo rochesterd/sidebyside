@@ -27,7 +27,7 @@ a = Analysis(
     ['../app.py'],
     pathex=[],
     binaries=[],
-    datas=[('../assets/sidebyside.ico', 'assets')],
+    datas=[('../assets/reflex.ico', 'assets')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -54,7 +54,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='../assets/sidebyside.ico',
+    icon='../assets/reflex.ico',
 )
 coll = COLLECT(
     exe,

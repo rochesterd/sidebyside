@@ -76,7 +76,7 @@ _EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
 # See config.py's resolve_default_config_path()/resolve_default_sessions_dir()
 # for why this needs the same frozen/dev split -- a frozen install has no
 # repo checkout for "logs" to be relative to.
-LOG_DIR = Path(os.environ["ProgramData"]) / "sidebyside" / "logs" if is_frozen() else Path("logs")
+LOG_DIR = Path(os.environ["ProgramData"]) / "Reflex" / "logs" if is_frozen() else Path("logs")
 LOG_FILE = LOG_DIR / "app.log"
 
 THIRD_PERSON_LABEL = "third-person camera"
@@ -124,7 +124,7 @@ class KioskWindow(QMainWindow):
         output_root: str | Path = "sessions",
     ):
         super().__init__()
-        self.setWindowTitle("Side by Side Recorder")
+        self.setWindowTitle("Reflex")
 
         self.third_person_camera = third_person_camera
         self.instruments = instruments
@@ -597,7 +597,7 @@ def main() -> int:
         cfg = load_config()
     except ConfigError as exc:
         logger.error(str(exc))
-        QMessageBox.critical(None, "sidebyside - Setup required", str(exc))
+        QMessageBox.critical(None, "Reflex - Setup required", str(exc))
         return 1
 
     logger.info(

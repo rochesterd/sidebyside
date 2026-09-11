@@ -1,13 +1,13 @@
 # PACKAGING.md
 
-How to build sidebyside's two distributable installers — the clinic-machine
+How to build Reflex's two distributable installers — the clinic-machine
 one and the viewer-only one (see "Two installers" below). This is a
-**developer-only** procedure — nobody installing sidebyside does any of
+**developer-only** procedure — nobody installing Reflex does any of
 this, they just run the `.exe` it produces. See CLAUDE.md's "Who uses it"
 and ROADMAP.md's "Distribute a frozen-exe installer, not a Python source
 bootstrap" and "Phase 4: two installers" entries for why these exist.
 
-For setting up a *development* machine to work on sidebyside's source
+For setting up a *development* machine to work on Reflex's source
 instead, see `SETUP.md` — that's a different audience and a different
 procedure.
 
@@ -49,7 +49,7 @@ Clinic machines need none of this — only the three files step 2b produces.
 This procedure produces **two** distributables, for two different
 machines. See `ROADMAP.md`'s "Phase 4: two installers" entry for why.
 
-| | `sidebyside-setup.exe` | `sidebyside-viewer-setup.exe` |
+| | `reflex-setup.exe` | `reflex-viewer-setup.exe` |
 |---|---|---|
 | For | the clinic room machine | a student's or instructor's own laptop |
 | Contains | `app.exe`, `settings.exe` | `viewer.exe` |
@@ -109,13 +109,13 @@ machine can't satisfy. Confirmed on the 2026-09-02 build — the frozen
 powershell -File packaging\net2860_winusb\build_driver_package.ps1
 ```
 
-Produces three files next to that script, which `sidebyside.iss` copies
+Produces three files next to that script, which `reflex.iss` copies
 into the install:
 
 ```
-sidebyside_net2860.inf   binds Microsoft's inbox winusb.sys to the camera
-sidebyside_net2860.cat   its catalogue, signed and timestamped
-sidebyside_net2860.cer   the public certificate, trusted at install time
+reflex_net2860.inf   binds Microsoft's inbox winusb.sys to the camera
+reflex_net2860.cat   its catalogue, signed and timestamped
+reflex_net2860.cer   the public certificate, trusted at install time
 ```
 
 **The `.cat` and `.cer` are gitignored build outputs**, so a fresh checkout
@@ -167,7 +167,7 @@ Center submission — never applies. See DECISIONS.md's 2026-09-09 entries.
 
 ## 3. Get the IDS peak extended installer into `vendor/`
 
-`packaging/sidebyside.iss` expects the IDS peak **extended** setup
+`packaging/reflex.iss` expects the IDS peak **extended** setup
 installer (not standard, not runtime — see `ROADMAP.md`'s "why extended,
 not IDS Software Suite + runtime setup" reasoning) at exactly:
 
@@ -181,12 +181,12 @@ https://en.ids-imaging.com/download-peak.html and place/rename it there.
 see `CLAUDE.md`'s Environment section), so this is a manual, per-build-
 machine step, not something `git clone` gives you. Always use this exact
 filename regardless of the version number in what you downloaded, so
-`sidebyside.iss` never needs editing just because IDS shipped a new
+`reflex.iss` never needs editing just because IDS shipped a new
 release.
 
 ## 4. Record a silent-install response file for that exact installer
 
-`sidebyside.iss` drives the IDS peak installer **silently** (see
+`reflex.iss` drives the IDS peak installer **silently** (see
 `DECISIONS.md`'s "Silent IDS peak install" entry for why, and the
 verification it relies on instead of a technician watching the wizard).
 That needs an InstallShield response file recorded from a real install of
@@ -227,18 +227,29 @@ every time the installer `.exe` in step 3 is bumped to a new IDS release
 — a response file recorded against one version's dialog layout can
 silently produce the wrong result when replayed against a different
 version's layout. `IdsPeakAlreadyInstalled()`'s post-install re-check in
-`sidebyside.iss` is the safety net if this step gets missed, not a
+`reflex.iss` is the safety net if this step gets missed, not a
 substitute for actually doing it.
 
 ## 5. Compile the clinic installer
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\sidebyside.iss
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\reflex.iss
 ```
 
-Produces `packaging\installer_output\sidebyside-setup.exe` — this is the
+Produces `packaging\installer_output\reflex-setup.exe` — this is the
 one file a technician actually needs. Gitignored, like the rest of
 `packaging/`'s generated output (`packaging/build/`, `packaging/dist/`).
+
+**A machine that still has the old `sidebyside` install** needs it
+uninstalled first (Settings → Apps → sidebyside). This installer does not
+upgrade it: the rename changed the `AppId`, the install and data folders,
+and the driver package's name. The old uninstaller removes its own driver
+package and signing certificate, and keeps
+`%ProgramData%\sidebyside\config.json` — copy that into
+`%ProgramData%\Reflex\` (pointing `sessions_dir` at the new folder if it
+names the old one), or redo `CALIBRATION.md`. A laptop with the old
+`sidebyside Viewer` should have it uninstalled too; left in place it is
+just a second, stale viewer. See DECISIONS.md's 2026-09-11 entry.
 
 **Before handing this to anyone**, actually run it on a real (or
 disposable/VM) Windows machine and confirm: both shortcuts appear and
@@ -247,11 +258,11 @@ launch their respective `.exe`s, the IDS peak SDK installs correctly
 silently now), the Finished page shows the native "restart now / restart
 later" choice (not a separate popup — see `DECISIONS.md`'s "Silent IDS
 peak install: native restart page" entry for why the install runs
-*before* sidebyside's own files specifically to make this work), and
+*before* Reflex's own files specifically to make this work), and
 choosing "restart now" genuinely restarts the machine. And — on a machine
 that already has a current-enough IDS peak installed — re-running
-`sidebyside-setup.exe` skips reinstalling it (`IdsPeakAlreadyInstalled` in
-`packaging/sidebyside.iss`'s `[Code]` section) and the Finished page shows
+`reflex-setup.exe` skips reinstalling it (`IdsPeakAlreadyInstalled` in
+`packaging/reflex.iss`'s `[Code]` section) and the Finished page shows
 no restart choice, since nothing changed. If the silent install fails or
 can't be verified, the installer shows an explicit error dialog rather
 than continuing silently — confirm that path too by temporarily renaming
@@ -310,27 +321,27 @@ Needs only step 2's `viewer.spec` build — no `vendor/` contents, no
 response file, nothing from steps 3–5.
 
 ```powershell
-& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\sidebyside-viewer.iss
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" packaging\reflex-viewer.iss
 ```
 
-Produces `packaging\installer_output\sidebyside-viewer-setup.exe` (~90 MB
+Produces `packaging\installer_output\reflex-viewer-setup.exe` (~90 MB
 as of 2026-09-02, against the clinic installer's ~490 MB).
 
 This is what goes to a student or instructor who wants to review
 recordings on their own machine. It installs per-user under
-`%LOCALAPPDATA%\sidebyside-viewer` with `PrivilegesRequired=lowest`, so
+`%LOCALAPPDATA%\Reflex Viewer` with `PrivilegesRequired=lowest`, so
 it raises no UAC prompt and needs no admin rights, and it creates a
 Desktop shortcut — unlike `settings.exe`, students *are* this program's
 audience.
 
 **Before handing it to anyone**, install it on a machine that has never
-had sidebyside on it and confirm:
+had Reflex on it and confirm:
 
 - it installs without prompting for admin,
 - the Desktop shortcut opens the viewer,
 - with no recordings present it shows the picker saying "No recordings in
   this folder" rather than erroring — a review machine legitimately has
-  no `config.json` and no `%PUBLIC%\Documents\sidebyside\sessions`,
+  no `config.json` and no `%PUBLIC%\Documents\Reflex\sessions`,
 - **"Open a recording folder…" finds a session copied from elsewhere**
   (a USB stick, Downloads). This is the path that actually matters on a
   review machine; the default-folder listing will usually be empty there.
@@ -338,7 +349,7 @@ had sidebyside on it and confirm:
 
 Both installers use distinct `AppId`s and install locations, so they
 coexist on one machine. Verify that too if you install both: neither
-should uninstall or upgrade over the other. **Do not add an explicit
-`AppId` to `sidebyside.iss`** — it deliberately leaves it implicit (Inno
-derives it from `AppName`), and changing it would stop existing clinic
-installs being recognised as upgradable.
+should uninstall or upgrade over the other. **Never change either
+`AppId`** (`reflex`, `reflex-viewer`) once shipped — it is how Windows
+recognises an existing install as upgradable. Both are pinned rather
+than derived from `AppName`, so the display name can change freely.
