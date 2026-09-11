@@ -47,6 +47,7 @@ from app_icon import ICON_VIEWER, icon_path
 from compositor import LAYOUT_MODES, LAYOUT_TITLES, compose_layout
 from config import ConfigError, load_config, resolve_default_sessions_dir
 from qt_image import bgr_to_pixmap
+import reflex_style
 from session_export import ExportCancelled, default_export_name, export_session
 from session_reader import Session, SessionError, SessionPlayer, list_sessions
 
@@ -170,6 +171,7 @@ class ViewerDialog(QDialog):
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.status_label = QLabel(self._describe_session())
+        self.status_label.setObjectName(reflex_style.SECONDARY)
         self.status_label.setWordWrap(True)
 
         controls = QHBoxLayout()
@@ -561,8 +563,9 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841 - keeps Qt alive
     # Standalone viewer.exe only -- opened as a dialog from app.py this
-    # main() never runs, and the dialog inherits the kiosk's icon.
+    # main() never runs, and the dialog inherits the kiosk's icon and style.
     app.setWindowIcon(QIcon(str(icon_path(ICON_VIEWER))))
+    reflex_style.apply(app)
 
     if len(sys.argv) > 1:
         return 0 if open_session(Path(sys.argv[1])) else 1

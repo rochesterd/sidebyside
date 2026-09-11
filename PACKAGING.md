@@ -102,6 +102,10 @@ machine can't satisfy. Confirmed on the 2026-09-02 build — the frozen
 - Each exe must show its icon in Explorer **and** in its own title bar
   once running — those are two different mechanisms (exe resource vs.
   the bundled `.ico`), so one can be broken while the other looks fine.
+  The `.ico` files are generated: after changing the mark or dropping
+  artwork into `branding\icon-sources\`, run
+  `.venv\Scripts\python.exe branding\build_icons.py` and commit
+  `assets\*.ico` before building.
 
 ## 2b. Build and sign the legacy BIO driver package
 

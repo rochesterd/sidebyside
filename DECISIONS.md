@@ -4083,3 +4083,72 @@ and on a machine where the old package was never removed, the newer date is
 what makes Windows rank this package above the old one for the same
 hardware ID. The first `build_driver_package.ps1` run after this mints a new
 signing certificate, because it looks the certificate up by subject.
+
+---
+
+## 2026-09-11 — The Reflex look
+
+**Decided:** a Charcoal-chrome kiosk and viewer (`reflex_style.py`), the
+cat-eye mark as the kiosk's recording indicator (`reflex_mark.py`), a
+Burgundy placeholder in the empty instrument pane, and new artwork for the
+three icons (`branding/build_icons.py`). All brand values come from
+`neco_reflex_theme.py`.
+
+**Where the spec lives:** the Notion page "NECO Reflex — Branding
+Decisions". It is deliberately not restated here or anywhere else in the
+repo, which is public. Brand values (palette hex codes, font names) go only
+into the code that consumes them; entries like this one record engineering
+reasons, not brand rules.
+
+**The mark is drawn, not rendered from its SVG.** The indicator
+interpolates the pupil's width, height and fill together, which a static
+SVG can't do, so the widget draws it with QPainter. The SVGs in `branding/`
+stay the source for the icons, and `test_reflex_mark.py` parses them
+against the widget's constants so the two copies can't drift. One trap:
+setting a `QVariantAnimation`'s start or end value re-emits
+`valueChanged`, so reading the current progress *after* setting them gets
+a clobbered value. Stopping after a finished Start transition computed a
+1 ms duration and snapped instead of animating. Read first, then touch the
+animation.
+
+**Still three icons.** The reasoning in "Three icons, not one" holds, so
+the artwork changed but the count didn't. The kiosk is an Off-White mark on
+a Charcoal tile; the viewer is the inverse, with a Sandstone hairline so a
+light tile keeps its edge on a white window; settings is a Taupe mark on
+Charcoal, the kiosk icon dimmed. The tile is there because an `.ico` has no
+surface of its own. These are placeholders: `build_icons.py` prefers
+artwork dropped into `branding/icon-sources/`, and the Notion page carries
+the request for it.
+
+**`.ico` written with struct, not Pillow.** PySide6's QtSvg rasterises,
+and the container is simple enough that packing it would have been
+Pillow's only job. The entry layout copies the previous icons' (32bpp DIBs
+below 256, PNG at 256) because that layout was already proven against
+PyInstaller's exe resource, Inno's `SetupIconFile` and tkinter's
+`iconbitmap()`. Tkinter and Qt were re-checked against all three new files.
+Sizes are 16/32/48/256. The previous files also carried 20/24/40/64/128,
+which Windows now scales from the nearest size at 125%/150% display
+scaling.
+
+**Fusion plus a palette, then a small stylesheet.** A stylesheet-only
+theme would need a rule for every standard widget (combo arrows, list
+selection, progress bars, message boxes). Fusion draws all of them from
+the palette, so the stylesheet only covers what a palette can't express:
+the primary buttons, the selected instrument, the viewer's scrubber
+(Fusion's handle nearly vanishes on Charcoal) and secondary text. A
+selected instrument is outlined, never filled, because a solid Off-White
+fill means "press this" and must stay unique to Start or Stop.
+Widget-level stylesheets still win, which is how the red and amber banners
+and the black video panes keep their colors untouched. `settings.py` stays
+native: it's the technician tool, and looking plain is part of what
+separates it from the student programs.
+
+**The Burgundy placeholder is in `app.py`, not the compositor.** The empty
+instrument pane is a pane-sized Burgundy image rather than a `background=`
+passed to `side_by_side`. That argument would also have turned the
+letterbox bars around real frames Burgundy, and `compositor.py` feeds the
+viewer and Export, which this shouldn't reach.
+
+**Fonts fall back.** Franklin Gothic Book comes with Microsoft Office, not
+Windows. A clinic PC without Office falls through to Franklin Gothic Medium,
+which Windows does ship, then Segoe UI.

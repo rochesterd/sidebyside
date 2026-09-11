@@ -20,6 +20,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
 import app
+import neco_reflex_theme as theme
 from app import KioskWindow
 from camera import BaseCamera
 from config import ConfigError
@@ -308,6 +309,52 @@ class TestWatchButton(unittest.TestCase):
                 with patch("app.browse_sessions") as mock_browse:
                     window._on_past_recordings_clicked()
                 mock_browse.assert_not_called()
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+
+class TestBranding(unittest.TestCase):
+    """The mark follows KioskController.state, and the empty instrument
+    pane shows the placeholder rather than black."""
+
+    def _window(self, tmp_root: str) -> tuple[KioskWindow, SyntheticCamera, SyntheticCamera]:
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument = SyntheticCamera(160, 120, fps=30)
+        window = KioskWindow(third_person, {"slit_lamp": instrument}, output_root=tmp_root)
+        return window, third_person, instrument
+
+    def test_mark_shows_recording_only_while_recording(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                window._sync_ui(window.controller.poll_preflight())
+                self.assertFalse(window.mark.recording)
+
+                window.controller.state = State.RECORDING
+                window._sync_ui()
+                self.assertTrue(window.mark.recording)
+
+                # A recording that stopped on an error isn't recording.
+                window.controller.state = State.ERROR
+                window._sync_ui()
+                self.assertFalse(window.mark.recording)
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_instrument_pane_shows_the_placeholder_until_there_is_a_frame(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window, third_person, instrument = self._window(tmp_root)
+            try:
+                deadline = time.monotonic() + 2.0
+                while third_person.get_latest() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                window._update_preview()  # no instrument selected yet
+
+                image = window.video_label.pixmap().toImage()
+                left_pane_center = image.pixelColor(app.PREVIEW_CANVAS_SIZE[0] // 4, app.PREVIEW_CANVAS_SIZE[1] // 2)
+                self.assertEqual(left_pane_center.name().upper(), theme.BURGUNDY)
             finally:
                 third_person.stop()
                 instrument.stop()

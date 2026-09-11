@@ -24,6 +24,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -45,7 +46,10 @@ from config import (
     resolve_default_sessions_dir,
 )
 from kiosk import KioskController, PreflightStatus, State
+from neco_reflex_theme import BURGUNDY_BGR
 from qt_image import bgr_to_pixmap
+from reflex_mark import ReflexMark
+import reflex_style
 from synthetic_camera import SyntheticCamera
 from uvc_camera import UvcCamera
 from viewer import browse_sessions, open_session
@@ -66,12 +70,15 @@ DEFAULT_SYNTHETIC_RESOLUTION = (1600, 1200)
 # used when --third-person-synthetic substitutes a SyntheticCamera for it.
 THIRD_PERSON_SYNTHETIC_RESOLUTION = (640, 480)
 PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recording canvas
+HEADER_MARK_SIZE = 36
 
-# A (0, 0, 3) placeholder, not a real image -- compositor._fit_into_pane
-# treats a zero-width/height source as "just fill this pane with the
-# background color," used when there's no instrument frame yet to show
-# next to the third-person preview.
-_EMPTY_IMAGE = np.zeros((0, 0, 3), dtype=np.uint8)
+# Stands in for the instrument pane until there's an instrument frame to
+# show beside the third-person preview. Exactly the left pane's size
+# (side_by_side splits at width // 2), so it fills the pane with no
+# letterbox bars -- the bars around real frames stay black.
+_INSTRUMENT_PLACEHOLDER = np.full(
+    (PREVIEW_CANVAS_SIZE[1], PREVIEW_CANVAS_SIZE[0] // 2, 3), BURGUNDY_BGR, dtype=np.uint8
+)
 
 # See config.py's resolve_default_config_path()/resolve_default_sessions_dir()
 # for why this needs the same frozen/dev split -- a frozen install has no
@@ -147,6 +154,15 @@ class KioskWindow(QMainWindow):
         # selected."
         self._desired_instrument: str | None = None
 
+        # The mark doubles as the recording indicator: its pupil opens
+        # while recording (see _sync_ui). It takes no clicks or focus.
+        self.mark = ReflexMark(size=HEADER_MARK_SIZE)
+        brand_name = QLabel("Reflex")
+        brand_name.setFont(reflex_style.heading_font())
+        brand_rule = QFrame()
+        brand_rule.setObjectName(reflex_style.BRAND_RULE)
+        brand_rule.setFixedHeight(2)
+
         self.error_banner = QLabel()
         self.error_banner.setWordWrap(True)
         self.error_banner.setStyleSheet(
@@ -163,23 +179,29 @@ class KioskWindow(QMainWindow):
         picker = QHBoxLayout()
         for key in self.instruments:
             button = QPushButton(self.instrument_labels.get(key, key))
+            button.setObjectName(reflex_style.CHOICE)
             button.setCheckable(True)
             button.setMinimumHeight(48)
             button.clicked.connect(functools.partial(self._on_instrument_clicked, key))
             picker.addWidget(button)
             self._instrument_buttons[key] = button
 
+        # Both "primary": only one is ever enabled, so whichever the student
+        # can press is the one that stands out.
         self.start_button = QPushButton("Start")
+        self.start_button.setObjectName(reflex_style.PRIMARY)
         self.start_button.setEnabled(False)
         self.start_button.setMinimumHeight(64)
         self.start_button.clicked.connect(self._on_start_clicked)
 
         self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName(reflex_style.PRIMARY)
         self.stop_button.setEnabled(False)
         self.stop_button.setMinimumHeight(64)
         self.stop_button.clicked.connect(self._on_stop_clicked)
 
         self.status_label = QLabel()
+        self.status_label.setObjectName(reflex_style.STATUS)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.setWordWrap(True)
 
@@ -189,6 +211,7 @@ class KioskWindow(QMainWindow):
         # poll tick. summary_label is only ever touched right after a
         # session ends and stays put until the next one.
         self.summary_label = QLabel()
+        self.summary_label.setObjectName(reflex_style.SECONDARY)
         self.summary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.summary_label.setWordWrap(True)
 
@@ -217,7 +240,14 @@ class KioskWindow(QMainWindow):
         summary_row.addWidget(self.past_button)
         summary_row.addWidget(self.watch_button)
 
+        header = QHBoxLayout()
+        header.addWidget(self.mark)
+        header.addWidget(brand_name)
+        header.addStretch(1)
+
         layout = QVBoxLayout()
+        layout.addLayout(header)
+        layout.addWidget(brand_rule)
         layout.addWidget(self.error_banner)
         layout.addWidget(self.video_label)
         layout.addLayout(picker)
@@ -353,7 +383,7 @@ class KioskWindow(QMainWindow):
         frame_instrument = None
         if self.controller.selected_instrument is not None:
             frame_instrument = self.instruments[self.controller.selected_instrument].get_latest()
-        instrument_image = frame_instrument.image if frame_instrument is not None else _EMPTY_IMAGE
+        instrument_image = frame_instrument.image if frame_instrument is not None else _INSTRUMENT_PLACEHOLDER
         canvas = side_by_side(instrument_image, frame_tp.image, out_size=PREVIEW_CANVAS_SIZE)
         self.video_label.setPixmap(bgr_to_pixmap(canvas))
 
@@ -371,6 +401,7 @@ class KioskWindow(QMainWindow):
 
     def _sync_ui(self, preflight: PreflightStatus | None = None) -> None:
         state = self.controller.state
+        self.mark.set_recording(state == State.RECORDING)
         self.start_button.setEnabled(state == State.READY)
         self.stop_button.setEnabled(state == State.RECORDING)
         for key, button in self._instrument_buttons.items():
@@ -591,8 +622,9 @@ def main() -> int:
     # an existing instance before main() runs, so this is a no-op there.
     app = QApplication.instance() or QApplication(sys.argv)
     # Application-wide, so every dialog this process opens (including the
-    # viewer behind Watch) inherits it.
+    # viewer behind Watch, and the setup-required box below) inherits both.
     app.setWindowIcon(QIcon(str(icon_path(ICON_APP))))
+    reflex_style.apply(app)
     try:
         cfg = load_config()
     except ConfigError as exc:
