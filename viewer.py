@@ -389,7 +389,7 @@ class SessionPickerDialog(QDialog):
     which the standalone viewer genuinely needs: on a review machine there
     may be no config.json at all, and recordings will have been copied to
     a USB stick or Downloads rather than sitting in the default location
-    (see ROADMAP.md's "Phase 4: two installers").
+    (see DECISIONS.md's "Recorder/Viewer split, phase 4" entry).
     """
 
     def __init__(self, sessions_dir: Path | str, parent=None):

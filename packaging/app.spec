@@ -1,6 +1,6 @@
 # PyInstaller spec for app.py, the kiosk entry point -- see PACKAGING.md
-# for how this fits into the full installer build, and ROADMAP.md's
-# "Distribute a frozen-exe installer" entry for why this exists at all.
+# for how this fits into the full installer build, and DECISIONS.md's
+# "Frozen-exe installer built" entry for why this exists at all.
 #
 # Empty hiddenimports/binaries/datas below aren't a placeholder -- this
 # spec is the result of an actual empirical build: PySide6, cv2 (OpenCV),

@@ -2,8 +2,8 @@
 same index order cv2.VideoCapture(i, cv2.CAP_DSHOW) opens by -- both walk
 the same underlying DirectShow device enumerator, so index N here is
 guaranteed to be openable as index N there. Written for settings.py's
-device picker (ROADMAP.md's "Device compatibility & camera setup system"
-entry); see DECISIONS.md for why this beats shelling out to Get-PnpDevice.
+device picker (DECISIONS.md's 2026-08-18 settings.py entry); see
+DECISIONS.md for why this beats shelling out to Get-PnpDevice.
 
 Uses pygrabber's semi-private internals (dshow_core.ICreateDevEnum,
 dshow_ids.DeviceCategories/clsids), not its public FilterGraph API --
@@ -88,7 +88,7 @@ def _parse_vid_pid(device_path: str | None) -> str | None:
 
 def resolve_device(vid_pid: str | None, devices: list[UvcDeviceInfo] | None = None) -> UvcDeviceInfo:
     """Resolves which attached UVC device to use for the third-person role,
-    per ROADMAP.md's "Third-person (UVC) role" strategy:
+    per DECISIONS.md's 2026-08-18 third-person VID/PID entry:
 
     - Exactly one UVC device attached -> use it, regardless of `vid_pid`.
       Covers the common case (one third-person camera, nothing else UVC on

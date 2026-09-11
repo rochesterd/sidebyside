@@ -1,6 +1,6 @@
 ; Inno Setup script for the Reflex clinic-machine installer -- see
-; PACKAGING.md for the full build procedure and ROADMAP.md's "Distribute
-; a frozen-exe installer" entry for why this exists instead of shipping
+; PACKAGING.md for the full build procedure and DECISIONS.md's "Frozen-exe
+; installer built" entry for why this exists instead of shipping
 ; Python source + setup.ps1 to clinic machines.
 ;
 ; Expects three things to already exist before compiling (see PACKAGING.md):
@@ -8,8 +8,8 @@
 ;      `pyinstaller packaging\app.spec` / `pyinstaller packaging\settings.spec`.
 ;   2. vendor\ids-peak-win-extended-setup-64.exe -- the current IDS peak
 ;      *extended* setup installer (not standard/runtime -- see
-;      ROADMAP.md's "why extended, not IDS Software Suite + runtime
-;      setup" reasoning), manually placed there by whoever's building
+;      DECISIONS.md's "Retired ROADMAP entries" entry for why
+;      extended), manually placed there by whoever's building
 ;      this. Gitignored, same convention this repo already uses for
 ;      vendor/ids_peak_api.txt. Always use this exact filename regardless
 ;      of the IDS SDK version currently bundled, so this script never
@@ -95,9 +95,10 @@ Source: "net2860_winusb\reflex_net2860.cer"; DestDir: "{app}\driver"; Flags: ign
 
 [Icons]
 ; app.exe only on the Desktop -- this is what closes the "how does a
-; student launch this" gap (see ROADMAP.md's entry: no such shortcut
-; existed anywhere before this). settings.exe gets a Start Menu entry
-; only, no Desktop icon -- CLAUDE.md: "never point a student at it."
+; student launch this" gap (see DECISIONS.md's "Frozen-exe installer
+; built" entry: no such shortcut existed anywhere before this).
+; settings.exe gets a Start Menu entry only, no Desktop icon --
+; CLAUDE.md: "never point a student at it."
 Name: "{autodesktop}\Reflex"; Filename: "{app}\app\app.exe"
 Name: "{autoprograms}\Reflex"; Filename: "{app}\app\app.exe"
 Name: "{autoprograms}\Reflex Settings"; Filename: "{app}\settings\settings.exe"
@@ -135,7 +136,8 @@ begin
      ids_peak\program\ids_peak.dll's own FileVersion is what's compared --
      the extended setup's actual install location for that specific file,
      confirmed on a real IDS-peak-installed machine during this project's
-     EULA/licensing investigation (see ROADMAP.md) -- rather than a
+     EULA/licensing investigation (DECISIONS.md's "Retired ROADMAP
+     entries") -- rather than a
      specific product GUID in the Uninstall registry key, which changes
      across IDS peak releases. *)
   Result := False;
@@ -361,7 +363,7 @@ procedure RemoveLegacyBioDriver();
 
    WHAT THIS DELIBERATELY DOES NOT TOUCH, because leaving it was previously
    an accident of what was absent from [Files] rather than a decision (see
-   ROADMAP.md's 2026-08-26 entry):
+   DECISIONS.md's 2026-09-10 uninstall-scope entry):
 
      - Recordings, wherever sessions_dir points. CLAUDE.md is explicit that
        these are irreplaceable student work, not build output. An uninstall

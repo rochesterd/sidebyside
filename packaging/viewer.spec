@@ -4,8 +4,8 @@
 #
 # This is the *only* spec built for the viewer-only installer
 # (packaging/reflex-viewer.iss), which ships to machines with no
-# cameras, no IDS peak SDK and usually no admin rights -- see ROADMAP.md's
-# "Phase 4: two installers" entry.
+# cameras, no IDS peak SDK and usually no admin rights -- see DECISIONS.md's
+# "Recorder/Viewer split, phase 4: two installers" entry.
 #
 # The clinic installer deliberately does NOT ship this exe: app.exe already
 # contains the viewer (app.py imports viewer.py, so Watch and Past

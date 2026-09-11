@@ -1,7 +1,7 @@
 ; Inno Setup script for the Reflex **viewer-only** installer -- the
 ; build a student or instructor installs on their own laptop to review
 ; recordings made in the clinic. See PACKAGING.md for the build procedure
-; and ROADMAP.md's "Phase 4: two installers" entry for why this exists
+; and DECISIONS.md's "Recorder/Viewer split, phase 4" entry for why this exists
 ; separately from reflex.iss.
 ;
 ; Differences from the clinic installer (reflex.iss), all deliberate:

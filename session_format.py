@@ -3,7 +3,7 @@
 
 Its own module so the reader doesn't have to import the writer for three
 constants -- which read oddly, and drags the whole encoder path into the
-viewer-only build (see ROADMAP.md's "Phase 4: two installers" entry).
+viewer-only build (see DECISIONS.md's "Recorder/Viewer split, phase 4").
 Pure stdlib, no imports at all.
 
 A session directory holds:
@@ -21,7 +21,7 @@ instrument it was, and its display label, live in session.json.
 Every frame's PTS in every stream is `grab time - clock.origin_monotonic`
 on a 1/1000 time base, so equal PTS in two files means the two frames
 were captured at the same instant. That is the whole synchronization
-story -- see ROADMAP.md/DECISIONS.md's "Recorder/Viewer split" entries.
+story -- see DECISIONS.md's "Recorder/Viewer split" entries.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Technician tool: assigns which physical camera fills each role (slit
-lamp, BIO, third-person) and writes config.json. See ROADMAP.md's "Device
-compatibility & camera setup system" entry and CLAUDE.md's "Who uses it" --
+lamp, BIO, third-person) and writes config.json. See DECISIONS.md's
+2026-08-18 settings.py entry and CLAUDE.md's "Who uses it" --
 this is deliberately a separate program from app.py, never launched from
 the kiosk window, so nothing reachable from here needs a "could a student
 stumble into this" review.
@@ -209,8 +209,8 @@ class PreviewDialog(QDialog):
     than an isinstance(IdsCamera) check so this module never needs to
     import ids_camera at all -- see CLAUDE.md's Environment section on why
     that import must stay lazy), also shows exposure/gain sliders and an
-    Auto-Calibrate button. See ROADMAP.md's "In-app exposure/gain
-    calibration" entry for the full design, and DECISIONS.md's 2026-09-10
+    Auto-Calibrate button. See DECISIONS.md's 2026-08-25 calibration
+    entry for the full design, and DECISIONS.md's 2026-09-10
     entry for why this is no longer limited to cameras that lack
     ExposureAuto/GainAuto -- a camera that converges on its own does so at
     open, which is the moment a student taps the picker, with the
@@ -223,7 +223,7 @@ class PreviewDialog(QDialog):
     lamp plausibly lacks both ExposureAuto/GainAuto *and* BalanceWhiteAuto
     at once, so both blocks can be visible simultaneously, and a shared
     status label would have one calibration's message clobber the other's.
-    See ROADMAP.md's 2026-08-26 entry.
+    See DECISIONS.md's 2026-08-26 entry.
     """
 
     def __init__(

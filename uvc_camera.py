@@ -39,7 +39,7 @@ see DECISIONS.md's "Third-person UVC camera" entry for why:
 
 Also caps acquisition rate (_apply_frame_rate_cap(), verified cv2.CAP_PROP_FPS
 constant) and enables backlight compensation (verified cv2.CAP_PROP_BACKLIGHT
-constant) -- see ROADMAP.md's 2026-08-26 entry. Both are best-effort, same
+constant) -- see DECISIONS.md's 2026-08-26 entry. Both are best-effort, same
 as the autofocus/exposure lock: a device that doesn't support a given
 control just silently keeps its own default.
 

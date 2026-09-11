@@ -1,7 +1,7 @@
 """Loads config.json: which physical camera fills each role (slit lamp,
-BIO, third-person). See ROADMAP.md's "Device compatibility & camera setup
-system" entry and DECISIONS.md for why this exists and what it deviates
-from the eventual (Phase 3+) schema.
+BIO, third-person). See DECISIONS.md's 2026-08-18 "config.json + loader"
+entry for why this exists and what it deviates from the eventual
+(Phase 3+) schema.
 
 Deliberately has no import of camera.py/ids_camera.py/uvc_camera.py -- it
 only parses JSON into dataclasses, so it stays usable on a dev machine with
@@ -37,8 +37,8 @@ def is_frozen() -> bool:
 
 def resolve_default_config_path() -> Path:
     """A frozen install has no repo checkout to be relative to, so
-    config.json lives in %ProgramData% instead -- see ROADMAP.md's
-    "Distribute a frozen-exe installer" entry. Dev/test behavior
+    config.json lives in %ProgramData% instead -- see DECISIONS.md's
+    "Frozen-exe installer built" entry. Dev/test behavior
     (relative to CWD) is unchanged.
     """
     if is_frozen():
@@ -77,8 +77,8 @@ class InstrumentConfig:
     label: str
     # A technician's one-time calibration for this instrument, written by
     # settings.py's Preview dialog -- see ids_camera.py's
-    # supports_manual_calibration() and ROADMAP.md's "In-app exposure/gain
-    # calibration" entry. Offered for any camera whose ExposureTime/Gain can
+    # supports_manual_calibration() and DECISIONS.md's 2026-08-25
+    # calibration entry. Offered for any camera whose ExposureTime/Gain can
     # be written, which since 2026-09-10 includes the ones that *do* have
     # ExposureAuto/GainAuto: those converge at camera open, which is the
     # moment a student taps the picker, not a moment the scene is real.
@@ -88,7 +88,7 @@ class InstrumentConfig:
     exposure_time_us: float | None = None
     gain: float | None = None
     # Set only for a camera with no BalanceWhiteAuto -- see ids_camera.py's
-    # needs_manual_white_balance() and ROADMAP.md's 2026-08-26 entry. Unlike
+    # needs_manual_white_balance() and DECISIONS.md's 2026-08-26 entry. Unlike
     # exposure_time_us/gain (independent axes), these two are validated as a
     # pair: BalanceWhiteAuto=Once converges both together, so there's no
     # "auto blue, manual red" -- _parse_instrument() rejects exactly one

@@ -1,6 +1,7 @@
 """Tests for exposure_calibration.py's pure median-brightness/exposure-gain
 math -- split out from ids_camera.py specifically so this logic is
-testable without the IDS peak SDK. See ROADMAP.md's calibration-UX entry.
+testable without the IDS peak SDK. See DECISIONS.md's 2026-08-25
+calibration entry.
 """
 
 from __future__ import annotations

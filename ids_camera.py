@@ -33,7 +33,7 @@ exposure/gain calibration once mounted on the instrument. That calibration
 is done in-app now (supports_manual_calibration()/auto_calibrate()/the
 manual get_/set_exposure_time_us()/get_/set_gain() pair below, driven by
 settings.py's PreviewDialog), not via an external tool like IDS peak
-Cockpit -- see ROADMAP.md's "In-app exposure/gain calibration" entry.
+Cockpit -- see DECISIONS.md's 2026-08-25 calibration entry.
 Since 2026-09-10 that calibration is offered for *any* camera whose
 ExposureTime/Gain a technician can write, not only one with no
 ExposureAuto/GainAuto -- see supports_manual_calibration() for why the
@@ -42,7 +42,7 @@ Keeler's converge-at-open turned out to be the wrong thing to rely on.
 White balance (needs_manual_white_balance()/auto_white_balance()/the manual
 get_/set_red_balance_ratio()/get_/set_blue_balance_ratio() pair) and the
 acquisition frame-rate cap (_apply_frame_rate_cap()) follow the same
-in-app-not-external-tool philosophy, added per ROADMAP.md's 2026-08-26
+in-app-not-external-tool philosophy, added per DECISIONS.md's 2026-08-26
 entry. `_converge_auto_nodes()` generalizes what used to be a single
 exposure/gain-specific convergence loop (`_converge_auto_exposure()`) to
 also cover `BalanceWhiteAuto`, since all three follow the identical
@@ -201,7 +201,7 @@ class IdsCamera(BaseCamera):
         self._pixel_clock_hz = pixel_clock_hz
         # Per-instrument calibrated values from config.json (InstrumentConfig's
         # optional exposure_time_us/gain/red_balance_ratio/blue_balance_ratio
-        # fields) -- see ROADMAP.md's "In-app exposure/gain calibration" entry
+        # fields) -- see DECISIONS.md's 2026-08-25 calibration entry
         # and its 2026-08-26 follow-up. None means "let _converge_auto_nodes()
         # handle this axis," not "leave whatever the device's NVRAM happens to
         # have," so a camera with no ExposureAuto/GainAuto/BalanceWhiteAuto at
@@ -666,7 +666,7 @@ class IdsCamera(BaseCamera):
         -- distinct from recording.fps, which only paces Recorder's encoder
         and does nothing to stop a camera from free-running faster than
         that and burning USB bandwidth for frames recorder.py's
-        _drain_latest() then just discards unused. See ROADMAP.md's
+        _drain_latest() then just discards unused. See DECISIONS.md's
         2026-08-26 entry for the bandwidth reasoning.
 
         Best-effort like every other node access in this file: silently
@@ -707,7 +707,7 @@ class IdsCamera(BaseCamera):
         supports_manual_calibration()) -- not a continuous loop during
         real recording. See exposure_calibration.py
         for the actual median-brightness/correction-step math and
-        ROADMAP.md's calibration-UX entry for the full design rationale.
+        DECISIONS.md's 2026-08-25 calibration entry for the design rationale.
 
         Returns True once within `tolerance` of `target`; False if
         `max_iterations` ran out first (e.g. a scene brighter/darker than

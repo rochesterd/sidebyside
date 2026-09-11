@@ -2,7 +2,7 @@
 whichever layout was asked for.
 
 This is the old live composite, produced on demand instead of on every
-recording -- see ROADMAP.md's "Recorder/Viewer split: design" entry. It
+recording -- see DECISIONS.md's "Recorder/Viewer split" entries. It
 reads only; the streams it composites are never modified, and the output
 is written to a temporary file and moved into place, so a cancelled or
 failed export can't leave something that looks like a finished one.

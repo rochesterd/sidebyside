@@ -4241,3 +4241,62 @@ it's designed:
 - *Entry on a kiosk.* It happens before Start, never during recording. It
   needs a keyboard at the station, and sanitizing if it ever reaches a
   filename.
+
+---
+
+## 2026-09-11 — Retired ROADMAP entries: what they decided
+
+**Decided:** ROADMAP.md holds open plans only. Every entry that had been
+built, resolved or closed is deleted from it: the build is recorded in the
+DECISIONS entries above, and the full text is in git history — `git show
+600ef01:ROADMAP.md`. References to ROADMAP entries in older entries above
+resolve through that command.
+
+Retired: "Device compatibility & camera setup system" (2026-08-17), "In-app
+exposure/gain calibration" (2026-08-18), "Can `setup.ps1` drive the IDS
+peak SDK installer?" (2026-08-19), "Distribute a frozen-exe installer"
+(2026-08-20), "Vignette-aware metering, white balance, acquisition fps
+cap, backlight compensation" and "`Net2860Camera` brightness/gain control"
+(2026-08-26), the Recorder/Viewer split and its design (2026-08-26,
+2026-09-02), and the uninstall-scope half of the 2026-08-26 health-check
+entry (acted on in the 2026-09-10 uninstall-scope entry).
+
+**Recorded nowhere else, so kept here:**
+
+- **The IDS peak licence permits what the clinic installer does.** "License
+  Terms for IDS Software Suite und/and IDS peak" (rev. 2020-07-20; the
+  German text controls, clause 7.3), served by IDS's download page as
+  `ids-license-terms-de-en.pdf`. Clause 2.1.1 grants the right to integrate
+  the software into one's own products *that operate only with IDS
+  cameras* and distribute them, which Reflex is. Clause 5.1 makes the
+  licence effective on download or use, so nothing requires a person to
+  click through the installer on each machine. Clause 2.3 forbids reselling
+  it standalone, decompiling it, using it with non-IDS cameras, building
+  competing control software, and sublicensing — none of which bundling it
+  does.
+- **`setup.ps1` stays detect-only.** It never launches the IDS installer:
+  replaying a response file can drift from a newer installer and install
+  the wrong feature set with no error, and launching it interactively saves
+  a developer nothing. (The clinic installer does run it silently, with its
+  own verification — see the 2026-08-25 silent-install entries.)
+- **Extended setup, not IDS Software Suite + runtime setup.** Extended is
+  one vendor-tested installer that bundles the uEye drivers the slit lamp
+  needs. The alternative chains two installers, one a legacy compatibility
+  product, each able to fail or drift separately; its only advantage was a
+  smaller footprint. Extended also removes an existing Suite (SETUP.md
+  Section 3).
+- **Calibration UX.** A one-shot software auto-calibrate with sliders as
+  the override, not sliders alone: sliders reduce to "eyeball it", with no
+  reproducibility between technicians. Exposure is raised before gain,
+  since gain adds noise that students then watch.
+- **Camera identity.** USB port or hub topology was rejected as an
+  identifier, since ports aren't stable enough here; VID/PID plus the
+  single-device fallback is the whole strategy. Hot-reloading config into a
+  running kiosk is deliberately out of scope: restart after Save.
+- **What "composite live" (2026-08-11) protected, after the split.** Sync
+  by construction became shared-clock PTS, which is stronger: a slow camera
+  no longer gets duplicated frames. Watching needs no render; the only post
+  step is the remux that already existed; the session, not a composite, is
+  the deliverable. Explicitly out of scope at the time: latency-offset
+  measurement (field reserved), instructor tools, multi-session compare,
+  audio.

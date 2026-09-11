@@ -10,7 +10,7 @@ with PTS = (grab time - session clock origin), so asking each stream for
 "the last frame at or before media time t" yields frames that really were
 captured at the same instant -- no frame pairing, no offset search. A
 slower camera simply holds its last frame between its own frames, which
-is exactly what it was doing in the room. See ROADMAP.md/DECISIONS.md's
+is exactly what it was doing in the room. See DECISIONS.md's
 "Recorder/Viewer split" entries.
 """
 

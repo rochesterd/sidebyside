@@ -4,14 +4,14 @@ white-balance correction steps -- split out from ids_camera.py so it's
 unit-testable without the IDS peak SDK (this dev machine has no ids_peak
 installed; see CLAUDE.md's Environment section).
 
-See ROADMAP.md's "In-app exposure/gain calibration" entry, specifically the
-2026-08-25 "Calibration UX" addendum, for the exposure/gain design: a
+See DECISIONS.md's 2026-08-25 calibration entry, and its 2026-09-11
+"Retired ROADMAP entries" entry for the calibration UX, for the design: a
 one-shot software auto-exposure for cameras with no ExposureAuto/GainAuto
 (the slit lamp camera). Raises ExposureTime before Gain when more
 brightness is needed -- Gain amplifies sensor noise, ExposureTime doesn't,
 and this footage gets reviewed by students studying their own technique.
 
-See ROADMAP.md's 2026-08-26 entry for center_crop() (vignette/center-weighted
+See DECISIONS.md's 2026-08-26 entry for center_crop() (vignette/center-weighted
 metering) and the white-balance functions (channel_medians/
 is_white_balanced/next_balance_ratios), added for the same reason as the
 exposure/gain algorithm above: no ExposureAuto/GainAuto/BalanceWhiteAuto on

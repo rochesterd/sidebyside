@@ -195,7 +195,7 @@ class TestCloseLockdown(unittest.TestCase):
 
 class TestWatchButton(unittest.TestCase):
     """The Watch button opens the just-finished session in the viewer --
-    see ROADMAP.md's Recorder/Viewer split entry. open_session is patched
+    see DECISIONS.md's Recorder/Viewer split entries. open_session is patched
     out: what matters here is the gating and that the live preview is
     paused around it, not the viewer itself (test_viewer.py covers that).
     """

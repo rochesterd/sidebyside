@@ -63,7 +63,7 @@ CAMERA_RETRY_MS = 2000
 # Stand-in shapes for --instrument-synthetic, keyed by role -- not
 # identity, so unlike serials/device index these stay out of config.json.
 # Falls back to DEFAULT_SYNTHETIC_RESOLUTION for any role config.json
-# defines that isn't one of today's two (see config.py/ROADMAP.md).
+# defines that isn't one of today's two (see config.py).
 INSTRUMENT_SYNTHETIC_RESOLUTIONS = {"slit_lamp": (1600, 1200), "bio": (2056, 1542)}
 DEFAULT_SYNTHETIC_RESOLUTION = (1600, 1200)
 # The real ELP-USB100W03M-L21's resolution is queried at runtime (see
@@ -229,7 +229,7 @@ class KioskWindow(QMainWindow):
         # Watching is the point of recording -- the student reviews what
         # they just did while the muscle memory is fresh. Nothing is
         # rendered to make this possible; the viewer lays the session's two
-        # streams out live. See ROADMAP.md's Recorder/Viewer split entry.
+        # streams out live. See DECISIONS.md's Recorder/Viewer split entries.
         self.watch_button = QPushButton("Watch Last Recording")
         self.watch_button.setMinimumHeight(40)
         self.watch_button.setEnabled(False)

@@ -1,7 +1,7 @@
 """Tests for config.load_config() -- the config.json schema and its error
 messages, in isolation from app.py (which only wires the result into
-camera construction; see ROADMAP.md's "Device compatibility & camera setup
-system" entry and DECISIONS.md for why this file exists).
+camera construction; see DECISIONS.md's 2026-08-18 "config.json + loader"
+entry for why this file exists).
 """
 
 from __future__ import annotations
@@ -466,8 +466,8 @@ class ConfigTest(unittest.TestCase):
 
 class DefaultPathsTest(unittest.TestCase):
     """resolve_default_config_path()/resolve_default_sessions_dir() split
-    on sys.frozen -- a frozen install (see ROADMAP.md's "Distribute a
-    frozen-exe installer" entry) has no repo checkout to be relative to.
+    on sys.frozen -- a frozen install (see DECISIONS.md's "Frozen-exe
+    installer built" entry) has no repo checkout to be relative to.
     """
 
     def test_dev_mode_config_path_is_relative_to_cwd(self):

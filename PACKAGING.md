@@ -164,8 +164,8 @@ certificate — never applies. See DECISIONS.md's 2026-09-09 entries.
 ## 3. Get the IDS peak extended installer into `vendor/`
 
 `packaging/reflex.iss` expects the IDS peak **extended** setup
-installer (not standard, not runtime — see `ROADMAP.md`'s "why extended,
-not IDS Software Suite + runtime setup" reasoning) at exactly:
+installer (not standard, not runtime — see DECISIONS.md's "Retired ROADMAP
+entries" entry for why extended) at exactly:
 
 ```
 vendor\ids-peak-win-extended-setup-64.exe

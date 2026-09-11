@@ -7,9 +7,9 @@ camera's native resolution with a presentation timestamp equal to its
 grab time minus the session's origin, so a frame at time t in one file
 and a frame at time t in the other were captured at the same instant.
 That timestamp relationship *is* the synchronization; the Viewer lays the
-two out side by side (or however) at watch time. See ROADMAP.md's
-"Recorder/Viewer split: design" entry and DECISIONS.md's entry of the
-same name for why this replaced the live composite.
+two out side by side (or however) at watch time. See DECISIONS.md's
+"Recorder/Viewer split, phase 1" entry for why this replaced the live
+composite.
 
 Each camera gets its own _StreamWriter with its own thread and encoder,
 so a slow encode on one can't starve the other's queue. Writers drain
