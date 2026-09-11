@@ -4,10 +4,9 @@ Standing context for this project. Read this before making changes.
 
 ## What this is
 
-Reflex records two cameras simultaneously and produces a single
-composited video, so optometry students at NECO can watch themselves 
-from a third person view alongside the view through the instrument they're 
-using.
+Reflex records two cameras simultaneously so optometry students at NECO
+can watch themselves from a third-person view alongside the view through
+the instrument they're using, played back together.
 
 The purpose is self-directed practice for the NBEO CSE (Clinical Skills
 Examination). Students book time, record themselves practising a skill on a
@@ -51,43 +50,33 @@ Design consequences:
 
 ## Hardware
 
-The software is built around these components. For what else is expected
-to work, confirmed-tested alternatives, and what's explicitly excluded,
-see `SUPPORTED_HARDWARE.md`.
+The software is built around these components; `SUPPORTED_HARDWARE.md`
+covers tested alternatives, what should work, and what's excluded.
 
 | Instrument | Camera | Interface | Notes |
 |---|---|---|---|
-| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, legacy uEye family — needs the uEye Transport Layer. Powers up at a **24 MHz pixel clock every open**, an ~87 ms frame period: that alone is its long-assumed "11 fps limit" and its "87.2 ms max exposure". `device_presets.py` sets 80 MHz → 30 fps, and applies `rotate_180` (the image arrives mirrored on both axes). |
-| Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, ~58fps, USB3 Vision — native to IDS peak. Instrument optics deliver a vertically-flipped image — `device_presets.py` applies `flip_vertical` automatically. The *older* BIO needs **no** correction — its raw sensor output already reads upright, verified against horizontal text; see `net2860_winusb_camera.py`. Don't assume the two BIOs share a transform. |
-| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam, not machine vision — resolution queried at runtime rather than hardcoded (see Conventions). Identified by VID/PID, set in `config.json` via `settings.py`; see DECISIONS.md for the identification strategy and the single-device fallback. Any UVC-compliant webcam is expected to work, not just this model. |
+| Haag-Streit BI 900 slit lamp | IDS UI-3250CP-C-HQ Rev. 2 | USB 3.0 | 1600x1200, legacy uEye family — needs the uEye Transport Layer. Its pixel clock resets to 24 MHz on every open (an ~87 ms frame period); `device_presets.py` sets 80 MHz → 30 fps and applies `rotate_180`. |
+| Keeler Vantage Plus Digital | IDS U3-327xCP-C | USB 3.0 | 2056x1542, USB3 Vision, native to IDS peak. `device_presets.py` applies `flip_vertical`. The *older* BIO needs **no** correction (`net2860_winusb_camera.py`) — don't assume the two BIOs share a transform. |
+| Third-person (student's hands) | ELP-USB100W03M-L21 | USB 2.0, UVC | Plain UVC webcam; resolution queried at runtime. Identified by VID/PID via `settings.py`, with a single-device fallback (DECISIONS.md). Any UVC-compliant webcam should work. |
 
-The two instrument cameras are machine vision cameras, not webcams: no
-RTSP, no ONVIF, no DirectShow-by-default. They deliver raw frames through
-the IDS peak SDK and require a host PC. The third-person camera is an
-ordinary UVC webcam and goes through OpenCV's `cv2.VideoCapture` instead —
-see `uvc_camera.py`.
+The instrument cameras are machine vision cameras, not webcams — no RTSP,
+ONVIF or DirectShow; raw frames through the IDS peak SDK on a host PC. The
+third-person webcam goes through `cv2.VideoCapture` (`uvc_camera.py`).
 
-**Bandwidth is a real concern**, though a smaller one than it first
-looked: only one instrument camera streams at a time (see Architecture),
-so the concurrent load is one instrument plus the third-person webcam —
-about 94 MB/s at 30fps for the Keeler, 58 MB/s for the slit lamp, against
-the 350-400 MB/s a single USB 3.0 host controller realistically delivers.
-Measured 2026-09-08 at 30fps with both streaming: zero device-side drops
-over 150s (see `SUPPORTED_HARDWARE.md`). USB3 Vision degrades by silently
-dropping frames rather than raising an error, so treat measured
-throughput as authoritative over datasheet numbers, and re-measure if a
-third instrument or a second concurrent camera is ever added.
+**Bandwidth:** only one instrument camera streams at a time, so the load is
+one instrument plus the webcam — measured clean at 30fps (`SUPPORTED_HARDWARE.md`).
+USB3 Vision drops frames silently rather than erroring: trust measured
+throughput over datasheets, and re-measure if a second concurrent camera
+is ever added.
 
 ## Camera configuration: who decides what
 
-Neither instrument camera is a Keeler or Haag-Streit camera. Both are
-generic IDS machine-vision cameras mounted on those instruments, and
-Reflex talks to IDS peak directly — it does **not** go through
-Keeler's Kinexis. So there is no instrument-maker sensor configuration to
-inherit, and IDS's own power-on defaults were measured unusable here:
-`ExposureTime ~15ms / Gain 1.0` produced a near-black frame pointed
-straight at a lamp (raw Bayer max 3–4 of 255). See DECISIONS.md's
-"Camera configuration: which layer owns what" entry.
+Neither instrument camera is a Keeler or Haag-Streit camera: both are
+generic IDS machine-vision cameras, and Reflex talks to IDS peak directly,
+**not** through Keeler's Kinexis. So there is no instrument-maker sensor
+configuration to inherit, and IDS's power-on defaults were measured
+unusable here (a near-black frame pointed straight at a lamp). See
+DECISIONS.md's "Camera configuration: which layer owns what" entry.
 
 | Layer | Owns | Where it lands |
 |---|---|---|
@@ -104,23 +93,20 @@ Rules that follow from this:
   advanced panel is usually a sign a preset hasn't been decided yet.
 - **The app holds the values, the camera doesn't.** GenICam cameras
   persist `ExposureTime`/`Gain` across power cycles, so "set it once in
-  Cockpit" appears to work — but that is invisible, unversioned state
-  that walks off the moment a camera is swapped or reset. `config.json`
-  values have provenance and get reapplied in `IdsCamera._open()`. Same
-  reasoning as identifying cameras by serial rather than index.
+  Cockpit" appears to work — but that is invisible, unversioned state that
+  walks off the moment a camera is swapped or reset. `config.json` values
+  have provenance and get reapplied in `IdsCamera._open()`.
 - **Report what a calibration cost, not just that it succeeded.** A
   technician with no imaging background can judge "30fps, gain 2.6× of
-  4.0 max"; nobody can judge "87208.816". Missing visibility, not a
-  missing setting, is why the slit lamp sat at an 11fps exposure.
+  4.0 max"; nobody can judge "87208.816".
 - **Exposure time is a frame-rate budget.** Anything above
   `1/recording.fps` costs frame rate *and* adds motion blur to exactly
   the motion this app exists to record. That is a constraint, not a
   preference — it belongs in code.
-- **Check what actually gates a limit before designing around it.** The
-  slit lamp's "~11 fps" and "87.2 ms maximum exposure" were treated as
-  sensor facts for weeks and written into notes as such. Both were one
-  unset pixel clock. A limit that appears in two places at once is worth
-  one query to the device before it becomes an assumption.
+- **Check what actually gates a limit before designing around it.** A
+  limit that appears in two places at once is worth one query to the
+  device before it becomes an assumption — the slit lamp's "11 fps limit"
+  and "87.2 ms maximum exposure" were one unset pixel clock.
 
 ## Architecture
 
@@ -142,14 +128,12 @@ order changes across reboots and USB port changes and is the most common way
 setups like this silently break. The third-person UVC camera is the one
 documented exception — see the Hardware table.
 
-Only one instrument camera runs at a time. The student selects which
-instrument (slit lamp or BIO) is in use before starting; the unselected
-one's camera stays stopped rather than idling in the background, and
-switching the selection stops whichever instrument camera was running and
-starts the newly selected one. The third-person camera runs for the app's
-whole lifetime, the same way both cameras used to. `kiosk.py`'s
-`KioskController` owns this lifecycle — `select_instrument()` is the only
-thing that starts or stops an instrument camera.
+Only one instrument camera runs at a time. The student selects the
+instrument before starting; the other one's camera stays stopped, and
+switching stops the running instrument camera and starts the new one. The
+third-person camera runs for the app's whole lifetime. `kiosk.py`'s
+`KioskController` owns this — `select_instrument()` is the only thing that
+starts or stops an instrument camera.
 
 `BaseCamera` exposes frames two ways, and consumers must pick the one that
 matches what they're doing:
@@ -168,80 +152,52 @@ a UI poll loop can stall the display waiting on a queue.
 
 ## Modules
 
+Each module's docstring has the detail; this table is the map and the one
+constraint per file a reader would otherwise break. Every `test_<name>.py`
+tests `<name>.py` and says how in its own docstring.
+
 | File | Role |
 |---|---|
-| `camera.py` | `Frame` dataclass and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). Also owns the per-frame `orientation` (`VALID_ORIENTATIONS`: none/rotate_180/flip_horizontal/flip_vertical — the dimension-preserving symmetries; `apply_orientation()` is the transform) applied in `_run()` before a frame is queued, so every consumer sees it the same way. |
-| `exposure_calibration.py` | The pure maths behind `IdsCamera.auto_calibrate()`/`auto_white_balance()` — no SDK, no Qt, numpy only. Metering modes (`METERING_HIGHLIGHT` drives p99.9 to 210, for the bright-beam-on-black-field frames the instrument cameras produce, where a median target is unreachable), `exposure_budget_us()` (exposure is a frame-rate budget), and `next_exposure_gain()`, which solves in total light and redistributes it preferring exposure up to the budget and the least gain that will do. See DECISIONS.md's 2026-09-08 entries. |
-| `device_presets.py` | Per-model camera quirks that aren't device-discoverable — `orientation_for_model()`, and `pixel_clock_hz_for_model()` (the legacy uEye slit lamp camera's frame period, and therefore its frame rate *and* its maximum exposure, is set by a pixel clock that defaults to 24 MHz on every open) (the Keeler BIO camera's optics deliver a vertically-flipped image → `flip_vertical`; the older BIO's camera needs no transform at all, defaulted in `net2860_winusb_camera.py` rather than here since it has no IDS model string to match). `IdsCamera._open()` consults it; a `config.json` `orientation` overrides it. Imports only `camera.py` (stdlib + numpy). See DECISIONS.md's "Device-model rotation presets" entries and ROADMAP.md's device-profiles entry. |
-| `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter, timestamp, and sweeping bar; `latency`/`drop_rate` knobs for exercising failure paths without hardware. |
-| `uvc_camera.py` | `UvcCamera` — `BaseCamera` for the third-person UVC webcam via `cv2.VideoCapture`. Two identification modes: `device` (a literal DirectShow index, used by `settings.py`'s Preview) and `vid_pid` (resolved to an index at `start()` time via `uvc_enumeration.resolve_device()`, used by `app.py`'s real runtime path — see DECISIONS.md for why resolution happens there, not at construction). `Frame.index` is self-counted, not source-reported. Reopens the device by itself (`_try_reconnect()`) if `read()` fails for ~0.5s straight — a USB drop otherwise stays a dead pane, since `cv2.VideoCapture` never recovers on its own. |
-| `uvc_enumeration.py` | `list_uvc_devices()` — index/name/VID:PID for every attached UVC device, in `cv2.CAP_DSHOW`'s own open order, via `pygrabber`'s DirectShow internals. `resolve_device()` — single-device-fallback/ambiguity logic turning a configured `vid_pid` into one `UvcDeviceInfo`. |
-| `ids_camera.py` | `IdsCamera` — `BaseCamera` for the two IDS peak GenICam cameras, opened by serial number. `_open()` also resolves an unset `orientation` from `device_presets.orientation_for_model()` via the descriptor's `ModelName()`. `list_ids_devices()` — serial/model for every currently-attached IDS device, for `settings.py`'s instrument dropdowns. |
-| `winusb.py` | ctypes access to Microsoft's inbox `winusb.sys`, via inbox `winusb.dll`/`setupapi.dll` only — no vendor SDK, no third-party runtime, nothing redistributed. Device discovery by VID/PID (`find_by_vid_pid()`, live device interfaces rather than stale registry entries), control transfers, alternate settings, and `IsochReader` (one registered isochronous buffer, N transfers in flight). Deliberately camera-agnostic: knows about USB, not about frames, so `net2860_winusb_camera.py` is its only importer — the same boundary this file draws around the IDS SDK. |
-| `net2860_winusb_camera.py` | `Net2860WinUsbCamera` — `BaseCamera` for the older Vantage Plus BIO's NET GmbH KS722OUP camera (eMPIA EM2860 bridge), `kind: "net2860_winusb"` for the `bio` role. In-process, no subprocess, no COM. The host configures only the bridge: a Sony CXD3172AR does the CCD timing, A/D, colour and AE/AWB detection on-board, so there is no exposure/gain/white-balance to offer and no sensor to configure. `Frame.index` comes from the camera's own field counter (unwrapped from its 7-bit wrap), so gaps in it are **real** source-side drops — unlike `UvcCamera`, which self-counts. |
-| `net2860_init.py` | `START_WRITES`/`STOP_WRITES` — the EM2860 bridge init sequence, captured from Keeler's vendor driver on the wire and verified by reading every register back. Generated by `spike_net2860_winusb/gen_init.py`, not hand-written. Split in two because the capture brackets the session with the same four writes at both ends; replaying it whole switches the bridge straight back off. |
-| `config.py` | `load_config()` — reads `config.json` (gitignored; `config.example.json` is the committed template) into which physical camera fills each role. Raises `ConfigError` loudly, before `QApplication` exists, if missing/malformed. `resolve_default_config_path()`/`resolve_default_sessions_dir()` split on `is_frozen()` (PyInstaller's `sys.frozen`) — relative to CWD in dev/test, under `%ProgramData%`/`%PUBLIC%\Documents` in a frozen install, since there's no repo checkout to be relative to. `sessions_dir` is an optional `AppConfig` field, technician-set via `settings.py`'s Browse field — see ROADMAP.md's "Distribute a frozen-exe installer" entry. Also `exposure_fps_warnings()`, which reports (not raises — a slow camera still records) any instrument whose configured exposure cannot meet `recording.fps`. |
-| `compositor.py` | `fit_into_canvas`, `side_by_side`, `picture_in_picture`, and `draw_timer` — all aspect-preserving, letterboxed into a fixed-size canvas. Also `compose_layout()`, the single place deciding which stream goes where for a `LAYOUT_MODES` value; `viewer.py` renders the screen through it and `session_export.py` renders the file through it, so what a student sees is what they get. Called at *watch* time, not at record time. |
-| `session_format.py` | The on-disk vocabulary of a session (`SESSION_FORMAT_VERSION`, the two stream role names, `MANIFEST_NAME`) plus a description of the directory layout. Pure stdlib, no imports — its own module so the readers don't import the writer for three constants, which also keeps the encoder path out of the viewer-only build. |
-| `session_export.py` | `export_session()` — renders a session's streams into one constant-frame-rate MP4 in a chosen layout, at full resolution. The old live composite, produced on demand. Reads only; writes to a `.partial.mp4` and moves it into place, so a cancelled or failed export leaves nothing that looks finished. Refuses to overwrite a stream file. Progress/cancel callbacks, no Qt. |
-| `session_reader.py` | Reads a recorded session back. `Session.load()` parses the `session.json` manifest (`format_version: 2` only — refuses anything else loudly); `list_sessions()` enumerates a folder newest-first, skipping unreadable ones. `SessionPlayer` holds one decode cursor per stream and presents "the last frame at or before media time *t*" — alignment is purely by PTS, so no frame pairing. No Qt import; unit-testable headlessly. |
-| `viewer.py` | `ViewerDialog` — playback for one session: play/pause, scrub, a layout picker (side-by-side / PiP / either camera alone) applied live via `compositor.py`, and **Export** (runs `session_export` on a worker thread behind a cancellable progress dialog). `SessionPickerDialog` — a recordings list with an "Open a recording folder…" browse, which the standalone build needs since a review machine has no `config.json` and recordings get copied anywhere. Both `QDialog`s so `app.py` can open them modally *and* `main()` can run standalone as `viewer.exe`. Student-facing; nothing here modifies or deletes a recording. Tears down on `finished`, not `closeEvent` — it holds open PyAV decoders (see DECISIONS.md's Preview-leak entry). |
-| `app_icon.py` | `icon_path()` — `assets/` beside the module in a checkout, `sys._MEIPASS/assets` in a frozen exe. The `.ico` files themselves are generated by `branding/build_icons.py`. Stdlib only, no Qt import, since `setup_wizard.py` is tkinter and needs the same path. Callers do `app.setWindowIcon(QIcon(str(icon_path(...))))`; a missing file gives a null `QIcon`, never an exception. |
-| `qt_image.py` | `bgr_to_pixmap()` — the one BGR-ndarray-to-`QPixmap` conversion, shared by every window that shows a live camera feed (`app.py`, `preview.py`, `settings.py`). |
-| `neco_reflex_theme.py` | Brand palette and font stacks — constants only, no imports, no side effects (`test_neco_reflex_theme.py` enforces the no-imports part). Every brand color or font name the UI uses reads from here, never from a call site. The brand spec itself is the Notion page "NECO Reflex — Branding Decisions" and is deliberately not restated anywhere in the repo, which is public — see DECISIONS.md's "The Reflex look". The red/amber banners and the black behind video panes are not brand colors and keep their values where they are. |
-| `reflex_style.py` | `apply()` — Fusion style, a palette and app-wide font from `neco_reflex_theme.py`, and a short stylesheet keyed on object names (`primary`, `choice`, `status`, `secondary`, `brandRule`). Called by `app.main()` and `viewer.main()` only; `settings.py` and `preview.py` stay native. |
-| `reflex_mark.py` | `ReflexMark` — the cat-eye mark as a live widget, the kiosk's recording indicator. `set_recording()` animates the pupil from slit to round, shape and color together so the state survives grayscale; idempotent, since `app.py` calls it every poll tick. Takes no focus and no clicks. Drawn with QPainter; `branding/*.svg` hold the same geometry for the icons. |
-| `branding/` | `mark-idle.svg`/`mark-recording.svg` (the mark's geometry — `test_reflex_mark.py` holds the widget to it) and `build_icons.py`, a dev tool that writes the three `assets/*.ico`: generated placeholders unless artwork is dropped into `branding/icon-sources/` (see its docstring). PySide6 + stdlib only. Not packaged. |
-| `preview.py` | Live PySide6 preview window, two cameras, layout dropdown, frame-index/skew status line. Uses `get_latest()`. |
-| `recorder.py` | Records the two cameras as two separate variable-frame-rate files on one shared clock — no compositing. A `_StreamWriter` per camera (own thread, own PyAV encoder) drains with `read()`, stamps ms PTS relative to the session origin, enforces a recorder-side `recording.fps` ceiling, and on stop remuxes MKV→MP4, verifies, and deletes the MKV. Writes `session.json` v2. See ROADMAP.md/DECISIONS.md's "Recorder/Viewer split". |
-| `retention.py` | Opt-in cleanup of old recording sessions, run once by `app.py` at startup. Age sweep (`max_age_days`, always) + low-disk capacity pass (`min_free_gb`/`protect_days`, only when free space is low). Never touches a non-session folder, a session missing `session.json`, or the newest session. Absent `retention` config → never called. Imports only stdlib + `config.py`. See DECISIONS.md's "Automatic cleanup of old recordings" entry. |
-| `kiosk.py` | `KioskController` — the actual state machine (idle/ready/recording/error) behind the kiosk app: instrument selection/lifecycle (`select_instrument()` starts/stops the chosen instrument camera), preflight checks (camera liveness, **freshness**, disk space), stall and freeze detection during recording, the session time limit (`MAX_SESSION_MINUTES` — reaching it is a normal stop, not an error, and it's also the session length the disk preflight budgets for), session summaries. Freshness (`_frame_signature()` + `_update_freshness()`) catches a camera that delivers frames but has stopped *seeing* — reads succeed and `Frame.index` climbs, so nothing else notices. No Qt import. Unit-testable headlessly. |
-| `app.py` | The kiosk entry point (see CLAUDE.md "Who uses it"). Thin PySide6 shell: a header with the Reflex mark (`reflex_mark.py`, following `KioskController.state` — the pupil opens while recording), a Burgundy placeholder in the instrument pane until there's a frame, instrument picker, **Start Recording**, **Stop Recording** (the status line counts the time up against the session limit while recording), **Watch Last Recording**, which opens the just-finished session in `viewer.py`, and **Watch Past Recordings** for earlier ones (both modal; `_with_preview_paused()` stops the live preview around them in a `finally`, while the cameras keep running). Picker and both viewer buttons disable once recording starts. Polls `KioskController` on a timer and reflects what it reports; owns no decisions itself. |
-| `settings.py` | Technician tool: one row per role (dropdown of currently-detected candidates, Preview button, editable label for instrument roles), Rescan, a recordings-folder picker, an opt-in "Automatically delete old recordings" group (see `retention.py`), Save. Writes `config.json`; does not hot-reload a running `app.py`. Fully separate program from `app.py` — see CLAUDE.md "Who uses it". |
-| `setup.ps1` | Bootstraps a **developer's** machine for working on source: venv + `requirements.txt` + `requirements-ids.txt`, then checks whether the IDS peak SDK runtime is actually importable. Doesn't touch `config.json` or role assignment — hands off to `settings.py` for that. Safe to re-run. Not part of any path a clinic machine goes through — see `PACKAGING.md`/ROADMAP.md's "Distribute a frozen-exe installer" entry. |
-| `setup_wizard.py` | tkinter GUI front end over `setup.ps1` (Welcome → live-streamed run → finish, with a button to launch `settings.py`). tkinter, not PySide6, since it has to run before `requirements.txt` — which installs PySide6 — exists on a fresh machine. Same developer-only scope as `setup.ps1`. |
-| `packaging/app.spec`, `packaging/settings.spec`, `packaging/viewer.spec` | PyInstaller specs freezing `app.py`/`settings.py`/`viewer.py` into standalone exes — no Python, venv, or `pip install` needed on the machine that runs them. `viewer.spec`'s `excludes` (`ids_peak`, `ids_peak_ipl`, `pygrabber`, `comtypes`) is an assertion, not a size tweak: if the viewer ever reaches something camera-facing, that build fails loudly instead of silently gaining an SDK the review machine can't satisfy. See `PACKAGING.md`. |
-| `packaging/reflex.iss` | Inno Setup script for the **clinic** installer: copies `app.exe`/`settings.exe` into Program Files, creates `app.exe`'s Desktop/Start-menu shortcut (`settings.exe` gets Start-menu only — never point a student at it, same rule as below) and silently installs a bundled copy of the IDS peak *extended* installer. Deliberately ships no `viewer.exe` — `app.exe` already contains the viewer. `AppId` is pinned (`reflex`) rather than derived from `AppName`; changing it would orphan existing installs. See `PACKAGING.md`. |
-| `packaging/reflex-viewer.iss` | Inno Setup script for the **viewer-only** installer (~90 MB vs ~490 MB): `viewer.exe` alone, no IDS peak, installed per-user under `%LOCALAPPDATA%` with `PrivilegesRequired=lowest` so it needs no admin, with a Desktop shortcut (students *are* its audience). Distinct `AppId`, so it coexists with a clinic install. See `PACKAGING.md` and ROADMAP.md's "Phase 4: two installers" entry. |
-| `test_session_export.py` | Exports real recorded sessions: every layout produces a decodable MP4 at the right natural size and frame count, dimensions are always even (yuv420p), progress reaches its total, and a cancelled *or* failed export leaves neither an output nor a `.partial` behind. Also that it refuses to overwrite a stream file. |
-| `test_session_reader.py` | Records real `SyntheticCamera` sessions and reads them back: manifest parsing, a non-v2 `format_version` refused, `list_sessions` ordering/junk-skipping, and playback — advancing moves both streams, seek lands at or before the target and is repeatable, mismatched camera rates stay aligned. |
-| `test_viewer.py` | Headless tests for `ViewerDialog`/`SessionPickerDialog` against real recorded sessions (no `.show()`/`.exec()`): every layout mode renders, scrub pauses-then-resumes, playback stops at the end, `reject()` (the Esc path) releases the PyAV decoders, Export honours the chosen path and reports every outcome (including "no outcome" — never reported as success), and the picker lists newest-first, browses, and tolerates being pointed straight at one recording. |
-| `test_recorder.py` | Integration test: records from two real `SyntheticCamera` instances and checks the actual decoded MP4s — frame counts, strictly-increasing ms PTS on the shared clock, both streams spanning the same interval, the `recording.fps` rate limit against a deliberately-faster camera, drop accounting, and that a stream failing verification keeps its MKV. |
-| `test_kiosk.py` | Integration tests for `KioskController`: preflight gating (stale camera, low disk space, frozen picture), a full happy-path session, a mid-recording stall, and a camera that freezes mid-recording — all against real `SyntheticCamera`/`Recorder`, using an injectable clock to skip real sleeps. Includes the false-positive direction: a live camera is never flagged frozen. |
-| `test_app.py` | Headless tests for `KioskWindow`'s camera-start handling: fake `BaseCamera` subclasses (`FailingCamera`, `FlakyCamera`) exercise start-failure/retry paths, plus the close-during-recording confirm-dialog guard, the mark following `KioskController.state`, and the instrument-pane placeholder, without real hardware or `.show()`/`.exec()`. |
-| `test_reflex_mark.py` | `ReflexMark` against `branding/*.svg` (same viewBox, ring, pupils, recording color), the pupil interpolation, transitions (idempotent, reversible mid-way, full-length from a finished one), that the two states still differ in grayscale, and that it takes no focus or clicks. |
-| `test_icons.py` | The committed `assets/*.ico`: 16/32/48/256 at 32bpp, DIB below 256 and PNG at 256, every entry decodes, none blank, and the three differ. Checks the files, not `build_icons.py`, so it holds for supplied artwork too. |
-| `test_neco_reflex_theme.py` | The theme stays constants-only: palette is `#RRGGBB`, the BGR tuple matches its hex, the recording pupil is Crimson or Mahogany, every font stack ends in a family Windows ships, and the module imports nothing. |
-| `test_compositor.py` | Correctness tests for `side_by_side`/`picture_in_picture` written after a perf rewrite made the fill logic less obviously correct — see DECISIONS.md. |
-| `test_config.py` | Tests for `config.load_config()`'s schema/error messages in isolation — valid config, missing/malformed file, missing/wrong-typed/badly-shaped keys, `vid_pid` case-normalization, `orientation` (the four `VALID_ORIENTATIONS` strings, rejected for `net2860_winusb`), `retention` (age-only, capacity pass, both-or-neither, `protect_days ≤ max_age_days`). |
-| `test_retention.py` | Tests for `retention.apply_retention` against real temp session folders (only disk-usage and per-session size stubbed): age sweep, newest-session / incomplete-session / non-session-folder protection, capacity pass oldest-first and its `protect_days` floor / target-not-met reporting / no-op paths. |
-| `test_camera.py` | `BaseCamera`'s subclass-independent behavior — today the `orientation` mechanic (each of the four transforms checked pixel-wise, dimensions preserved, contiguous output, group composition; invalid values rejected at construction), via a fixed-frame fake and a real `SyntheticCamera`. |
-| `test_exposure_calibration.py` | Tests for the calibration maths in isolation — metering modes and their targets, the frame-rate budget (including that it never asks for less than the sensor's minimum), and `next_exposure_gain()`'s policy: a reduction comes off gain first, a clipped (censored) measurement halves rather than stepping proportionally, and the result never depends on the starting exposure/gain split. Includes the slit-lamp convergence regression. |
-| `test_device_presets.py` | `device_presets.orientation_for_model()` lookup — real model strings, case-insensitive substring match, slit lamp not colliding with the BIO token. |
-| `test_settings.py` | Headless tests for `SettingsWindow`/`DeviceRow` with injected fake enumeration functions (no real hardware or IDS SDK needed): startup pre-population, Save gating (including the same-camera-two-roles conflict check), Rescan, malformed-config warning, Preview wiring. |
-| `test_uvc_camera.py` | Tests for `UvcCamera`'s `device`/`vid_pid` mutual-exclusivity contract, the autofocus/auto-exposure lock, that resolution failure surfaces from `start()` rather than `__init__`, and the mid-stream reconnect (threshold, cooldown, recovery, swallowed reopen failure, bail-on-stop). |
-| `test_net2860_winusb_camera.py` | Drives `Net2860WinUsbCamera`'s field assembler with synthetic isochronous packets, no hardware: even/odd pairing, the 7-bit counter wrap, a dropped field leaving a gap in `Frame.index` rather than a torn frame, short fields, and joining the stream mid-frame. `winusb.py`'s ctypes layer is deliberately not mocked — what breaks a ctypes binding (a wrong `restype` truncating a handle) is invisible to a mock, and was caught against real hardware instead. |
-| `test_uvc_enumeration.py` | Tests for `list_uvc_devices()`/`resolve_device()` — the latter's single-device-fallback/ambiguity logic via canned device lists; the former verified end to end against real hardware where attached. |
+| `camera.py` | `Frame` and abstract `BaseCamera` (capture thread, bounded queue, latest-frame slot). The per-frame `orientation` (`VALID_ORIENTATIONS`, `apply_orientation()`) is applied in `_run()` before queueing, so every consumer sees the same image. |
+| `exposure_calibration.py` | The pure maths (numpy only) behind `IdsCamera.auto_calibrate()`/`auto_white_balance()`: metering modes (`METERING_HIGHLIGHT` for bright-beam-on-black frames), `exposure_budget_us()`, and `next_exposure_gain()`, which prefers exposure up to the budget and the least gain that will do. See DECISIONS.md's 2026-09-08 entries. |
+| `device_presets.py` | Per-model quirks a device can't report: `orientation_for_model()` and `pixel_clock_hz_for_model()`. Consulted by `IdsCamera._open()`; a `config.json` `orientation` overrides it. The older BIO's (no-op) orientation is defaulted in `net2860_winusb_camera.py` instead, since it has no IDS model string. Where this is headed: ROADMAP.md's device-profiles entry. |
+| `synthetic_camera.py` | `SyntheticCamera` — generated frames with a burned-in counter; `latency`/`drop_rate` knobs exercise failure paths without hardware. |
+| `uvc_camera.py` | `UvcCamera` — the third-person webcam via `cv2.VideoCapture`: `device` (a DirectShow index, for Preview) or `vid_pid` (resolved at `start()`, the runtime path). `Frame.index` is self-counted. Reopens itself after ~0.5 s of failed reads, since `cv2.VideoCapture` never recovers on its own. |
+| `uvc_enumeration.py` | `list_uvc_devices()` (index/name/VID:PID in `CAP_DSHOW`'s open order, via `pygrabber`) and `resolve_device()` (the single-device fallback and ambiguity rules). |
+| `ids_camera.py` | `IdsCamera` — both IDS GenICam cameras, opened by serial; resolves an unset `orientation` from `device_presets` by `ModelName()`. `list_ids_devices()` feeds `settings.py`'s dropdowns. |
+| `winusb.py` | ctypes over inbox `winusb.dll`/`setupapi.dll` — no vendor SDK. Discovery by VID/PID, control transfers, alternate settings, `IsochReader`. Knows USB, not frames: `net2860_winusb_camera.py` is its only importer, the same boundary drawn around the IDS SDK. |
+| `net2860_winusb_camera.py` | `Net2860WinUsbCamera` — the older BIO's KS722OUP (EM2860 bridge), `kind: "net2860_winusb"`. The host configures only the bridge; the camera board runs its own AE/AWB, so there is no exposure/gain to offer. `Frame.index` is the camera's own field counter, so its gaps are **real** drops. |
+| `net2860_init.py` | `START_WRITES`/`STOP_WRITES` — the EM2860 init sequence captured from Keeler's driver and verified by register readback. Split in two because replaying it whole switches the bridge straight back off. Its docstring says how to re-derive it; the capture is gitignored and irreplaceable. |
+| `config.py` | `load_config()` reads `config.json` (template: `config.example.json`), raising `ConfigError` before `QApplication` exists. Default paths split on `is_frozen()`: CWD in dev, `%ProgramData%`/`%PUBLIC%\Documents` when frozen (DECISIONS.md's "Frozen-exe installer built"). `exposure_fps_warnings()` reports, never raises. |
+| `compositor.py` | Aspect-preserving, letterboxed layouts, and `compose_layout()` — the one place deciding which stream goes where. `viewer.py` and `session_export.py` both render through it, so what a student sees is what they export. Called at watch time, never at record time. |
+| `session_format.py` | The on-disk vocabulary of a session (`SESSION_FORMAT_VERSION`, role names, `MANIFEST_NAME`). No imports, so readers don't pull in the writer — which keeps the encoder out of the viewer-only build. |
+| `session_export.py` | `export_session()` — one constant-frame-rate MP4 in a chosen layout. Writes a `.partial.mp4` and moves it into place, so a cancelled or failed export leaves nothing that looks finished; never overwrites a stream file. No Qt. |
+| `session_reader.py` | `Session.load()` (`format_version: 2` only), `list_sessions()` (newest first, skipping unreadable ones), and `SessionPlayer` — per stream, the last frame at or before media time *t*; alignment is by PTS alone. No Qt. |
+| `viewer.py` | `ViewerDialog` (play, scrub, live layout picker, cancellable Export) and `SessionPickerDialog` (with "Open a recording folder…", which a review machine needs). `QDialog`s so `app.py` opens them modally and `main()` runs standalone as `viewer.exe`. Never modifies a recording. Tears down on `finished`, not `closeEvent`: it holds open PyAV decoders. |
+| `app_icon.py` | `icon_path()` — `assets/` in a checkout, `sys._MEIPASS/assets` when frozen. Stdlib only, since the tkinter `setup_wizard.py` needs it too; a missing file gives a null `QIcon`, never an exception. |
+| `qt_image.py` | `bgr_to_pixmap()` — the one BGR-to-`QPixmap` conversion, shared by every live-feed window. |
+| `neco_reflex_theme.py` | Brand palette and fonts — constants only, no imports (a test enforces it); every brand color or font reads from here. The brand spec is the Notion page "NECO Reflex — Branding Decisions", deliberately not restated in this public repo. Banner reds/ambers and the black behind video panes are not brand colors. |
+| `reflex_style.py` | `apply()` — Fusion style, palette, font and a stylesheet keyed on object names. Called by `app.main()`/`viewer.main()` only; `settings.py` and `preview.py` stay native. |
+| `reflex_mark.py` | `ReflexMark` — the cat-eye mark, the kiosk's recording indicator. The pupil opens from slit to round, shape and color together, so the state survives grayscale. `set_recording()` is idempotent (called every poll tick). No focus, no clicks. |
+| `branding/` | The mark's SVG geometry (`test_reflex_mark.py` holds the widget to it) and `build_icons.py`, which writes `assets/*.ico`. Not packaged. |
+| `preview.py` | Dev tool: two live cameras, layout dropdown, frame-index/skew readout, via `get_latest()`. Has no Start/Stop discipline. |
+| `recorder.py` | Two separate VFR files on one shared clock, no compositing. A `_StreamWriter` per camera drains with `read()`, stamps ms PTS from the session origin, enforces the `recording.fps` ceiling, then remuxes MKV→MP4, verifies, and deletes the MKV. Writes `session.json` v2. See DECISIONS.md's "Recorder/Viewer split" entries. |
+| `retention.py` | Opt-in cleanup of old sessions (`config.json`'s `retention`, off by default), once at `app.py` startup: an age sweep plus a low-disk pass. Never touches a non-session folder, a session without `session.json`, or the newest session. |
+| `kiosk.py` | `KioskController` — the state machine (idle/ready/recording/error): the `select_instrument()` lifecycle, preflight (liveness, **freshness**, disk space), stall and freeze detection, and the session time limit (`MAX_SESSION_MINUTES` — reaching it is a normal stop, and it's the session length the disk preflight budgets for). Freshness (`_frame_signature()`) catches a camera that delivers frames but has stopped *seeing*. No Qt. |
+| `app.py` | The kiosk: a thin PySide6 shell over `KioskController` — the Reflex mark, instrument picker, **Start Recording**, **Stop Recording** (the status line counts up against the session limit), **Watch Last Recording** and **Watch Past Recordings** (modal; `_with_preview_paused()` stops the preview around them while the cameras keep running). Picker and viewer buttons disable while recording. Owns no decisions. |
+| `settings.py` | Technician tool: per role a dropdown and Preview (with Auto-Calibrate), then Rescan, a recordings folder, opt-in retention, and Save to `config.json`. No hot reload. A separate program from `app.py`. |
+| `setup.ps1`, `setup_wizard.py` | Developer-machine bootstrap (venv, requirements, IDS runtime check), and its tkinter GUI — tkinter because it runs before PySide6 is installed. Not part of any clinic machine's path; see `SETUP.md`. |
+| `packaging/*.spec` | PyInstaller specs for the three exes. `viewer.spec`'s `excludes` (`ids_peak`, `ids_peak_ipl`, `pygrabber`, `comtypes`) is an assertion: if the viewer ever reaches camera code, the build fails loudly. See `PACKAGING.md`. |
+| `packaging/reflex.iss` | Clinic installer: `app.exe` (Desktop and Start menu), `settings.exe` (Start menu only), the bundled IDS peak installed silently, and the legacy BIO's driver package. No `viewer.exe` — `app.exe` contains the viewer. `AppId` is pinned to `reflex`; changing it orphans existing installs. |
+| `packaging/reflex-viewer.iss` | Viewer-only installer (~90 MB): `viewer.exe`, per-user, no admin, Desktop shortcut. Its own `AppId`, so it coexists with a clinic install. See DECISIONS.md's "Recorder/Viewer split, phase 4: two installers". |
+| `packaging/net2860_winusb/` | `build_driver_package.ps1` builds and signs the legacy BIO's WinUSB driver package. Re-run it after any change to the INF — a stale catalogue fails only at install time (`PACKAGING.md` step 2b). |
+| `tools/` | Standalone hardware diagnostics (IDS and legacy-BIO smoke tests, two-camera bandwidth, third-person stall watch, legacy-BIO identity dump). Each documents itself; nothing imports them. |
 
-`app.py` is what a student actually runs — as the frozen `app.exe` a
-clinic machine's Inno Setup installer places a Desktop shortcut for, not
-`python app.py` from a terminal (see `PACKAGING.md`). `viewer.py` is the
-other student-facing program: reached from the kiosk's Watch button, and
-(once packaged — see ROADMAP.md's phase 4) as its own `viewer.exe` with
-its own Desktop shortcut, since unlike `settings.py` students *are* its
-audience. `preview.py` is a
-development tool (layout dropdown, skew readout) for eyeballing
-compositing changes without going through a full record/stop cycle —
-never point a student at it, it has no Start/Stop discipline.
-`settings.py` is a technician tool — same rule: never point a student at
-it (it gets a Start-menu entry on a clinic machine, no Desktop shortcut).
-`CALIBRATION.md` is the post-install procedure a technician follows
-through it: role assignment, per-instrument exposure calibration against a
-real view, and a test recording to prove the room.
-So are `setup.ps1`/`setup_wizard.py`, but those aren't part of a clinic
-machine's path at all anymore — they're developer tooling for working on
-source (see `SETUP.md`), separate from `PACKAGING.md`'s build-the-
-installer procedure that actually produces what a technician runs.
+Who runs what: students run the frozen `app.exe` (the clinic installer's
+Desktop shortcut) and `viewer.exe` (the kiosk's Watch buttons, or the
+viewer-only installer) — never point a student at anything else.
+`settings.py` is the technician's, following `CALIBRATION.md`; `preview.py`
+and `setup.ps1`/`setup_wizard.py` are developer tooling (`SETUP.md`).
 
 ## Recording output
 
@@ -249,22 +205,18 @@ Each recording writes to `<sessions_dir>/<YYYY-MM-DD_HHMM>/`
 (minute-collision gets a `_2`, `_3`, ... suffix rather than overwriting).
 `sessions_dir` defaults to a relative `sessions/` folder in dev/test, or
 `%PUBLIC%\Documents\Reflex\sessions` in a frozen install unless a
-technician picked somewhere else via `settings.py`'s Browse field — see
-`config.py`'s `resolve_default_sessions_dir()` and ROADMAP.md's
-"Distribute a frozen-exe installer" entry for why this needs to be
-technician-choosable rather than fixed:
+technician picked somewhere else via `settings.py`'s Browse field (see
+`config.py`'s `resolve_default_sessions_dir()`):
 
 - `instrument.mp4`, `third_person.mp4` — one file per camera, at that
   camera's **native resolution**, **variable frame rate**. Nothing is
   composited at record time. Fixed filenames by *role*, so the Viewer and
   Export never have to consult the manifest to find them.
-- `session.json` — `format_version: 2`. The manifest the Viewer reads:
-  which instrument was used, the shared clock origin, `duration_s`, and
-  per stream its file, label, resolution, `duration_s`, frame count,
-  dropped-frame count (gaps in `Frame.index`, not estimated),
-  `rate_limited_frames`, `first_timestamp`, `offset_s`, and `verified`.
-  Duration is in the manifest so a recordings list can show it without
-  opening a single video file.
+- `session.json` — `format_version: 2`, the manifest the Viewer reads: the
+  instrument, the shared clock origin, `duration_s` (so a recordings list
+  needn't open a video), and per stream its resolution, frame count,
+  dropped frames (gaps in `Frame.index`, not estimated), offsets and
+  `verified`. `session_format.py` and `recorder.py` have the full schema.
 - `<layout>.mp4` — only if a student used the Viewer's Export. A rendered
   single-file composite, not part of the recording; safe to delete.
 - `<role>.mkv` — written live during capture, interruption-safe; exists
@@ -279,68 +231,41 @@ technician-choosable rather than fixed:
 PTS in every stream is `Frame.timestamp - clock.origin_monotonic`, on a
 1/1000 time base. Two frames with equal PTS in different files were
 grabbed at the same instant — that is the whole sync story. A slower
-camera (the slit lamp at ~11fps beside a 30fps third-person) simply has
+camera (the older BIO at 25fps beside a 30fps third-person) simply has
 fewer frames spanning the same interval; the Viewer holds its last frame
 rather than anything interpolating or duplicating.
 
-The default relative `sessions/` path is gitignored. Nothing under
-`sessions_dir` is a build artifact of source control; it's the actual
-deliverable handed to a student, so treat contents under it as data, not
-something to regenerate.
-
-Old sessions are pruned only if a technician opted in via `config.json`'s
-`retention` section (`settings.py` → "Automatically delete old
-recordings") — off by default. `retention.py` runs one pass at `app.py`
-startup: an age sweep plus a low-disk capacity pass, never touching the
-newest session or one still missing its `session.json`.
+Everything under `sessions_dir` (gitignored as `sessions/` in dev) is the
+deliverable handed to a student — data, never something to regenerate.
 
 ## Environment
 
 - Windows, Python 3.13, venv at `.venv` (activate before running anything;
-  `setup.ps1`/`setup_wizard.py` script this and the rest of Environment —
-  see SETUP.md)
-- Dependencies: numpy, opencv-python, av (PyAV), PySide6, pygrabber +
-  comtypes (UVC device enumeration via DirectShow — see
-  `uvc_enumeration.py`), pinned in `requirements.txt`.
-- IDS peak (drivers and transport layers) must be installed separately per
-  machine — it includes kernel drivers and cannot be bundled. The
-  `ids_peak`/`ids_peak_ipl` Python bindings come from PyPI instead, pinned
-  in a separate `requirements-ids.txt` so they stay matched to the
-  installed runtime without being required on machines that don't have it.
-  See `SETUP.md`.
+  `setup.ps1`/`setup_wizard.py` script this — see SETUP.md)
+- Dependencies, pinned in `requirements.txt`: numpy, opencv-python, av
+  (PyAV), PySide6, pygrabber + comtypes (UVC enumeration via DirectShow).
+- IDS peak (drivers and transport layers) is installed separately per
+  machine — it includes kernel drivers. The `ids_peak`/`ids_peak_ipl`
+  bindings come from PyPI, pinned in a separate `requirements-ids.txt` so
+  they match the installed runtime without being required elsewhere.
 - Development happens on a machine without cameras attached; use
-  `SyntheticCamera` and don't hard-code anything that must be measured
-  against real hardware.
+  `SyntheticCamera` and don't hard-code anything that must be measured.
 - The `ids_peak`/`ids_peak_ipl` bindings are compiled, with no readable
-  source. `vendor/ids_peak_api.txt` (gitignored, regenerate locally via
-  `inspect`/`dir()`) is the authoritative reference for what the real API
-  surface actually is. Don't invent IDS method names or signatures — if
-  something isn't in that dump, say so instead of guessing.
+  source. `vendor/ids_peak_api.txt` (gitignored, regenerate via
+  `inspect`/`dir()`) is the authoritative API reference. Don't invent IDS
+  method names or signatures — if something isn't in that dump, say so.
 
 ## Conventions
 
-- Values that depend on measurement (frame rate, resolution, inter-camera
-  latency offset) belong in a config file, not in source — except where
-  the value can instead be *read from the device itself* at the moment
-  it's needed, which beats config entirely: nothing to set, nothing to
-  get stale when hardware changes. Which physical camera fills which role
-  (instrument serials/labels, the third-person VID/PID) is config-driven —
-  `config.json` (gitignored, install-specific; `config.example.json` is
-  the committed template), loaded by `config.py`, and assigned via
-  `settings.py` rather than hand-edited. The recording canvas size is
-  device-derived, not config: `Recorder`/`KioskController` default
-  `width`/`height` to `None`, meaning "sum of both cameras' actual
-  `.resolution` at record time" (mirrors `compositor.side_by_side`'s own
-  default) — self-heals if a camera is swapped for a different
-  resolution model, with no config edit needed. The recording `fps`
-  target stays config-driven (`recording.fps` in `config.json`,
-  `config.py`'s `DEFAULT_RECORDING_FPS` if absent), deliberately *not*
-  read from the device: a camera's nominal/datasheet fps is exactly the
-  number this file's Hardware section already warns not to trust — the
-  slit lamp advertises ~60fps but currently sustains far less, limited by
-  exposure time, not by anything a device query would reveal. See
-  `DECISIONS.md`'s "config-driven recording fps, device-derived canvas
-  size" entry.
+- Values that depend on measurement belong in config, not source — unless
+  the device can report them when needed, which beats config. Role
+  assignment (serials, labels, the webcam's VID/PID) lives in `config.json`
+  (gitignored; `config.example.json` is the template), written by
+  `settings.py`, never hand-edited. The recording canvas is device-derived
+  (`width`/`height` default to `None`: the sum of both cameras'
+  `.resolution`). `recording.fps` stays config, deliberately *not* read
+  from the device — datasheet fps is the number not to trust. See
+  DECISIONS.md's "Config-driven recording fps, device-derived canvas size".
 - Record to MKV during capture, remux to MP4 afterward, then verify the
   MP4 and delete the MKV — never delete both (a failed verification keeps
   the MKV). An interrupted MKV is still playable; an interrupted MP4 is
@@ -348,19 +273,16 @@ newest session or one still missing its `session.json`.
   `packet.dts is None` — see `DECISIONS.md`.
 - For variable-frame-rate output, set **both** `stream.time_base` and
   `stream.codec_context.time_base`. Setting only the stream leaves the
-  encoder at 1/fps, silently rescaling ms PTS into 1/fps ticks — two
-  frames ~33ms apart collapse into one tick, DTS goes non-monotonic, and
-  the failure surfaces only at the MP4 remux (MKV tolerates it). See
+  encoder at 1/fps, silently rescaling ms PTS into 1/fps ticks; DTS goes
+  non-monotonic and the failure surfaces only at the MP4 remux. See
   `DECISIONS.md`.
 - Prefer dropping frames over blocking a capture thread. A blocked capture
   thread stalls the device.
 - "The camera is delivering frames" is not "the camera is working." A
-  blocked or switched-off camera can keep a stream alive on a substitute
-  or replayed image, and `UvcCamera`'s self-counted `Frame.index` climbs
-  right along with it. `kiosk.py` compares consecutive frames' pixels
-  (`_frame_signature()`, exact equality on a strided subsample) to tell
-  the difference. Any new liveness check should ask what the camera
-  *sees*, not just whether a read returned.
+  blocked or switched-off camera can keep a stream alive on a replayed
+  image while `Frame.index` climbs. `kiosk.py` compares consecutive
+  frames' pixels (`_frame_signature()`) to tell the difference; any new
+  liveness check should ask what the camera *sees*.
 - When a decision has a non-obvious reason behind it, add an entry to
   `DECISIONS.md` rather than a comment.
 - Tests use stdlib `unittest`, not pytest — pytest isn't a project
