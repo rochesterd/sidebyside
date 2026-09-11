@@ -1,28 +1,20 @@
 # SETUP.md
 
-**This is the developer/source-checkout setup procedure** — building
-Reflex from source to work on it. If you're setting up a clinic
-machine to actually run the app, you want the distributable installer a
-developer builds via `PACKAGING.md`, not this file — see ROADMAP.md's
-"Distribute a frozen-exe installer, not a Python source bootstrap" entry
-for why those are two different audiences now.
+**Developer/source-checkout setup**, for working on Reflex's source. A
+clinic machine gets the installer built via `PACKAGING.md` instead — see
+DECISIONS.md's 2026-08-20 "Frozen-exe installer built" entry for why those
+are two audiences.
 
-One-time setup per (dev) machine, from bare Windows to both cameras
-enumerating. Procedural — follow the steps in order. For *why* any of
-this is the way it is, see `CLAUDE.md` and `DECISIONS.md`; this doc
-doesn't repeat that reasoning, only points at it.
+One-time per dev machine, from bare Windows to both cameras enumerating.
+Follow the steps in order; the reasons live in `CLAUDE.md` and
+`DECISIONS.md`, not here.
 
 **Shortcut:** `setup.ps1` (repo root) scripts Section 1 and the
-`requirements-ids.txt` half of Section 2 — run it first, then read
-Sections 2-3 below only if it tells you the IDS peak SDK runtime still
-needs installing. It's safe to re-run. It does not replace Section 6
-(`settings.py`), which stays a separate, always-manual step.
-
-Prefer a window over a terminal prompt? `python setup_wizard.py` (works
-with the system Python — it doesn't need the venv to exist yet) is the
-same script behind a paged GUI: Welcome → a live-streamed run of
-`setup.ps1` → a finish page with a button to launch `settings.py`
-directly.
+`requirements-ids.txt` half of Section 2, and is safe to re-run. Read
+Sections 2-3 only if it says the IDS peak SDK runtime still needs
+installing. `python setup_wizard.py` runs the same script behind a GUI (it
+works with the system Python, before the venv exists). Neither replaces
+Section 6 (`settings.py`), which stays a separate, manual step.
 
 ---
 
@@ -49,19 +41,15 @@ directly.
    python -m pip install -r requirements.txt
    ```
 
-At this point `python app.py` will run against `SyntheticCamera` — you
-don't need any hardware or the rest of this document to develop against
-synthetic cameras. The rest of this file is only for getting the two real
-cameras working.
+At this point `python app.py --synthetic` runs against `SyntheticCamera`,
+with no hardware. The rest of this file is only for the real cameras.
 
 ---
 
 ## 2. IDS peak SDK (required for both cameras)
 
-The Keeler Vantage Plus (`U3-327xCP-C`) is native USB3 Vision / GenICam and
-needs nothing beyond this section. The slit lamp camera needs one more
-consideration covered in Section 3 — read it before you install, since it
-affects which installer variant you pick in step 2 below.
+The Keeler (`U3-327xCP-C`) needs only this section. The slit lamp camera
+also needs Section 3 — read it first, since it decides step 2's variant.
 
 1. Create a free myIDS account at ids-imaging.com if you don't have one.
 2. Download the **IDS peak** Windows installer and run it. IDS ships three
@@ -74,13 +62,10 @@ affects which installer variant you pick in step 2 below.
    - Whichever variant, choose **Custom** during setup and enable the
      **uEye Transport Layer** component. If you're not sure which machine
      this is, enable it anyway; it's a no-op for the Keeler.
-3. Install the Python bindings from PyPI, pinned to exact versions so they
-   stay matched to the installed SDK runtime. This is a separate
-   requirements file from the rest of the project's dependencies (already
-   installed in Section 1) so that machines without the IDS peak runtime
-   can still install everything else — see `CLAUDE.md`'s Environment
-   section and `DECISIONS.md`'s 2026-08-12 entry for why pinning, not a
-   local install, is what enforces the version match now:
+3. Install the Python bindings from PyPI, pinned to match the installed
+   SDK runtime. It's a separate requirements file so machines without IDS
+   peak can still install everything else (`DECISIONS.md`'s 2026-08-12
+   entry):
    ```powershell
    python -m pip install -r requirements-ids.txt
    ```
@@ -119,8 +104,6 @@ for this camera ever needs something beyond that (advanced trigger modes,
 certain GenICam features the Keeler's native path exposes fine), that's
 the first thing to suspect, not a bug in this codebase.
 
-The Keeler needs none of this section — it's native to IDS peak already.
-
 ---
 
 ## 4. Verify the install
@@ -133,16 +116,13 @@ that, to check the SDK/runtime install in isolation, run:
 python tools\check_ids.py
 ```
 
-(a standalone script — imports `ids_peak` directly, nothing from this
-project's camera modules) for two different checks depending on the
-machine:
+(standalone — it imports `ids_peak` directly, none of this project's
+camera modules). Two checks, depending on the machine:
 
 **Check 1 — bindings/runtime match, any machine:** the script should run
 to completion without raising. On a development machine with no cameras
 attached, **0 devices found is the expected, correct result** — it means
-the bindings loaded and matched the installed runtime, not that anything
-is broken. Per `CLAUDE.md`'s Environment section, that's the normal state
-for a dev box working against `SyntheticCamera`.
+the bindings loaded and matched the installed runtime.
 
 **Check 2 — camera enumeration, machine with hardware attached only:**
 expect exactly 2 devices, the `UI-3250CP-C-HQ` and the `U3-327xCP-C`, each
@@ -150,11 +130,8 @@ with a serial number printed. (If `tools\check_ids.py` errors on a method
 name, check the locally-installed API docs under Start Menu → IDS → IDS
 peak — they're versioned with the SDK, unlike anything on the web.)
 
-**Confirm by serial number, not by list position or count.** `CLAUDE.md`'s
-Architecture section is explicit about this: cameras must be identified by
-serial number, never by device index — index order changes across reboots
-and USB port changes, and that's the most common way a setup like this
-silently swaps which camera is "camera_a" and which is "camera_b."
+**Confirm by serial number, not by list position** — index order changes
+across reboots and USB ports (`CLAUDE.md`'s Architecture section).
 
 ---
 
@@ -200,16 +177,12 @@ after plugging in a camera that wasn't connected yet); **Save** writes
 `config.json` is missing or malformed — see `config.py`.
 
 Re-run `settings.py` any time a camera is replaced or a setting needs to
-change — it's a normal, repeatable tool, not a one-shot installer.
-Restart `app.py` afterward; Save does not hot-reload a running kiosk
-session.
+change; restart `app.py` afterward, since Save does not hot-reload.
 
 Instrument cameras have no autofocus — once focus looks right in Preview,
-physically secure/tighten the lens focus ring so it can't drift during a
-session.
+tighten the lens focus ring so it can't drift during a session.
 
-Role assignment is only half of what a room needs. Each instrument camera
-also has to be calibrated against a real view through that instrument —
-see `CALIBRATION.md`, which is the procedure a technician follows on a
-clinic machine and applies just as well to a dev machine with hardware
-attached.
+Role assignment is only half of what a room needs: each instrument camera
+also has to be calibrated against a real view through it. Follow
+`CALIBRATION.md` — the technician's procedure works the same on a dev
+machine with hardware attached.

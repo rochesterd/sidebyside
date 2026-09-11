@@ -3,9 +3,9 @@
 How to build Reflex's two distributable installers — the clinic-machine
 one and the viewer-only one (see "Two installers" below). This is a
 **developer-only** procedure — nobody installing Reflex does any of
-this, they just run the `.exe` it produces. See CLAUDE.md's "Who uses it"
-and ROADMAP.md's "Distribute a frozen-exe installer, not a Python source
-bootstrap" and "Phase 4: two installers" entries for why these exist.
+this, they just run the `.exe` it produces. See DECISIONS.md's 2026-08-20
+"Frozen-exe installer built" and 2026-09-02 "Recorder/Viewer split, phase
+4: two installers" entries for why these exist.
 
 For setting up a *development* machine to work on Reflex's source
 instead, see `SETUP.md` — that's a different audience and a different
@@ -47,7 +47,7 @@ Clinic machines need none of this — only the three files step 2b produces.
 ## Two installers
 
 This procedure produces **two** distributables, for two different
-machines. See `ROADMAP.md`'s "Phase 4: two installers" entry for why.
+machines.
 
 | | `reflex-setup.exe` | `reflex-viewer-setup.exe` |
 |---|---|---|
@@ -146,28 +146,20 @@ INF**:
   chain and continues; that is expected, since the installer trusts the
   shipped `.cer` on the target.
 
-The script is re-runnable and reuses an existing certificate rather than
-minting a new one. That certificate's private key lives only in the build
-user's certificate store on the build machine — **it is deliberately not
-backed up** (decided 2026-09-10).
+The script is re-runnable and reuses an existing certificate. Its private
+key lives only in the build user's certificate store and is **deliberately
+not backed up** (decided 2026-09-10): lose this machine and the next build
+signs as a *different* publisher. Nothing bricks — the installer ships and
+trusts the new `.cer`, so a normal reinstall self-heals — but a
+driver-only update becomes a full reinstall everywhere. That was judged
+better than backing up a private key indefinitely or buying a commercial
+OV certificate whose CA can re-issue. `Export-PfxCertificate` (the command
+is in the script's header) preserves it if that ever changes.
 
-The consequence, so it isn't a surprise: lose that machine and the next
-build signs as a *different* publisher. Nothing bricks, because the
-installer ships and trusts the new `.cer` alongside the driver, so a normal
-reinstall self-heals. What you give up is the ability to push a
-**driver-only** update — a one-file fix becomes "re-run the full installer
-everywhere, to roll out the new certificate too". That was judged an
-acceptable trade against the alternatives (backing up a private key
-indefinitely, or paying for a commercial OV certificate whose CA can
-re-issue).
-
-If you ever do want to preserve it, `Export-PfxCertificate` — the command
-is in the script's header.
-
-Why self-signed is enough: the package ships no binaries of its own (every
-install section is an `Include`/`Needs` into the inbox `winusb.inf`), so
-Kernel Mode Code Signing — the gate needing an EV certificate and a Partner
-Center submission — never applies. See DECISIONS.md's 2026-09-09 entries.
+Self-signed is enough because the package ships no binaries of its own
+(every install section is an `Include`/`Needs` into the inbox
+`winusb.inf`), so Kernel Mode Code Signing — the gate needing an EV
+certificate — never applies. See DECISIONS.md's 2026-09-09 entries.
 
 ## 3. Get the IDS peak extended installer into `vendor/`
 
@@ -272,17 +264,10 @@ can't be verified, the installer shows an explicit error dialog rather
 than continuing silently — confirm that path too by temporarily renaming
 `vendor\ids-peak-response.iss` before a test run.
 
-**Status 2026-09-09:** run end to end once on a second machine — both
-shortcuts launched, IDS peak installed silently, the Finished restart
-page appeared, and the installed `app.exe` recorded a real session with
-the slit lamp attached. Not yet exercised: the re-run-skips-reinstall
-path on a machine that already has IDS peak, and the failed-silent-install
-error dialog (the rename-`vendor\ids-peak-response.iss` test). See
-`DECISIONS.md`'s 2026-09-09 entry.
-
 ## What an uninstall removes
 
-Scope is deliberate, not whatever Inno's defaults happen to do.
+Scope is deliberate, not whatever Inno's defaults happen to do — see
+DECISIONS.md's 2026-09-10 "Uninstall scope is now a decision" entry.
 
 **Removed:**
 
@@ -290,13 +275,10 @@ Scope is deliberate, not whatever Inno's defaults happen to do.
 - The staged WinUSB driver package (`pnputil /delete-driver ... /uninstall`)
 - The signing certificate, from both Trusted Root and Trusted Publishers
 
-The driver's published name is `oemNN.inf`, and **the number is assigned at
-install time** — it was observed changing from `oem360` to `oem24` across
-two installs on one machine as Windows reused a freed slot. So it is looked
-up at uninstall time by scanning `pnputil /enum-drivers` for the stable
-original filename, never hardcoded or remembered from install. That also
-covers a package staged by `build_driver_package.ps1 -Install` on a dev
-box, which the installer never saw.
+The driver's published name (`oemNN.inf`) is assigned at install time and
+changes between installs, so uninstall finds it by scanning
+`pnputil /enum-drivers` for the original filename — which also catches a
+package staged by `build_driver_package.ps1 -Install` on a dev box.
 
 **Kept, each for its own reason:**
 
@@ -305,10 +287,6 @@ box, which the installer never saw.
 | Recordings under `sessions_dir` | Irreplaceable student work, not build output. CLAUDE.md is explicit. An uninstall must never take them. |
 | `config.json` | Holds camera assignments and calibration. A reinstall finding them intact is strictly better. |
 | The IDS peak SDK | Shared — Keeler's Kinexis uses the same install, so removing it could break unrelated software. It has its own uninstaller. |
-
-Removing the certificate matters more than it looks: self-signing was
-justified on the grounds that trusting it is a *narrow, revocable* grant.
-A grant nothing ever revokes is not narrow.
 
 ## What the technician does next
 
