@@ -1,3 +1,0 @@
-# Proof-of-life frames are regenerable by running spike4.py -- not worth
-# carrying ~750 KB of binary in git.
-winusb_frame.png
