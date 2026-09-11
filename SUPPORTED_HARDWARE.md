@@ -86,4 +86,4 @@ Both exclusions are revisitable if a real setup turns up that needs them
    fixed exposure or the ELP's warm-up latency above). This file stays a
    thin index into those entries, not a duplicate of them.
 3. Add a row to "Confirmed tested" above, cross-referencing that entry —
-   this is how the three cameras already listed got here.
+   this is how every row above got there.

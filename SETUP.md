@@ -160,26 +160,25 @@ silently swaps which camera is "camera_a" and which is "camera_b."
 
 ## 5. Troubleshooting: camera enumerates but the frame rate looks wrong
 
-If both cameras show up in Section 4 but frames arrive slower than
-expected once you're actually capturing, **this is not a driver
-problem.** Per `CLAUDE.md`'s Hardware section: USB3 Vision degrades by
-silently dropping frames rather than raising an error, and the two
-cameras together need roughly 300 MB/s at full resolution and frame rate,
-against a realistic 350-400 MB/s ceiling per USB 3.0 host controller. A
-low framerate with no errors anywhere is exactly what saturating that
-ceiling looks like.
+If a camera shows up in Section 4 but frames arrive slower than expected
+once you're actually capturing, **suspect bandwidth or exposure before the
+driver.** USB3 Vision degrades by silently dropping frames rather than
+raising an error. Only one instrument camera streams at a time, so the
+real load is one instrument plus the third-person webcam — about 94 MB/s
+for the Keeler at 30fps — against a realistic 350-400 MB/s per USB 3.0
+host controller, and that combination has measured clean (see
+`SUPPORTED_HARDWARE.md`'s bandwidth table). A low frame rate with no
+errors usually means something else shares the controller, or an exposure
+longer than the frame-rate budget (the "allows ~Nfps" figure in
+`CALIBRATION.md` step 5).
 
 Before reinstalling anything:
 
-- Put the two cameras on **separate host controllers** if the machine has
-  more than one (separate physical USB 3.0 ports that trace back to
-  different controllers on the motherboard, not just separate ports on a
-  single hub or controller).
-- Treat **measured throughput as authoritative over datasheet numbers** —
-  the datasheet ceiling assumes ideal conditions this host setup may not
-  meet.
-- Target 30fps rather than each camera's native ~58-60fps ceiling; that's
-  the number the bandwidth math in `CLAUDE.md` was done against.
+- Put the instrument camera on its **own host controller** if the machine
+  has more than one, and keep other USB 3.0 devices off it.
+- Treat **measured throughput as authoritative over datasheet numbers**.
+- Keep `recording.fps` at 30 rather than a camera's native ~58-60fps
+  ceiling; the bandwidth figures above assume it.
 
 ---
 

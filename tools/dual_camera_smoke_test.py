@@ -2,11 +2,12 @@
 received per camera per second, and dropped-frame counts from gaps in
 Frame.index (the same method recorder.py uses for session.json).
 
-Exercises CLAUDE.md's #1 flagged hardware risk directly: the two cameras
-together need ~300MB/s against a realistic 350-400MB/s single-host-
-controller ceiling, and USB3 Vision degrades by silently dropping frames
-rather than raising an error -- so "it didn't crash" is not evidence of
-"it's fine." Compare the measured fps here against each camera's solo
+A deliberate worst case: the app only ever streams one instrument camera
+at a time (CLAUDE.md's Architecture section), but two IDS cameras at once
+need ~300MB/s against a realistic 350-400MB/s single-host-controller
+ceiling, so this measures the headroom the app runs inside. USB3 Vision
+degrades by silently dropping frames rather than raising an error -- so
+"it didn't crash" is not evidence of "it's fine." Compare the measured fps here against each camera's solo
 smoke-test fps (tools/smoke_test_camera.py) -- a drop under load is the
 signal to look for, not just a nonzero dropped-frame count (see caveat
 below).
