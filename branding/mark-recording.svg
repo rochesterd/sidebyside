@@ -3,6 +3,6 @@
   <!-- Ring color follows `color` on the root element. Off-White (#FBF8F3) on
        charcoal surfaces, Charcoal (#231E21) on off-white surfaces.
        The pupil stays Crimson on every surface — it is the red reflex. -->
-  <circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-width="10"/>
-  <circle cx="50" cy="50" r="22" fill="#A42B35"/>
+  <circle id="ring" cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-width="10"/>
+  <circle id="pupil" cx="50" cy="50" r="22" fill="#A42B35"/>
 </svg>
