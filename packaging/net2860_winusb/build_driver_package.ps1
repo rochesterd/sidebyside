@@ -150,8 +150,16 @@ if ($LASTEXITCODE -ne 0) { Fail "signtool failed ($LASTEXITCODE)" }
 # build time, where a failure costs a rebuild instead of a site visit.
 Write-Host "Verifying the catalogue covers the INF..."
 $infPath = Join-Path $PSScriptRoot $infName
+# $ErrorActionPreference is "Stop" for this script, which turns signtool's
+# stderr into a *terminating* NativeCommandError the moment 2>&1 merges it
+# into the pipeline -- killing the script here, before the exit-code branch
+# below that exists precisely to tolerate an untrusted chain. Relaxed just
+# around this call so a failed verify stays data to inspect, not a crash.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $verifyOutput = & $signtool verify /pa /v /c $cat $infPath 2>&1 | Out-String
 $verifyExit = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
 if ($verifyOutput -match "not found in the specified catalog") {
     Write-Host $verifyOutput
     Fail @"
