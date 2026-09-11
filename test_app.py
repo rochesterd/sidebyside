@@ -361,6 +361,66 @@ class TestBranding(unittest.TestCase):
                 instrument.stop()
 
 
+class TestLabelsAndTimeLimit(unittest.TestCase):
+    """Button labels say what they do, and the session time limit is
+    visible before it's reached and reported as a normal stop when it is.
+    See DECISIONS.md's "First round of student feedback" entry."""
+
+    def test_buttons_say_what_they_do(self):
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument = SyntheticCamera(160, 120, fps=30)
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window = KioskWindow(third_person, {"slit_lamp": instrument}, output_root=tmp_root)
+            try:
+                self.assertEqual(window.start_button.text(), "Start Recording")
+                self.assertEqual(window.stop_button.text(), "Stop Recording")
+                self.assertEqual(window.watch_button.text(), "Watch Last Recording")
+                self.assertEqual(window.past_button.text(), "Watch Past Recordings")
+            finally:
+                third_person.stop()
+                instrument.stop()
+
+    def test_status_counts_up_to_the_limit_which_stops_without_an_error(self):
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument = SyntheticCamera(160, 120, fps=30)
+        with tempfile.TemporaryDirectory() as tmp_root:
+            window = KioskWindow(third_person, {"slit_lamp": instrument}, output_root=tmp_root)
+            now = [0.0]
+            window.controller._clock = lambda: now[0]
+            try:
+                window._on_instrument_clicked("slit_lamp")
+                time.sleep(0.2)
+                window._sync_ui(window.controller.poll_preflight())
+                self.assertIn("Press Start Recording", window.status_label.text())
+                self.assertIn("after 15 minutes", window.status_label.text())
+
+                window._on_start_clicked()
+                self.assertEqual(window.controller.state, State.RECORDING)
+                self.assertEqual(window.status_label.text(), "Recording... 0:00 of 15:00")
+
+                now[0] = 14 * 60 + 30.0
+                window._sync_ui()
+                self.assertEqual(
+                    window.status_label.text(),
+                    "Recording... 14:30 of 15:00 - stops automatically in 30s",
+                )
+
+                time.sleep(0.2)  # real frames, so nothing looks stalled
+                now[0] = 15 * 60.0
+                window._poll_tick()
+
+                self.assertEqual(window.controller.state, State.IDLE)
+                self.assertTrue(window.error_banner.isHidden())
+                self.assertIn("15-minute limit", window.summary_label.text())
+                self.assertTrue(window.watch_button.isEnabled())
+                self.assertFalse(window.stop_button.isEnabled())
+            finally:
+                if window.controller.state == State.RECORDING:
+                    window.controller.stop_recording()
+                third_person.stop()
+                instrument.stop()
+
+
 class TestMissingConfigStartup(unittest.TestCase):
     """A missing/malformed config.json must surface visibly, not just to a
     log file. app.exe is built windowed (console=False, see

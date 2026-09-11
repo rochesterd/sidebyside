@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 #
 #   bits/sec  = 0.08 * (2560 * 1080) * 30        ~= 6.64 Mbps
 #   bytes/sec = bits/sec / 8                      ~= 830 KB/s
-#   10 minutes = bytes/sec * 600                  ~= 498 MB
+#   15 minutes = bytes/sec * 900                  ~= 747 MB
+#
+# The minutes figure is MAX_SESSION_MINUTES, the hard cap below, not a
+# guess at a typical session: a session can't run longer, so a preflight
+# that passes has room for the longest one there can be.
 #
 # A session now writes one file per camera rather than one composite, but
 # the estimate is unchanged: sum-of-widths x max-height is still the right
@@ -50,10 +54,15 @@ logger = logging.getLogger(__name__)
 # below: it isn't a safety margin stacked on top, it's the transient peak
 # one session hits. See DECISIONS.md for the full reasoning and thresholds.
 BITS_PER_PIXEL_ESTIMATE = 0.08
-TARGET_SESSION_MINUTES = 10.0
 REQUIRED_SPACE_MULTIPLIER = 2.0
 FALLBACK_CANVAS_WIDTH = 2560
 FALLBACK_CANVAS_HEIGHT = 1080
+
+# The longest a recording may run. At this point it stops on its own, the
+# same as pressing Stop: a normal, verified session, not an error. Also
+# the minutes figure in the disk preflight above. See DECISIONS.md's
+# "First round of student feedback" entry.
+MAX_SESSION_MINUTES = 15.0
 
 # How long a camera's frame index may stay unchanged during a recording
 # before it counts as stalled. See DECISIONS.md.
@@ -101,7 +110,7 @@ def estimate_recording_bytes(
     width: int,
     height: int,
     fps: float,
-    minutes: float = TARGET_SESSION_MINUTES,
+    minutes: float = MAX_SESSION_MINUTES,
     bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
 ) -> float:
     bytes_per_second = (bits_per_pixel * width * height * fps) / 8.0
@@ -180,7 +189,7 @@ class KioskController:
         fps: int = 30,
         stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
         freeze_timeout_s: float = DEFAULT_FREEZE_TIMEOUT_S,
-        target_minutes: float = TARGET_SESSION_MINUTES,
+        max_session_minutes: float = MAX_SESSION_MINUTES,
         bits_per_pixel: float = BITS_PER_PIXEL_ESTIMATE,
         disk_usage_fn: Callable[[str], object] = shutil.disk_usage,
         recorder_factory: Callable[[BaseCamera, str], Recorder] | None = None,
@@ -194,13 +203,13 @@ class KioskController:
         self.fps = fps
         self.stall_timeout_s = stall_timeout_s
         self.freeze_timeout_s = freeze_timeout_s
+        self.max_session_minutes = max_session_minutes
 
         self._third_person_name = third_person_name
         self._instrument_labels = instrument_labels or {}
         self._third_person_label = third_person_label
         self._disk_usage_fn = disk_usage_fn
         self._clock = clock
-        self._target_minutes = target_minutes
         self._bits_per_pixel = bits_per_pixel
         self._recorder_factory = recorder_factory or (
             lambda instrument_camera, instrument_name: Recorder(
@@ -219,8 +228,12 @@ class KioskController:
         self.last_session_info: dict | None = None
         self.last_session_dir: Path | None = None
         self.selected_instrument: str | None = None
+        # True when the last session ended at max_session_minutes rather
+        # than on Stop, so the UI can say why it stopped by itself.
+        self.stopped_at_time_limit = False
 
         self._recorder: Recorder | None = None
+        self._recording_started_at: float | None = None
         self._last_index: dict[str, int] = {"instrument": -1, "third_person": -1}
         self._last_progress_time: dict[str, float] = {}
         # Freshness: the last frame signature seen per camera, and when it
@@ -271,7 +284,7 @@ class KioskController:
         """
         width, height = self._estimated_canvas()
         required_bytes = REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(
-            width, height, self.fps, minutes=self._target_minutes, bits_per_pixel=self._bits_per_pixel
+            width, height, self.fps, minutes=self.max_session_minutes, bits_per_pixel=self._bits_per_pixel
         )
         try:
             free_bytes = self._disk_usage_fn(str(_existing_ancestor(self.output_root))).free
@@ -434,8 +447,10 @@ class KioskController:
         self.error_message = None
         self.last_session_info = None
         self.last_session_dir = None
+        self.stopped_at_time_limit = False
 
         now = self._clock()
+        self._recording_started_at = now
         for key, camera in (("instrument", instrument_camera), ("third_person", self.third_person_camera)):
             frame = camera.get_latest()
             self._last_index[key] = frame.index if frame is not None else -1
@@ -453,6 +468,13 @@ class KioskController:
             self.selected_instrument,
         )
 
+    def recording_elapsed_s(self) -> float | None:
+        """Seconds since Start, on the controller's clock; None when not
+        recording. What the UI counts up against max_session_minutes."""
+        if self.state != State.RECORDING or self._recording_started_at is None:
+            return None
+        return self._clock() - self._recording_started_at
+
     def poll_recording(self) -> None:
         """Call regularly while RECORDING. Stops the recording and moves to
         ERROR immediately - loud and early, per CLAUDE.md, rather than
@@ -460,6 +482,10 @@ class KioskController:
         failed, if a camera's frame index hasn't advanced for
         stall_timeout_s, or if a camera's picture has stopped changing for
         freeze_timeout_s.
+
+        Also where a session reaches max_session_minutes. That is a normal
+        stop (stop_recording(), landing in IDLE), with
+        stopped_at_time_limit set so the UI can say so.
         """
         if self.state != State.RECORDING:
             return
@@ -485,6 +511,17 @@ class KioskController:
             return
 
         now = self._clock()
+        # After the writer check (a failed stream is still a failure, cap
+        # or not) and before the stall/freeze checks, so a session that
+        # ran its full length is never reported as broken.
+        if now - self._recording_started_at >= self.max_session_minutes * 60.0:
+            logger.info("recording reached the %g-minute limit; stopping", self.max_session_minutes)
+            self.stop_recording()
+            # stop_recording() lands in ERROR if it couldn't finalize, and
+            # that is reported as a failure, not as reaching the limit.
+            self.stopped_at_time_limit = self.state == State.IDLE
+            return
+
         stalled = []
         for key, camera in (("instrument", instrument_camera), ("third_person", self.third_person_camera)):
             frame = camera.get_latest()

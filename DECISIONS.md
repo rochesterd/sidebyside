@@ -4152,3 +4152,92 @@ viewer and Export, which this shouldn't reach.
 **Fonts fall back.** Franklin Gothic Book comes with Microsoft Office, not
 Windows. A clinic PC without Office falls through to Franklin Gothic Medium,
 which Windows does ship, then Segoe UI.
+
+---
+
+## 2026-09-11 — First round of student feedback
+
+Five items from the first students to use Reflex in the room. They're
+recorded together so the ones not acted on yet aren't lost. Anything built
+later gets its own entry.
+
+| | Feedback | Status |
+|---|---|---|
+| A | Label the buttons "Start Recording" and "Stop Recording" | **Done** |
+| B | Room lighting: the stand light alone is too dim to see the student doctor and patient, but the skill needs a dim room | Open — room, not software |
+| C | Cap recording length (maybe 10 or 15 minutes) | **Done** — 15 minutes |
+| D | Rename the bottom buttons "Watch Past Recordings" and "Watch Last Recording" | **Done** |
+| E | Optional name or nickname for the student doctor, to track recordings (FERPA) | Deferred — see below |
+
+**A and D: the buttons say what they do.** "Start" and "Watch" only made
+sense to someone who already knew what the app was for. The status line
+follows the new wording ("Ready. Press Start Recording."). The viewer's list
+dialog is still titled "Past recordings": that title names the list, while
+the button names an action.
+
+**C: 15 minutes, stopped the same way as the button, and shown on screen
+throughout.**
+
+- *15, not 10.* The feedback offered either. 15 is less likely to cut a
+  student off mid-skill, and a cut-off is the worse outcome. The cost is a
+  bigger file. If the clinic settles on 10, change
+  `kiosk.MAX_SESSION_MINUTES`. Nothing else needs to change.
+- *Reaching the limit is a normal stop, not an error.*
+  `poll_recording()` calls the same `stop_recording()` as the button, so
+  the session is remuxed and verified, lands in IDLE, and Watch Last
+  Recording lights up. The summary line says it stopped at the limit. The
+  red banner would tell a student something went wrong with a recording
+  that is fine. If finalizing fails, that is still reported as the failure
+  it is, and `stopped_at_time_limit` stays False.
+- *The student sees the limit before reaching it.* While recording, the
+  status line reads "Recording... 3:12 of 15:00", with a seconds countdown
+  added in the last minute. The Ready line states the limit. A limit a
+  student only discovers by being cut off is the kind of surprise "loud and
+  early" exists to prevent.
+- *The cap is also the disk preflight's session length.* Until now,
+  `TARGET_SESSION_MINUTES = 10` was a guess at a typical session and
+  nothing enforced it, so a long session could outrun the space the
+  preflight had checked for. With one constant, a preflight that passes has
+  room for the longest session that can exist. The free space it requires
+  rises by half (about 1.5 GB at the fallback canvas and 30fps).
+- *In `KioskController`, not `app.py` or `config.json`.* It's a decision,
+  so it goes in the controller, where the injectable clock tests it
+  headlessly. It isn't config: it's a policy about how students practise,
+  not a fact about one room. ROADMAP.md's 2026-08-18 settings survey
+  already declined to move this constant to config without a real need.
+
+**Rejected for C:** a warning dialog near the limit, and any way to extend
+a session once it has started. During recording, nothing but Stop is
+interactive (CLAUDE.md), and both would add a second control.
+
+**B: a room fix first.** The instrument side needs the room dim; the
+third-person camera needs enough light on hands and faces. So the answer
+is room lighting: a dimmable, indirect source that lights the student and
+patient without washing into the instrument's field. It isn't a readiness
+gate either. A dim picture is visible in the live preview, and the
+2026-09-10 entry keeps visibly wrong pictures out of the gates. One
+software lever exists and should be checked before buying lights:
+`UvcCamera` locks the webcam's auto-exposure, so what it's locked at
+matters. A longer exposure is free brightness, but it also blurs the hands
+on every frame — the same frame-rate budget the instrument cameras have.
+
+**E: deferred.** Recorded here are the questions it has to answer before
+it's designed:
+
+- *Optional, never a gate.* An unsupervised student who skips the field
+  must still be able to record. An empty field can't disable Start.
+- *Where the identifier lives.* The session folder name is the obvious
+  place, since it's what a technician retrieving files sees. It's also the
+  most exposed: folder names show up in Explorer and in backups, and they
+  travel with every copied recording (the viewer-only installer exists for
+  exactly that). The alternative is `session.json` plus the recordings
+  list, which shows it without putting it in any path.
+- *FERPA is NECO's call, not the code's.* A nickname keeps a recording
+  unidentifiable, and typing a real name into the same field defeats that.
+  Whether real names are allowed at all needs an answer from NECO. So does
+  who may see whose recordings: today anyone at the kiosk can open Watch
+  Past Recordings, and once identifiers appear, that list shows every
+  student's.
+- *Entry on a kiosk.* It happens before Start, never during recording. It
+  needs a keyboard at the station, and sanitizing if it ever reaches a
+  filename.

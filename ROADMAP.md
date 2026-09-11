@@ -1274,3 +1274,16 @@ profiles** rather than raw enumeration:
 isn't mistaken for the finished shape. The `config.json` `orientation`
 override and `device_presets.orientation_for_model()` are the minimum that
 solves the immediate BIO problem; this is the fuller direction.
+
+---
+
+## 2026-09-11 — Optional student identifier on a recording (planned, not designed)
+
+From the first round of student feedback: an optional name or nickname for
+the student doctor, so recordings can be tracked to whoever made them,
+with a nickname allowed out of respect for FERPA. The open questions are
+in DECISIONS.md's "First round of student feedback" entry (item E). The
+main ones: whether the identifier goes into folder names or only into
+`session.json`, and NECO's answer on real names and on who can see whose
+recordings. Those need answers before any design. Whatever it becomes, it
+must stay optional and must never gate Start.

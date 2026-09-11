@@ -123,16 +123,17 @@ switched off), restart the app.
 
 This is the step that actually proves the install:
 
-1. Pick an instrument. The status line should say **Ready. Press Start.**
-2. **Glance at both panes before you press Start.** They're live. If the
+1. Pick an instrument. The status line should start with **Ready. Press
+   Start Recording.**
+2. **Glance at both panes before you press Start Recording.** They're live. If the
    instrument pane is black, its illumination is off or turned right down —
    the app won't stop you, and you'd record a black pane. This is the one
    check that's left to the eye, because a black picture is the most
    obvious thing on the screen; worth passing on to instructors as
    something to tell students.
-3. Press **Start**, and spend 20–30 seconds doing the real skill — hands
-   moving, beam moving.
-4. Press **Stop**, then **Watch**.
+3. Press **Start Recording**, and spend 20–30 seconds doing the real
+   skill — hands moving, beam moving.
+4. Press **Stop Recording**, then **Watch Last Recording**.
 5. Check both panes: right way up, in focus, bright enough to see what the
    hands and the optics are doing, and moving smoothly.
 
@@ -141,7 +142,7 @@ ready.
 
 ---
 
-## If the recorder won't let you press Start
+## If the recorder won't let you press Start Recording
 
 The status line always names the reason. The common ones:
 

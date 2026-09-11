@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import functools
 import logging
+import math
 import os
 import sys
 from logging.handlers import RotatingFileHandler
@@ -71,6 +72,9 @@ DEFAULT_SYNTHETIC_RESOLUTION = (1600, 1200)
 THIRD_PERSON_SYNTHETIC_RESOLUTION = (640, 480)
 PREVIEW_CANVAS_SIZE = (1280, 540)  # downscaled preview of the 2560x1080 recording canvas
 HEADER_MARK_SIZE = 36
+# How close to the session time limit the status line starts counting down
+# the seconds left. See KioskController.max_session_minutes.
+LIMIT_COUNTDOWN_S = 60
 
 # Stands in for the instrument pane until there's an instrument frame to
 # show beside the third-person preview. Black, like the letterbox bars
@@ -86,6 +90,12 @@ LOG_DIR = Path(os.environ["ProgramData"]) / "Reflex" / "logs" if is_frozen() els
 LOG_FILE = LOG_DIR / "app.log"
 
 THIRD_PERSON_LABEL = "third-person camera"
+
+
+def _format_clock(seconds: float) -> str:
+    """m:ss, for the recording time shown against the limit."""
+    whole = max(0, int(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
 
 
 def _configure_logging() -> None:
@@ -186,14 +196,16 @@ class KioskWindow(QMainWindow):
             self._instrument_buttons[key] = button
 
         # Both "primary": only one is ever enabled, so whichever the student
-        # can press is the one that stands out.
-        self.start_button = QPushButton("Start")
+        # can press is the one that stands out. Labels say what they do, not
+        # just "Start"/"Stop" -- see DECISIONS.md's "First round of student
+        # feedback" entry.
+        self.start_button = QPushButton("Start Recording")
         self.start_button.setObjectName(reflex_style.PRIMARY)
         self.start_button.setEnabled(False)
         self.start_button.setMinimumHeight(64)
         self.start_button.clicked.connect(self._on_start_clicked)
 
-        self.stop_button = QPushButton("Stop")
+        self.stop_button = QPushButton("Stop Recording")
         self.stop_button.setObjectName(reflex_style.PRIMARY)
         self.stop_button.setEnabled(False)
         self.stop_button.setMinimumHeight(64)
@@ -218,7 +230,7 @@ class KioskWindow(QMainWindow):
         # they just did while the muscle memory is fresh. Nothing is
         # rendered to make this possible; the viewer lays the session's two
         # streams out live. See ROADMAP.md's Recorder/Viewer split entry.
-        self.watch_button = QPushButton("Watch")
+        self.watch_button = QPushButton("Watch Last Recording")
         self.watch_button.setMinimumHeight(40)
         self.watch_button.setEnabled(False)
         self.watch_button.clicked.connect(self._on_watch_clicked)
@@ -226,7 +238,7 @@ class KioskWindow(QMainWindow):
         # Reaching an earlier session matters as much as the one just
         # finished: a student may come back to review, or want to export a
         # file from last week's attempt.
-        self.past_button = QPushButton("Past recordings")
+        self.past_button = QPushButton("Watch Past Recordings")
         self.past_button.setMinimumHeight(40)
         self.past_button.clicked.connect(self._on_past_recordings_clicked)
 
@@ -392,6 +404,15 @@ class KioskWindow(QMainWindow):
             self.controller.poll_recording()
             if self.controller.state == State.ERROR:
                 self._show_error()
+            elif self.controller.stopped_at_time_limit:
+                # Stopped by itself, but not broken: a normal summary, not
+                # the red banner, naming why so it doesn't look like a fault.
+                self.summary_label.setText(
+                    self._format_summary(
+                        f"Stopped at the {self._limit_minutes()}-minute limit",
+                        self.controller.last_session_info,
+                    )
+                )
         else:
             preflight = self.controller.poll_preflight()
         self._sync_ui(preflight)
@@ -412,12 +433,29 @@ class KioskWindow(QMainWindow):
         self.past_button.setEnabled(state != State.RECORDING)
 
         if state == State.RECORDING:
-            self.status_label.setText("Recording...")
+            self.status_label.setText(self._recording_status())
         elif state == State.READY:
-            self.status_label.setText("Ready. Press Start.")
+            # The limit is stated up front, so reaching it is never the
+            # first the student hears of it.
+            self.status_label.setText(
+                "Ready. Press Start Recording. "
+                f"Recordings stop automatically after {self._limit_minutes()} minutes."
+            )
         elif state == State.IDLE:
             self.status_label.setText(self._idle_reason(preflight))
         # ERROR: leave whatever _show_error() just wrote in place.
+
+    def _limit_minutes(self) -> str:
+        return f"{self.controller.max_session_minutes:g}"
+
+    def _recording_status(self) -> str:
+        elapsed = self.controller.recording_elapsed_s() or 0.0
+        limit_s = self.controller.max_session_minutes * 60.0
+        text = f"Recording... {_format_clock(elapsed)} of {_format_clock(limit_s)}"
+        remaining = limit_s - elapsed
+        if remaining <= LIMIT_COUNTDOWN_S:
+            text += f" - stops automatically in {max(0, math.ceil(remaining))}s"
+        return text
 
     def _idle_reason(self, preflight) -> str:
         if self._desired_instrument is None:

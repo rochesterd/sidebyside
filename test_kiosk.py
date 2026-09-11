@@ -15,7 +15,13 @@ from unittest.mock import patch
 
 import numpy as np
 
-from kiosk import KioskController, State, _frame_signature, estimate_recording_bytes
+from kiosk import (
+    REQUIRED_SPACE_MULTIPLIER,
+    KioskController,
+    State,
+    _frame_signature,
+    estimate_recording_bytes,
+)
 from recorder import _StreamWriter
 from synthetic_camera import SyntheticCamera
 
@@ -757,6 +763,93 @@ class TestKioskControllerSession(unittest.TestCase):
             finally:
                 instrument.stop()
                 third_person.stop()
+
+
+class TestSessionTimeLimit(unittest.TestCase):
+    """A session stops by itself at max_session_minutes -- as a normal,
+    verified stop, not an error. See DECISIONS.md's "First round of
+    student feedback" entry."""
+
+    def test_a_session_stops_cleanly_at_the_time_limit(self):
+        with tempfile.TemporaryDirectory() as tmp_root:
+            instrument = SyntheticCamera(160, 120, fps=30, name="instrument")
+            third_person = SyntheticCamera(160, 120, fps=30, name="third-person")
+            instrument.start()
+            third_person.start()
+            try:
+                clock = FakeClock()
+                controller = KioskController(
+                    third_person,
+                    {"instrument": instrument},
+                    output_root=tmp_root,
+                    width=160,
+                    height=120,
+                    fps=30,
+                    max_session_minutes=1.0,
+                    clock=clock,
+                )
+                controller.select_instrument("instrument")
+                time.sleep(0.2)
+                controller.poll_preflight()
+                self.assertIsNone(controller.recording_elapsed_s())
+
+                controller.start_recording()
+                self.assertEqual(controller.recording_elapsed_s(), 0.0)
+
+                # Just short of the limit: still recording. Real frames
+                # arrive during the sleep, so the stall check stays quiet.
+                time.sleep(0.3)
+                clock.advance(59.0)
+                controller.poll_recording()
+                self.assertEqual(controller.state, State.RECORDING)
+                self.assertEqual(controller.recording_elapsed_s(), 59.0)
+                self.assertFalse(controller.stopped_at_time_limit)
+
+                time.sleep(0.2)
+                clock.advance(1.0)
+                controller.poll_recording()
+
+                self.assertEqual(controller.state, State.IDLE)
+                self.assertTrue(controller.stopped_at_time_limit)
+                self.assertIsNone(controller.error_message)
+                self.assertIsNone(controller.recording_elapsed_s())
+                for role, stream in controller.last_session_info["streams"].items():
+                    self.assertTrue(stream["verified"], role)
+                    self.assertTrue((controller.last_session_dir / f"{role}.mp4").exists(), role)
+
+                # The next session starts with a clean slate, and a manual
+                # Stop is never reported as the limit.
+                self.assertEqual(controller.poll_preflight().ok, True)
+                controller.start_recording()
+                self.assertFalse(controller.stopped_at_time_limit)
+                time.sleep(0.2)
+                controller.stop_recording()
+                self.assertFalse(controller.stopped_at_time_limit)
+            finally:
+                instrument.stop()
+                third_person.stop()
+
+    def test_disk_preflight_budgets_for_a_full_length_session(self):
+        """The cap and the disk estimate are one number: a preflight that
+        passes has room for the longest session that can exist."""
+        third_person = SyntheticCamera(160, 120, fps=30)
+        instrument = SyntheticCamera(160, 120, fps=30)
+        with tempfile.TemporaryDirectory() as tmp_root:
+            controller = KioskController(
+                third_person,
+                {"instrument": instrument},
+                output_root=tmp_root,
+                width=160,
+                height=120,
+                fps=30,
+                max_session_minutes=7.0,
+                disk_usage_fn=dynamic_disk_usage({"free": 10**15}),
+            )
+            status = controller.poll_preflight()
+        self.assertAlmostEqual(
+            status.required_bytes,
+            REQUIRED_SPACE_MULTIPLIER * estimate_recording_bytes(160, 120, 30, minutes=7.0),
+        )
 
 
 if __name__ == "__main__":
