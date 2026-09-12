@@ -22,8 +22,9 @@ from PySide6.QtWidgets import QApplication
 import app
 import neco_reflex_theme as theme
 from app import KioskWindow
-from camera import BaseCamera
-from config import ConfigError
+from camera import ORIENTATION_NONE, ORIENTATION_ROTATE_180, BaseCamera
+from config import ConfigError, InstrumentConfig
+from device_presets import CUSTOM_PROFILE_ID
 from kiosk import State
 from synthetic_camera import SyntheticCamera
 
@@ -442,6 +443,53 @@ class TestMissingConfigStartup(unittest.TestCase):
         self.assertEqual(result, 1)
         mock_critical.assert_called_once()
         self.assertIn("config.json not found", mock_critical.call_args.args[-1])
+
+
+class TestPresetPrecedence(unittest.TestCase):
+    """app._resolve_presets: config.json beats the picked profile, which
+    beats letting IdsCamera match the model string."""
+
+    def _inst(self, **kwargs):
+        base = dict(kind="ids", serial="111", label="Slit Lamp")
+        base.update(kwargs)
+        return InstrumentConfig(**base)
+
+    def test_a_profile_supplies_its_orientation_and_pixel_clock(self):
+        orientation, pixel_clock = app._resolve_presets(
+            self._inst(profile="haag_streit_bi900_slit_lamp"), "slit_lamp"
+        )
+        self.assertEqual(orientation, ORIENTATION_ROTATE_180)
+        self.assertEqual(pixel_clock, 80_000_000)
+
+    def test_an_explicit_config_value_beats_the_profile(self):
+        orientation, pixel_clock = app._resolve_presets(
+            self._inst(
+                profile="haag_streit_bi900_slit_lamp",
+                orientation=ORIENTATION_NONE,
+                pixel_clock_hz=60_000_000,
+            ),
+            "slit_lamp",
+        )
+        self.assertEqual(orientation, ORIENTATION_NONE)
+        self.assertEqual(pixel_clock, 60_000_000)
+
+    def test_no_profile_leaves_both_to_the_camera(self):
+        """Custom, or a config written before profiles existed. None means
+        IdsCamera matches the model string itself."""
+        self.assertEqual(app._resolve_presets(self._inst(), "slit_lamp"), (None, None))
+
+    def test_custom_is_not_an_unknown_profile(self):
+        with self.assertNoLogs("app", level="WARNING"):
+            orientation, pixel_clock = app._resolve_presets(
+                self._inst(profile=CUSTOM_PROFILE_ID), "slit_lamp"
+            )
+        self.assertEqual((orientation, pixel_clock), (None, None))
+
+    def test_an_unknown_profile_warns_and_falls_back(self):
+        with self.assertLogs("app", level="WARNING") as logs:
+            result = app._resolve_presets(self._inst(profile="from_a_newer_build"), "slit_lamp")
+        self.assertEqual(result, (None, None))
+        self.assertIn("from_a_newer_build", "".join(logs.output))
 
 
 if __name__ == "__main__":

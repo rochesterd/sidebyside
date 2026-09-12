@@ -46,6 +46,7 @@ from config import (
     load_config,
     resolve_default_sessions_dir,
 )
+from device_presets import CUSTOM_PROFILE_ID, profile_for_id
 from kiosk import KioskController, PreflightStatus, State
 from neco_reflex_theme import BURGUNDY_BGR
 from qt_image import bgr_to_pixmap
@@ -563,6 +564,31 @@ class KioskWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def _resolve_presets(inst: InstrumentConfig, name: str) -> tuple[str | None, int | None]:
+    """(orientation, pixel_clock_hz) for an IDS camera, most specific first:
+
+    1. an explicit `config.json` value -- the escape hatch for a
+       non-standard mounting, or a host that can't take the full clock;
+    2. the device profile a technician picked in settings.py;
+    3. None, which lets IdsCamera match the camera's own model string.
+
+    An unknown profile id -- one written by a newer build -- warns and falls
+    through to (3) rather than raising. A config this build doesn't fully
+    understand must still start the kiosk; the cameras are what students
+    came for, and a refused start helps nobody.
+    """
+    profile = profile_for_id(inst.profile)
+    if inst.profile not in (None, CUSTOM_PROFILE_ID) and profile is None:
+        logger.warning(
+            "%s: config names unknown device profile %r; falling back to this camera's "
+            "own model presets",
+            name, inst.profile,
+        )
+    orientation = inst.orientation or (profile.orientation if profile is not None else None)
+    pixel_clock_hz = inst.pixel_clock_hz or (profile.pixel_clock_hz if profile is not None else None)
+    return orientation, pixel_clock_hz
+
+
 def _make_camera(
     inst: InstrumentConfig,
     synthetic: bool,
@@ -593,16 +619,14 @@ def _make_camera(
     # break `python app.py --synthetic` on such a machine.
     from ids_camera import IdsCamera
 
+    orientation, pixel_clock_hz = _resolve_presets(inst, name)
     return IdsCamera(
         serial=inst.serial,
         exposure_time_us=inst.exposure_time_us,
         gain=inst.gain,
         target_fps=target_fps,
-        # None (the common case) lets IdsCamera pick the device-model preset
-        # -- e.g. the Keeler BIO camera's image comes in vertically flipped.
-        # A config.json `orientation` overrides that. See device_presets.py.
-        orientation=inst.orientation,
-        pixel_clock_hz=inst.pixel_clock_hz,
+        orientation=orientation,
+        pixel_clock_hz=pixel_clock_hz,
     )
 
 

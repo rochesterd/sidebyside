@@ -581,6 +581,74 @@ class RecordingFpsTest(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path)
 
+    def test_profile_and_nickname_are_parsed_when_present(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["profile"] = "haag_streit_bi900_slit_lamp"
+        data["instruments"]["slit_lamp"]["nickname"] = "Lane 3"
+        self._write(data)
+
+        inst = load_config(self.path).instruments["slit_lamp"]
+
+        self.assertEqual(inst.profile, "haag_streit_bi900_slit_lamp")
+        self.assertEqual(inst.nickname, "Lane 3")
+
+    def test_a_config_without_them_is_a_custom_entry(self):
+        """Every config.json written before profiles existed: a typed label
+        and no profile. That shape has to keep working untouched."""
+        self._write(json.loads(json.dumps(VALID)))
+
+        inst = load_config(self.path).instruments["slit_lamp"]
+
+        self.assertIsNone(inst.profile)
+        self.assertIsNone(inst.nickname)
+        self.assertTrue(inst.label)
+
+    def test_an_unknown_profile_id_still_loads(self):
+        """Written by a newer build. Resolving it is app.py's problem, and
+        its answer is to fall back -- not to refuse to start a kiosk."""
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["profile"] = "written_by_a_newer_build"
+        self._write(data)
+
+        self.assertEqual(
+            load_config(self.path).instruments["slit_lamp"].profile, "written_by_a_newer_build"
+        )
+
+    def test_a_cleared_nickname_reads_as_no_nickname(self):
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["slit_lamp"]["nickname"] = ""
+        self._write(data)
+
+        self.assertIsNone(load_config(self.path).instruments["slit_lamp"].nickname)
+
+    def test_non_string_profile_or_nickname_raises(self):
+        for field in ("profile", "nickname"):
+            with self.subTest(field=field):
+                data = json.loads(json.dumps(VALID))
+                data["instruments"]["slit_lamp"][field] = 7
+                self._write(data)
+
+                with self.assertRaises(ConfigError):
+                    load_config(self.path)
+
+    def test_the_legacy_bio_can_carry_a_profile_and_nickname(self):
+        """It has a profile like any other supported camera -- what it lacks
+        is a serial and anything to calibrate."""
+        data = json.loads(json.dumps(VALID))
+        data["instruments"]["bio"] = {
+            "kind": "net2860_winusb",
+            "label": "BIO",
+            "profile": "keeler_vantage_plus_legacy",
+            "nickname": "Lane 1",
+        }
+        self._write(data)
+
+        inst = load_config(self.path).instruments["bio"]
+
+        self.assertEqual(inst.profile, "keeler_vantage_plus_legacy")
+        self.assertEqual(inst.nickname, "Lane 1")
+        self.assertIsNone(inst.serial)
+
 
 if __name__ == "__main__":
     unittest.main()

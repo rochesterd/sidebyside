@@ -75,6 +75,23 @@ class InstrumentConfig:
     # DECISIONS.md). Required (non-None) for kind="ids".
     serial: str | None
     label: str
+    # What a technician picked in settings.py, and what produced `label`.
+    #
+    # `profile` is a device_presets.DeviceProfile id -- the supported camera
+    # this is, carrying its orientation and pixel clock. None means custom:
+    # a config.json written before profiles existed is exactly that, which
+    # is why every one of them stays valid. An id this build doesn't know
+    # (written by a newer one) is kept as-is and degrades to custom rather
+    # than failing the load -- a kiosk must start. Deliberately not resolved
+    # here: config.py stays dependency-free, and app.py/settings.py look it
+    # up in device_presets.
+    #
+    # `nickname` is the technician's free text for this instrument, e.g.
+    # "Lane 3". `label` is what students actually see on the picker and is
+    # still the authority for it: settings.py writes the nickname there when
+    # one is set, and the profile's device name otherwise.
+    profile: str | None = None
+    nickname: str | None = None
     # A technician's one-time calibration for this instrument, written by
     # settings.py's Preview dialog -- see ids_camera.py's
     # supports_manual_calibration() and DECISIONS.md's 2026-08-25
@@ -247,6 +264,9 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
     if not isinstance(label, str) or not label:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
 
+    profile = _parse_optional_text(path, f"instruments.{key}.profile", entry.get("profile"))
+    nickname = _parse_optional_text(path, f"instruments.{key}.nickname", entry.get("nickname"))
+
     if kind == "net2860_winusb":
         # The legacy BIO, through Microsoft's inbox winusb.sys in-process.
         #
@@ -271,7 +291,9 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
                 f"{path}: instruments.{key} is kind \"{kind}\", which doesn't take "
                 f"{', '.join(sorted(unexpected))}. {_FIX_HINT}"
             )
-        return InstrumentConfig(kind=kind, serial=None, label=label)
+        return InstrumentConfig(
+            kind=kind, serial=None, label=label, profile=profile, nickname=nickname
+        )
 
     serial = entry.get("serial")
     if not isinstance(serial, str) or not serial:
@@ -289,11 +311,24 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         kind=kind,
         serial=serial,
         label=label,
+        profile=profile,
+        nickname=nickname,
         exposure_time_us=exposure_time_us,
         gain=gain,
         orientation=orientation,
         pixel_clock_hz=pixel_clock_hz,
     )
+
+
+def _parse_optional_text(path: Path, field_name: str, value: object) -> str | None:
+    """A non-empty string, or None when absent. An empty string means the
+    same as absent: settings.py writes "" for a nickname a technician
+    cleared, and that is not an error to fix, it is no nickname."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ConfigError(f"{path}: {field_name} must be a string. {_FIX_HINT}")
+    return value
 
 
 def _parse_optional_positive_number(path: Path, field_name: str, value: object) -> float | None:
