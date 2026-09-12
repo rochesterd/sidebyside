@@ -41,11 +41,10 @@ Section 6 (`settings.py`), which stays a separate, manual step.
    python -m pip install -r requirements.txt
    ```
 
-At this point `python app.py --synthetic` runs against `SyntheticCamera`,
-with no hardware, and `python settings.py --synthetic` offers fake cameras
-(two that match device profiles, one that matches none, so Custom is
-reachable) through the real window. The rest of this file is only for the
-real cameras.
+At this point `python app.py --synthetic` and `python settings.py
+--synthetic` both run with no hardware -- the latter offering fake cameras
+(two matching device profiles, one matching none) through the real window.
+The rest of this file is only for the real cameras.
 
 ---
 
