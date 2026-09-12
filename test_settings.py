@@ -222,7 +222,6 @@ class SettingsWindowTest(unittest.TestCase):
 
         self.assertEqual(row.profile_id(), "haag_streit_bi900_slit_lamp")
         self.assertEqual(row.label_text(), "Slit Lamp")
-        self.assertTrue(row.label_edit.isReadOnly())
         self.assertTrue(row.is_valid())
 
     def test_custom_requires_a_typed_name(self):
@@ -232,9 +231,8 @@ class SettingsWindowTest(unittest.TestCase):
         row = window._instrument_rows["slit_lamp"]
         _select(row, "111")
         row.profile_combo.setCurrentIndex(row.profile_combo.findData(CUSTOM_PROFILE_ID))
-        row.label_edit.setText("")
 
-        self.assertFalse(row.label_edit.isReadOnly())
+        self.assertEqual(row.label_text(), "")  # only a technician can name an unlisted camera
         self.assertFalse(row.is_valid())
 
         row.label_edit.setText("Borrowed slit lamp")
@@ -256,27 +254,31 @@ class SettingsWindowTest(unittest.TestCase):
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
 
-    def test_nickname_is_what_students_see_and_round_trips(self):
+    def test_the_typed_name_is_what_students_see_and_round_trips(self):
+        """The profile offers a name; the technician's edit wins and is what
+        lands in label, which is the only name app.py reads."""
         window = self._make_window(
             ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
         )
         row = window._instrument_rows["slit_lamp"]
         _select(row, "111")
-        row.nickname_edit.setText("Lane 3")
+        self.assertEqual(row.label_text(), "Slit Lamp")  # offered, not imposed
+
+        row.label_edit.setText("Big Slit Lamp")
+        row.label_edit.textEdited.emit("Big Slit Lamp")  # as a person typing would
         _select(window._instrument_rows["bio"], "222")
         _select(window._third_person_row, "32E4:9310")
-
         window._on_save_clicked()
 
         written = json.loads(self.config_path.read_text(encoding="utf-8"))["instruments"]["slit_lamp"]
-        self.assertEqual(written["label"], "Lane 3")          # the picker
-        self.assertEqual(written["nickname"], "Lane 3")       # what produced it
+        self.assertEqual(written["label"], "Big Slit Lamp")
         self.assertEqual(written["profile"], "haag_streit_bi900_slit_lamp")
+        self.assertNotIn("nickname", written)
 
         reopened = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
         row = reopened._instrument_rows["slit_lamp"]
         self.assertEqual(row.profile_id(), "haag_streit_bi900_slit_lamp")
-        self.assertEqual(row.nickname_text(), "Lane 3")
+        self.assertEqual(row.label_text(), "Big Slit Lamp")
 
     def test_a_config_written_before_profiles_reopens_as_custom(self):
         """A typed label and no profile is exactly what Custom means, so it
@@ -292,7 +294,6 @@ class SettingsWindowTest(unittest.TestCase):
 
         self.assertEqual(row.profile_id(), CUSTOM_PROFILE_ID)
         self.assertEqual(row.label_text(), "Old Typed Name")
-        self.assertFalse(row.label_edit.isReadOnly())
 
     def test_a_profile_id_this_build_does_not_know_lands_on_custom(self):
         """Written by a newer build. app.py falls back the same way, so

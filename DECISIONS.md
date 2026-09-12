@@ -4549,3 +4549,37 @@ that does not exist.
 **Verified:** 359 tests, including the round-trip through Save and reopen,
 the pre-profile config landing on Custom with its typed label intact, and
 an unknown id doing the same rather than pretending to be a known camera.
+
+---
+
+## 2026-09-12 - Correction: one name field, not a label and a nickname
+
+**Supersedes** the naming half of the entry above. That version gave a
+technician a read-only "name shown on the picker", filled from the profile,
+*plus* an optional nickname which silently replaced it. Two boxes, one
+question, and the read-only one was a lie: whatever was in the other box
+won.
+
+**The shape it should have been, and now is:** three fields per row, two
+chosen and one typed.
+
+| field | who decides |
+|---|---|
+| device | the system -- what it reports is plugged in |
+| profile | us -- the supported list we ship, Custom included |
+| name | the technician -- what students read on the picker |
+
+**The name is pre-filled from the profile and stays editable.** The common
+case needs no typing, and a room that calls the thing something else just
+says so. `_label_is_default` tracks whether the text is still ours: a
+profile change re-fills a name nobody has touched, and never overwrites one
+a technician typed or one restored from `config.json`. Custom leaves it
+empty on purpose -- nobody but the technician can name a camera we don't
+know, and an empty required field says that better than a placeholder.
+
+**`nickname` is deleted from `config.json`** one day after being added. It
+had no reader: it was not a picker name (the picker must say the
+instrument, since that is what a student is choosing between), and nothing
+else consumed it. The same reasoning as the white-balance removal the day
+before -- a field with no reader is speculative, and cheap to add back the
+day session traceability actually wants one.

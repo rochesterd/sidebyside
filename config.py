@@ -86,12 +86,9 @@ class InstrumentConfig:
     # here: config.py stays dependency-free, and app.py/settings.py look it
     # up in device_presets.
     #
-    # `nickname` is the technician's free text for this instrument, e.g.
-    # "Lane 3". `label` is what students actually see on the picker and is
-    # still the authority for it: settings.py writes the nickname there when
-    # one is set, and the profile's device name otherwise.
+    # `label` is what students read on the picker: pre-filled from the
+    # profile in settings.py, then whatever the technician made it.
     profile: str | None = None
-    nickname: str | None = None
     # A technician's one-time calibration for this instrument, written by
     # settings.py's Preview dialog -- see ids_camera.py's
     # supports_manual_calibration() and DECISIONS.md's 2026-08-25
@@ -265,7 +262,6 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         raise ConfigError(f"{path}: instruments.{key}.label must be a non-empty string. {_FIX_HINT}")
 
     profile = _parse_optional_text(path, f"instruments.{key}.profile", entry.get("profile"))
-    nickname = _parse_optional_text(path, f"instruments.{key}.nickname", entry.get("nickname"))
 
     if kind == "net2860_winusb":
         # The legacy BIO, through Microsoft's inbox winusb.sys in-process.
@@ -291,9 +287,7 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
                 f"{path}: instruments.{key} is kind \"{kind}\", which doesn't take "
                 f"{', '.join(sorted(unexpected))}. {_FIX_HINT}"
             )
-        return InstrumentConfig(
-            kind=kind, serial=None, label=label, profile=profile, nickname=nickname
-        )
+        return InstrumentConfig(kind=kind, serial=None, label=label, profile=profile)
 
     serial = entry.get("serial")
     if not isinstance(serial, str) or not serial:
@@ -312,7 +306,6 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
         serial=serial,
         label=label,
         profile=profile,
-        nickname=nickname,
         exposure_time_us=exposure_time_us,
         gain=gain,
         orientation=orientation,
@@ -322,8 +315,8 @@ def _parse_instrument(path: Path, key: str, entry: object) -> InstrumentConfig:
 
 def _parse_optional_text(path: Path, field_name: str, value: object) -> str | None:
     """A non-empty string, or None when absent. An empty string means the
-    same as absent: settings.py writes "" for a nickname a technician
-    cleared, and that is not an error to fix, it is no nickname."""
+    same as absent: a field a technician cleared is not an error to fix,
+    it is an unset field."""
     if value is None or value == "":
         return None
     if not isinstance(value, str):

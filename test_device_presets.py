@@ -66,9 +66,6 @@ class PixelClockForModelTest(unittest.TestCase):
         self.assertIsNone(pixel_clock_hz_for_model(""))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class ProfileRegistryTest(unittest.TestCase):
     """The supported-camera list settings.py offers and config.json resolves
@@ -137,3 +134,5 @@ class ProfileRegistryTest(unittest.TestCase):
                     self.assertEqual(orientation_for_model(token), profile.orientation)
                     self.assertEqual(pixel_clock_hz_for_model(token), profile.pixel_clock_hz)
 
+if __name__ == "__main__":
+    unittest.main()

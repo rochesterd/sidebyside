@@ -431,15 +431,19 @@ class PreviewDialog(QDialog):
 
 
 class DeviceRow(QWidget):
-    """One role's device dropdown, profile dropdown, nickname and Preview.
+    """One role's device dropdown, profile dropdown, name and Preview.
 
-    Device and profile are separate fields on purpose. The device says which
-    camera is plugged in; the profile says what that camera *is*, and carries
-    the orientation and pixel clock a technician would otherwise have to
-    know. Picking a device auto-selects the profile that matches its model,
-    but either can be set independently -- an unlisted camera is configured
-    by choosing Custom, which is how a new instrument avoids waiting on a
-    code change.
+    Three fields, two of them chosen rather than typed:
+
+      device   what the system reports is plugged in
+      profile  what that camera *is* -- the supported list we ship, which
+               carries the orientation and pixel clock a technician would
+               otherwise have to know. Custom is always in it, so an
+               unlisted camera never waits on a code change.
+      name     the one thing a technician writes: what students read on the
+               picker. Pre-filled from the profile, because the common case
+               should need no typing, but theirs to change -- a room calls
+               its instruments whatever its students already call them.
 
     Generic over instrument roles (editable label, one or more candidate
     kinds -- IDS devices, or IDS devices plus the legacy BIO candidate
@@ -500,18 +504,16 @@ class DeviceRow(QWidget):
             self.profile_combo.addItem("Custom (unlisted camera)...", CUSTOM_PROFILE_ID)
             self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
 
-        # Filled from the profile and read-only, unless the profile is
-        # Custom -- the name students see stays tied to the supported device
-        # rather than to whatever someone typed.
+        # The name students read on the picker. Pre-filled from the chosen
+        # profile and editable: `_label_is_default` tracks whether it is
+        # still ours to overwrite, so changing profile re-fills a name
+        # nobody has touched but never clobbers one a technician typed.
         self.label_edit = QLineEdit() if has_label else None
+        self._label_is_default = True
         if self.label_edit is not None:
-            self.label_edit.setPlaceholderText("Name shown on the picker")
+            self.label_edit.setPlaceholderText("Name students see, e.g. Slit Lamp")
             self.label_edit.textChanged.connect(lambda _text: self.changed.emit())
-
-        self.nickname_edit = QLineEdit() if has_label else None
-        if self.nickname_edit is not None:
-            self.nickname_edit.setPlaceholderText("Optional nickname, e.g. Lane 3")
-            self.nickname_edit.textChanged.connect(lambda _text: self.changed.emit())
+            self.label_edit.textEdited.connect(self._on_label_edited)
 
         self.preview_button = QPushButton("Preview")
         self.preview_button.clicked.connect(self._on_preview_clicked)
@@ -523,7 +525,7 @@ class DeviceRow(QWidget):
         grid.addWidget(self.title_label, 0, 0)
         grid.addWidget(self.combo, 0, 1)
         col = 2
-        for widget in (self.profile_combo, self.label_edit, self.nickname_edit):
+        for widget in (self.profile_combo, self.label_edit):
             if widget is not None:
                 grid.addWidget(widget, 0, col)
                 col += 1
@@ -595,8 +597,12 @@ class DeviceRow(QWidget):
         return self.label_edit.text().strip() if self.label_edit is not None else ""
 
     def set_label_text(self, text: str) -> None:
+        """Used to restore a saved name, which is a technician's answer even
+        though no one typed it here -- so it stops being ours to overwrite
+        when the profile changes."""
         if self.label_edit is not None:
             self.label_edit.setText(text)
+            self._label_is_default = not text
 
     def profile_id(self) -> str | None:
         """The selected profile id, CUSTOM_PROFILE_ID for custom, or None on
@@ -611,18 +617,6 @@ class DeviceRow(QWidget):
         the device doesn't overwrite what was saved. An id this build doesn't
         know lands on Custom, which is what it behaves as."""
         self._pending_profile = profile_id
-
-    def nickname_text(self) -> str:
-        return self.nickname_edit.text().strip() if self.nickname_edit is not None else ""
-
-    def set_nickname_text(self, text: str) -> None:
-        if self.nickname_edit is not None:
-            self.nickname_edit.setText(text)
-
-    def picker_text(self) -> str:
-        """What students see: the nickname when a technician set one, and the
-        supported device's short name otherwise."""
-        return self.nickname_text() or self.label_text()
 
     def calibration(self) -> tuple[float | None, float | None]:
         return self._exposure_time_us, self._gain
@@ -643,20 +637,21 @@ class DeviceRow(QWidget):
         self._update_ui_state()
         self.changed.emit()
 
+    def _on_label_edited(self, _text: str) -> None:
+        """textEdited, not textChanged: this fires only for a person typing,
+        which is exactly when the name stops being ours to overwrite."""
+        self._label_is_default = False
+
     def _sync_profile_fields(self) -> None:
-        """The label follows the profile: a supported camera names itself,
-        and only Custom lets a technician type one."""
+        """Offer the profile's name, without taking the field away. Custom
+        leaves it empty on purpose: nobody but the technician can name a
+        camera we don't know, and an empty required field says so."""
         if self.profile_combo is None or self.label_edit is None:
             return
+        if not self._label_is_default:
+            return
         profile = profile_for_id(self.profile_id())
-        is_custom = profile is None
-        self.label_edit.setReadOnly(not is_custom)
-        if profile is not None:
-            self.label_edit.setText(profile.picker_label)
-        elif self.label_edit.text() == "" and self._selected_model_name():
-            # Custom on an unlisted camera: seed with the model string, which
-            # is at least true, rather than leaving a required field blank.
-            self.label_edit.setText(self._selected_model_name())
+        self.label_edit.setText(profile.picker_label if profile is not None else "")
 
     def _selected_model_name(self) -> str:
         candidate = self.selected_candidate()
@@ -943,7 +938,6 @@ class SettingsWindow(QMainWindow):
             inst = cfg.instruments.get(key)
             if inst is not None:
                 row.set_label_text(inst.label)
-                row.set_nickname_text(inst.nickname or "")
                 # None means a config written before profiles existed, which
                 # is a custom entry -- see device_presets.CUSTOM_PROFILE_ID.
                 row.set_pending_profile(inst.profile or CUSTOM_PROFILE_ID)
@@ -1080,15 +1074,12 @@ class SettingsWindow(QMainWindow):
 
     def _instrument_data(self, row: DeviceRow) -> dict:
         candidate = row.selected_candidate()
-        # `label` is what students read on the picker: the nickname when a
-        # technician set one, and the supported device's short name
-        # otherwise. `profile` and `nickname` are stored beside it so
-        # reopening Settings shows what was chosen, not just its result.
-        shared = {"label": row.picker_text()}
+        # `label` is what students read on the picker -- the one field a
+        # technician types. `profile` is stored beside it so reopening
+        # Settings shows what was chosen, not just the name it produced.
+        shared = {"label": row.label_text()}
         if row.profile_id() is not None:
             shared["profile"] = row.profile_id()
-        if row.nickname_text():
-            shared["nickname"] = row.nickname_text()
 
         if candidate is not None and candidate.kind == "net2860_winusb":
             # No serial and nothing to calibrate -- see config.py's
