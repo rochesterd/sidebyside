@@ -4471,3 +4471,35 @@ unknown keys on the `net2860_winusb` branch. Nothing in the field has them:
 **If it ever comes back,** this entry plus git history is the design.
 Re-adding it against a camera that actually needs it will be cheaper than
 having carried it unrun in the meantime.
+
+---
+
+## 2026-09-11 - Closing the legacy BIO orientation question: no transform, either way
+
+**Closes** the "still open, and a domain question" note on 2026-09-10's
+"the legacy BIO needs no orientation transform". `ORIENTATION_NONE` stands.
+
+**Evidence:** Keeler's own software displays this camera's image neither
+inverted nor laterally reversed - checked against the original application
+on 2026-09-11. It applies no transform, and neither do we.
+
+**Why the two readings could never have disagreed.** The inversion that
+indirect ophthalmoscopy is known for is produced by the hand-held
+condensing lens, out in front of the patient's eye - not by the
+instrument. The headset camera looks down the same path as the oculars, so
+whatever inversion the student is looking at, the camera is looking at the
+same thing. "Matches what the student sees" and "don't touch it" are
+therefore the same instruction, and "text reads upright" agrees whenever no
+condensing lens is in the path, which is the bench case that was tested.
+
+The question was framed as though we might have to choose. We never could:
+any transform we applied would break the correspondence between the hands
+and the instrument view, which CLAUDE.md names as the entire point of the
+recording. The only defensible value is `none`.
+
+**What would falsify this,** and is worth a minute the next time the
+instrument is in front of someone: point it at something asymmetric -
+text, a hand - and look through the oculars and at Reflex's preview
+together. If they ever disagree, the camera's path has a relay the oculars'
+does not, and this entry is wrong. Nothing in the capture or the board
+photography suggests one.
