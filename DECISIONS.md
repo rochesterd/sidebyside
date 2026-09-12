@@ -4343,3 +4343,58 @@ row uncalibrated.
 the open if that times out. That is a missing calibration, a technician's
 problem, and `CALIBRATION.md` covers it.
 
+---
+
+## 2026-09-11 — The legacy BIO does have host-side picture controls
+
+**Correction.** This repo has said since the WinUSB spike that the older
+BIO offers "no exposure/gain/white-balance control" because the camera
+images itself. The second half is right; the blanket version is wrong.
+The EM2860 bridge has its own video-processing registers, Keeler's driver
+writes them, and `net2860_init.py` has been replaying them as opaque
+constants.
+
+**What the registers are.** Mainline Linux `em28xx-reg.h` names the block
+the capture writes:
+
+| Register | Meaning | Kernel default | Keeler writes |
+|---|---|---|---|
+| `R20_YGAIN` | contrast | `0x10` | `0x10` |
+| `R21_YOFFSET` | brightness, signed | `0x00` | `0x08` |
+| `R22_UVGAIN` | saturation | `0x10` | `0x0f` |
+| `R23_UOFFSET` | blue balance, signed | `0x00` | `0x00` |
+| `R24_VOFFSET` | red balance, signed | `0x00` | `0x00` |
+| `R25_SHARPNESS` | sharpness | `0x00` | `0x02` |
+
+Three of the six are deliberately off their defaults, so these are tuning
+decisions someone made, not initialisation noise.
+
+**Audited the vendor binaries** in `vendor/net2860_driver/` (strings only,
+nothing executed). `netvecam4.ax` implements a "Video-Proc-Amp" page with
+exactly Brightness, Contrast, Saturation, Hue and Sharpness, persisted to
+`HKCU\Software\NetEmpiaCam4\VideoProcAmp0` — where this machine still
+holds `Sharpness 2`, matching the captured `R25 <- 0x02`, so that UI
+drives these registers rather than post-processing frames. The binary
+contains no `Exposure`, `Gain`, `WhiteBalance`, `Backlight`, `Iris`,
+`Shutter`, `AGC`, `AWB` or any `Auto*` string, and no `IAMCameraControl`.
+`NET_USBIO_EMP1.dll` does export `NET_USBIO_API_{Get,Set}I2CRaw`, but the
+capture uses neither: every vendor request is register read (`0xC0/0x00`)
+or write (`0x40/0x01`), and register `0x06` (I2C clock) is configured and
+never used.
+
+**So the sensor-side claim is now stronger, not weaker.** Keeler, with the
+documentation and the board, shipped a UI with post-processing sliders and
+no exposure control — which is better evidence than our capture alone that
+there is nothing on the sensor side to expose. What changes is the other
+half: brightness, contrast, saturation, colour balance and sharpness *are*
+ours to set on this camera, through the bridge.
+
+**Not acted on yet** — see ROADMAP.md's entry. Nothing about the replayed
+values changes until each register is confirmed on real hardware.
+
+**Left alone deliberately:** `net2860_init.py`'s `START_WRITES`/
+`STOP_WRITES` split sits at these same picture registers, which cannot
+switch a bridge off, so the recorded reason for the split ("replaying it
+whole switches the bridge straight back off") does not survive knowing
+what they are. The split is kept because it is what was verified working
+on hardware; the explanation needs re-deriving, not the sequence.

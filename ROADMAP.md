@@ -9,102 +9,68 @@ deletes it from here; for plans already built, see DECISIONS.md's
 
 ## 2026-08-18 — Other camera/recording settings surveyed, not acted on (yet)
 
-Surfaced while reviewing "what settings matter here" alongside the
-UVC autofocus/auto-exposure lock (see DECISIONS.md). Recorded so this
-isn't re-derived from scratch later; none of these are committed work.
+Surfaced alongside the UVC autofocus/auto-exposure lock (see DECISIONS.md);
+recorded so it isn't re-derived later, not committed work.
 
-- **Recording quality (`codec`/`crf`/`preset`) is hardcoded in
-  `Recorder`'s constructor defaults** (`libx264`, `crf=23`), never wired
-  to `config.json`. Same category `fps` was in before it became
-  config-driven — a real quality-vs-disk-space tradeoff that could
-  reasonably differ by institution's storage budget. Candidate for the
-  same `recording` config section `fps` already lives in, if a real need
-  shows up (e.g. an institution needs smaller files than 23 gives).
-- **Session-length/stall-timeout/disk-margin constants**
-  (`MAX_SESSION_MINUTES`, `DEFAULT_STALL_TIMEOUT_S`,
-  `REQUIRED_SPACE_MULTIPLIER` in `kiosk.py`) are already constructor
-  parameters with sensible measured defaults, not config. Deliberately
-  not moved to `config.json` — no institution has needed a different
-  value yet, and adding config for a hypothetical isn't earned.
+- **Recording quality (`codec`/`crf`/`preset`)** is hardcoded in
+  `Recorder`'s defaults (`libx264`, `crf=23`), never wired to
+  `config.json` — the category `fps` was in before it moved, and a real
+  quality-vs-disk tradeoff that could differ by an institution's storage
+  budget. Move it to the `recording` section if a real need shows up.
+- **`MAX_SESSION_MINUTES`, `DEFAULT_STALL_TIMEOUT_S`,
+  `REQUIRED_SPACE_MULTIPLIER`** (`kiosk.py`) are constructor parameters
+  with measured defaults, deliberately not config: nobody has needed a
+  different value, and config for a hypothetical isn't earned.
 
 ---
 
 ## 2026-08-26 — Health-check tool surveyed, not acted on (yet)
 
-Surfaced during a "what would benefit the app" brainstorm while waiting for
-hardware room access. Recorded so it isn't re-derived from scratch later;
-not committed work.
+A technician-facing "Doctor": one glanceable green/yellow/red report
+consolidating diagnostics that exist but are scattered and reactive — the
+SDK version check buried in `packaging/reflex.iss` (install-time only),
+`config.py`'s validation (only when `app.exe` launches), `settings.py`'s
+"not connected" detection (only if a technician opens it), `kiosk.py`'s
+disk preflight (only just before Start).
 
-- **A technician-facing "Doctor"/health-check tool** — one pass
-  consolidating diagnostics that already exist but are scattered and
-  reactive: an `IdsPeakAlreadyInstalled()`-equivalent SDK version check
-  (today buried in `packaging/reflex.iss`, install-time only),
-  `config.py`'s validation (today only fires when `app.exe` happens to
-  launch), `settings.py`'s per-camera "not connected" detection (today only
-  visible if a technician opens it), `kiosk.py`'s disk-space preflight
-  (today only runs right before Start). A single glanceable report instead
-  of hunting across four surfaces. Specifically liked: a green/yellow/red
-  status indicator (seen in other tools) summarizing overall health at a
-  glance. **Shelved for now** — judged possibly overboard for this app's
-  current scale; revisit if the diagnostic-hunting friction becomes a real
-  recurring problem, not preemptively. If built, should stay
-  diagnosis-only (no silent auto-fix), matching CLAUDE.md's "loud and
-  early" philosophy — the one plausible exception being an explicit,
-  technician-clicked "re-run the IDS peak install" button, since that only
-  re-exposes what `InstallIdsPeakSilently()` already does once, safely, on
-  demand.
+**Shelved** — possibly overboard at this scale; revisit if
+diagnostic-hunting becomes a real recurring problem, not preemptively. If
+built it stays diagnosis-only (no silent auto-fix), per CLAUDE.md's "loud
+and early" — the one plausible exception being a technician-clicked
+"re-run the IDS peak install", which only re-exposes what
+`InstallIdsPeakSilently()` already does once, safely.
 
 ---
 
 ## 2026-09-01 — settings.py: pick from known-compatible devices with presets, not a free dropdown + typed label
 
-### Context
+Surfaced while fixing the BIO's flipped image (DECISIONS.md's two
+"Device-model rotation presets" entries). That fix keys an orientation
+correction on the IDS model name and applies it automatically — but
+`settings.py` still has the technician pick from a free-form dropdown of
+whatever is attached and hand-type a label, surfacing none of the
+model-specific knowledge the program holds.
 
-Surfaced while fixing the BIO camera image coming in flipped (see
-DECISIONS.md's two "Device-model rotation presets" entries). That fix keys
-an orientation correction on the IDS model name in `device_presets.py` and
-applies it automatically. It works, but it exposed a gap in `settings.py`:
-the technician still picks a camera from a free-form dropdown of whatever's
-attached and hand-types a label. The program has model-specific knowledge
-(this orientation today; plausibly more later) that the setup UI doesn't
-surface at all.
+**The idea:** each instrument role offers *compatible device profiles*
+(e.g. "Keeler Vantage Plus Digital BIO") drawn from
+`SUPPORTED_HARDWARE.md` and matched against what's attached; choosing one
+pulls in its presets — orientation, default label, future quirks — instead
+of the technician supplying them piecemeal. An "other / unlisted" path
+keeps today's raw dropdown so an unrecognized-but-working camera isn't
+locked out.
 
-### The idea
+**Why it's a real change, not a tweak:** `device_presets.py` becomes the
+device-profile registry (match rules, default label, quirk set) that
+`settings.py` renders from, overlapping the 2026-08-18 settings.py work
+that deliberately chose the lean shape; `config.json` may want a `profile`
+key beside `serial`, so `app.py` can resolve presets at load time rather
+than only `IdsCamera._open()` by model string; and a profile could ship
+starting points for the per-role exposure/gain/white-balance calibration.
 
-Restructure `settings.py`'s per-role selection around **known device
-profiles** rather than raw enumeration:
-
-- Each instrument role offers a dropdown of *compatible device profiles*
-  (e.g. "Keeler Vantage Plus Digital BIO", "Haag-Streit BI 900 slit lamp"),
-  drawn from `SUPPORTED_HARDWARE.md`'s confirmed list, matched against
-  what's actually attached.
-- Selecting a profile pulls in its presets (orientation, sensible default
-  label, and any future per-model quirks) instead of the technician
-  supplying them piecemeal.
-- An "other / unlisted" path stays, falling back to today's raw
-  dropdown + manual label, so an unrecognized-but-working camera isn't
-  locked out.
-
-### Why it's a real change, not a tweak
-
-- `device_presets.py` today is a single orientation lookup. This would grow
-  it into the actual device-profile registry (identity match rules, default
-  label, quirk set) and make it the thing `settings.py` renders from —
-  overlapping the already-complete 2026-08-18 settings.py work, which
-  deliberately chose the lean free-dropdown shape.
-- `config.json`'s `instruments.<role>` shape may want a `profile` key
-  alongside `serial`, so `app.py` can re-resolve presets at load time
-  rather than only `IdsCamera._open()` doing it by model string.
-- Interacts with `settings.py`'s existing per-role calibration state
-  (exposure/gain/white-balance) — a profile could ship starting points for
-  those too.
-
-### Status
-
-**Not started, not designed.** Recorded now so the orientation-preset fix
-isn't mistaken for the finished shape. The `config.json` `orientation`
-override and `device_presets.orientation_for_model()` are the minimum that
-solves the immediate BIO problem; this is the fuller direction.
+**Not started, not designed.** Recorded so the orientation-preset fix
+isn't mistaken for the finished shape: the `config.json` `orientation`
+override plus `orientation_for_model()` is the minimum that solved the
+immediate BIO problem, and this is the fuller direction.
 
 ---
 
@@ -144,3 +110,41 @@ for `sidebyside-viewer` on laptops. Nothing detects it today.
   uninstalling (no `sidebyside_net2860` driver or certificate left), and
   no message on a fresh machine.
 - Remove the guards and that section once no `sidebyside` machine remains.
+
+---
+
+## 2026-09-11 — Use the legacy BIO's picture registers (planned, not built)
+
+DECISIONS.md's "The legacy BIO does have host-side picture controls" entry
+found the EM2860 bridge's `R20`-`R25` (contrast, brightness, saturation,
+blue/red balance, sharpness) host-settable, replayed today as Keeler's
+captured constants. Exposure and colour stay the sensor's, so these are the
+only image adjustment this camera can ever have.
+
+- **Confirm on hardware, one register at a time** against a static scene;
+  the kernel header names them, nothing here has watched them move.
+  `R21_YOFFSET` first — a signed luma offset is the slit lamp's black-level
+  knob by another name.
+- **Then decide who owns the values** (CLAUDE.md's table): a measured
+  per-model preset, `config.json` only if rooms differ; Settings offering
+  this camera nothing is right until something is measured.
+- **Settle first whether to touch them at all.** Keeler chose them with the
+  instrument in front of them; the case is shadow detail, not tidiness.
+
+---
+
+## 2026-09-11 — Shadow detail on the slit lamp (planned, not built)
+
+Everything the beam doesn't hit records at 1-2 of 255 (measured
+2026-09-11): highlight metering exposes for the beam, and 8-bit leaves the
+rest nothing to hold. Cheapest first, each a measurement before it is a
+change, and whatever wins is a measured preset, never a technician knob.
+
+- **Black level alone.** The camera's own default subtracts 90 and clamps —
+  30% of the frame reads exactly 0, at 120 none of it does — and Reflex
+  never writes this node. Measure what a corrected value costs in the beam.
+- **10/12-bit plus a tone curve, if that isn't enough.** Both cameras offer
+  BayerRG10/12 and `ids_peak_ipl` has `GammaCorrector` (with
+  `SetDigitalBlack`), so shadows could be lifted before the 8-bit encode
+  rather than lost at it — against ~2x USB bandwidth (58 -> ~115 MB/s) and
+  per-frame CPU, re-measured: USB3 Vision drops frames silently.

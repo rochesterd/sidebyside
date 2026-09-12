@@ -20,7 +20,14 @@ Consequences worth knowing:
 
 - No exposure/gain/white-balance control, unlike IdsCamera. That is not a
   gap here -- the AE/AWB loop lives in C8051F321 firmware the host cannot
-  address, so no driver for this camera can offer it.
+  address, so no driver for this camera can offer it. Keeler's own filter
+  offered none either (audited 2026-09-11).
+- What the host *can* set is the bridge's own video processing: EM2860
+  registers 0x20-0x25 are contrast, brightness, saturation, blue/red
+  balance and sharpness (Linux em28xx-reg.h), and START_WRITES replays
+  Keeler's values for them. Post-processing on the digitised stream, not
+  sensor control -- and unconfirmed against this hardware. See
+  DECISIONS.md's 2026-09-11 entry and ROADMAP.md before changing one.
 - Frame.index comes from the *hardware*: each field header carries a
   counter that wraps at 128, unwrapped here into a monotonic frame number.
   Unlike UvcCamera -- which self-counts and therefore looks drop-free by

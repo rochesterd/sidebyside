@@ -13,6 +13,12 @@ the trailing pair as part of startup switches the bridge straight back
 off. START_WRITES is what brings the camera up; STOP_WRITES is what the
 vendor driver sends on the way down.
 
+That reason is now suspect: those four are the bridge's picture registers
+(brightness, contrast, saturation, sharpness -- Linux em28xx-reg.h), which
+cannot switch a bridge off, so whatever broke startup was something else.
+The split stays because it is what hardware verified; re-derive the
+explanation before relying on it. See DECISIONS.md's 2026-09-11 entry.
+
 To re-derive it: the capture is vendor/net2860_driver/capture/bio_all.pcap,
 which is gitignored -- not in the repo, and the vendor driver that produced
 it is no longer obtainable, so it can't be re-taken. The parser that turned
