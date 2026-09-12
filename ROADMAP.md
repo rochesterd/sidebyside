@@ -55,9 +55,10 @@ model-specific knowledge the program holds.
 (e.g. "Keeler Vantage Plus Digital BIO") drawn from
 `SUPPORTED_HARDWARE.md` and matched against what's attached; choosing one
 pulls in its presets — orientation, default label, future quirks — instead
-of the technician supplying them piecemeal. An "other / unlisted" path
-keeps today's raw dropdown so an unrecognized-but-working camera isn't
-locked out.
+of the technician supplying them piecemeal. A **Custom** path is required, not optional:
+it keeps today's raw dropdown and typed label, so an unlisted but working
+camera can still be set up, and so a new instrument never waits on a code
+change. Profiles are the guided path; Custom is the escape hatch.
 
 **Why it's a real change, not a tweak:** `device_presets.py` becomes the
 device-profile registry (match rules, default label, quirk set) that
@@ -104,6 +105,10 @@ only image adjustment this camera can ever have.
   this camera nothing is right until something is measured.
 - **Settle first whether to touch them at all.** Keeler chose them with the
   instrument in front of them; the case is shadow detail, not tidiness.
+- **While it is attached, re-derive the START/STOP split.** Replaying the
+  captured sequence whole once stopped the bridge; those four writes are
+  picture registers and cannot do that, so something else did. The split
+  stays either way -- this is about knowing why.
 
 ---
 
