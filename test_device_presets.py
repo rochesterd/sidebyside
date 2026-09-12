@@ -7,7 +7,15 @@ from __future__ import annotations
 import unittest
 
 from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE, ORIENTATION_ROTATE_180
-from device_presets import orientation_for_model, pixel_clock_hz_for_model
+from device_presets import (
+    CUSTOM_PROFILE_ID,
+    PROFILES,
+    orientation_for_model,
+    pixel_clock_hz_for_model,
+    profile_for_id,
+    profile_for_model,
+    profiles_for_role,
+)
 
 
 class OrientationForModelTest(unittest.TestCase):
@@ -60,3 +68,72 @@ class PixelClockForModelTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProfileRegistryTest(unittest.TestCase):
+    """The supported-camera list settings.py offers and config.json resolves
+    through. Pure data plus lookups -- no hardware, no Qt."""
+
+    def test_ids_are_unique(self):
+        ids = [p.id for p in PROFILES]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_ids_are_config_safe(self):
+        """They are written into config.json and must never need quoting or
+        case-folding -- and never change once shipped."""
+        for profile in PROFILES:
+            with self.subTest(profile=profile.id):
+                self.assertRegex(profile.id, r"^[a-z0-9_]+$")
+
+    def test_every_profile_names_at_least_one_role(self):
+        for profile in PROFILES:
+            with self.subTest(profile=profile.id):
+                self.assertTrue(profile.roles)
+
+    def test_roles_offer_only_their_own_cameras(self):
+        slit_lamp = {p.id for p in profiles_for_role("slit_lamp")}
+        bio = {p.id for p in profiles_for_role("bio")}
+        self.assertIn("haag_streit_bi900_slit_lamp", slit_lamp)
+        self.assertIn("keeler_vantage_plus_digital", bio)
+        self.assertIn("keeler_vantage_plus_legacy", bio)
+        self.assertEqual(slit_lamp & bio, set())
+
+    def test_third_person_has_no_profiles(self):
+        """Deliberate: any UVC webcam works, so that row stays a raw device
+        list rather than a supported-model list."""
+        self.assertEqual(profiles_for_role("third_person"), ())
+
+    def test_model_match_is_scoped_to_the_role(self):
+        self.assertEqual(profile_for_model("U3-327xCP-C", "bio").id, "keeler_vantage_plus_digital")
+        self.assertIsNone(profile_for_model("U3-327xCP-C", "slit_lamp"))
+
+    def test_model_match_without_a_role_still_resolves(self):
+        self.assertEqual(profile_for_model("UI325xCP-C").id, "haag_streit_bi900_slit_lamp")
+
+    def test_unknown_and_empty_models_match_nothing(self):
+        for model in ("SomeOtherCamera", "", None):
+            with self.subTest(model=model):
+                self.assertIsNone(profile_for_model(model))
+
+    def test_the_legacy_bio_never_auto_matches(self):
+        """It has no IDS model string; it is recognised by being present at
+        all, which is settings.py's job rather than this table's."""
+        legacy = profile_for_id("keeler_vantage_plus_legacy")
+        self.assertEqual(legacy.model_tokens, ())
+
+    def test_custom_and_unknown_ids_resolve_to_none(self):
+        """Unknown must degrade to the technician's own values. A config from
+        a newer build has to load on an older kiosk, not fail it."""
+        self.assertIsNone(profile_for_id(CUSTOM_PROFILE_ID))
+        self.assertIsNone(profile_for_id("written_by_a_newer_build"))
+        self.assertIsNone(profile_for_id(None))
+
+    def test_presets_and_profiles_cannot_disagree(self):
+        """The camera-open presets read the same table the technician picks
+        from, which is the point of merging them."""
+        for profile in PROFILES:
+            for token in profile.model_tokens:
+                with self.subTest(token=token):
+                    self.assertEqual(orientation_for_model(token), profile.orientation)
+                    self.assertEqual(pixel_clock_hz_for_model(token), profile.pixel_clock_hz)
+

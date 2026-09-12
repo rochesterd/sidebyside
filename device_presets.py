@@ -1,77 +1,159 @@
-"""Per-model camera quirks that can't be read from the device itself and
+"""Per-model camera facts that can't be read from the device itself and
 don't vary between installs -- so the program just knows them, rather than
 a technician having to discover and configure them.
 
-Today this is only image orientation. The Keeler Vantage Plus Digital BIO
-delivers a vertically-flipped image (the instrument's optical path mirrors
-it, and it's the same on every unit. The older BIO's camera needs no
-correction at all -- verified against horizontal text -- and sets its own
-default in net2860_winusb_camera.py, since it has no IDS model string for
-this table to match). That's a property of the
-product, not a per-clinic variation, so it belongs here and not in
-config.json. A config.json `orientation` value still overrides this (see
-config.py / app.py) as an escape hatch for a non-standard mounting. See
-DECISIONS.md's "Device-model rotation presets" entry and its
-orientation-correction follow-up.
+A `DeviceProfile` is one supported instrument camera: how to recognise it,
+what to call it, and the corrections it needs. `PROFILES` is the whole
+supported list, and `SUPPORTED_HARDWARE.md` is its prose counterpart -- add
+to both together.
+
+Two ways in, for two different questions:
+
+  profiles_for_role()/profile_for_id()  what settings.py offers a
+                                        technician, and what a saved
+                                        `config.json` profile id resolves to
+  orientation_for_model()/              what IdsCamera._open() applies when
+  pixel_clock_hz_for_model()            nothing in config.json says otherwise
+
+Both read the same table, so a preset and the profile a technician picked
+cannot disagree. A `config.json` `orientation`/`pixel_clock_hz` value still
+overrides either (see config.py / app.py), as the escape hatch for a
+non-standard mounting or a host that can't take the full clock.
+
+CUSTOM_PROFILE_ID is deliberately not in PROFILES: "custom" means the
+technician supplies what a profile would have, so an unlisted but working
+camera is never locked out and a new instrument never waits on a code
+change. A config.json written before profiles existed -- a typed label and
+no profile id -- *is* a custom entry, which is why that shape stays valid.
 
 Lightweight on purpose -- only imports camera.py (stdlib + numpy) for the
 orientation constants, no Qt / IDS SDK, so it stays importable anywhere
-ids_camera.py is.
+ids_camera.py is. See DECISIONS.md's "Device-model rotation presets" entry
+and its orientation-correction follow-up.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from camera import ORIENTATION_FLIP_VERTICAL, ORIENTATION_NONE, ORIENTATION_ROTATE_180
 
-# Matched case-insensitively as a substring of ids_peak's
-# descriptor.ModelName(). Confirmed strings on real hardware (2026-09-01):
-# BIO camera reports "U3-327xCP-C", slit lamp reports "UI325xCP-C" -- the
-# "U3-327" token hits the former and not the latter. Values are members of
-# camera.VALID_ORIENTATIONS.
-_ORIENTATION_BY_MODEL_TOKEN: dict[str, str] = {
-    "U3-327": ORIENTATION_FLIP_VERTICAL,  # Keeler Vantage Plus Digital BIO -- optics deliver a vertically-flipped image
-    # Haag-Streit BI 900 slit lamp: the image arrives mirrored on both
-    # axes, which is a 180-degree rotation, not two separate flips.
-    # Reported from the instrument 2026-09-08.
-    "UI325": ORIENTATION_ROTATE_180,
-}
+CUSTOM_PROFILE_ID = "custom"
 
 
-# Pixel clock, for camera families where it is settable and where the
-# power-on default is not what this app needs. The legacy uEye slit lamp
-# camera comes up at 24MHz of a 10-128MHz range *on every open* (it does
-# not persist), and at 24MHz a 1600x1200 frame takes ~87ms -- which is
-# simultaneously an 11.5fps ceiling and the reason its ExposureTime
-# maximum reads 87208us. Neither is a sensor limit; both are this one
-# unset value. 80MHz is the lowest clock that reliably delivers the full
-# 30fps recording target (60MHz tops out at 28.6fps, so the frame-rate cap
-# can never reach 30), measured with zero device-side drops over 150s with
-# the third-person camera streaming too. Raising it shortens the maximum
-# exposure in proportion, so this is a trade of available light for frame
-# rate, not a free win. See DECISIONS.md.
-#
-# The BIO's USB3 Vision camera reports a fixed, unwritable 197MHz -- there
-# is nothing to set, which is why it has no entry here.
-_PIXEL_CLOCK_HZ_BY_MODEL_TOKEN: dict[str, int] = {
-    "UI325": 80_000_000,  # Haag-Streit BI 900 slit lamp, legacy uEye
-}
+@dataclass(frozen=True)
+class DeviceProfile:
+    """One supported instrument camera.
+
+    `id` is written to config.json and must never change once shipped --
+    it is what a saved configuration resolves through. `name` is free to be
+    reworded; it is display text, and it is the label students see on the
+    picker unless a technician sets a nickname.
+    """
+
+    id: str
+    name: str
+    kind: str  # "ids" / "net2860_winusb" -- which BaseCamera subclass this becomes
+    roles: tuple[str, ...]  # instrument roles this camera can fill
+    # Matched case-insensitively as substrings of ids_peak's ModelName().
+    # Empty for a camera with no model string to match on (the legacy BIO),
+    # which is identified by being present at all.
+    model_tokens: tuple[str, ...] = ()
+    orientation: str = ORIENTATION_NONE
+    pixel_clock_hz: int | None = None
+    # One line for the technician, shown under the profile in settings.py.
+    note: str = ""
+
+
+PROFILES: tuple[DeviceProfile, ...] = (
+    DeviceProfile(
+        id="haag_streit_bi900_slit_lamp",
+        name="Haag-Streit BI 900 slit lamp",
+        kind="ids",
+        roles=("slit_lamp",),
+        # Confirmed on real hardware (2026-09-01): this camera reports
+        # "UI325xCP-C". "UI325" hits it and not the Keeler's "U3-327xCP-C".
+        model_tokens=("UI325",),
+        # The image arrives mirrored on both axes, which is a 180-degree
+        # rotation, not two separate flips. Reported from the instrument
+        # 2026-09-08 and verified against horizontal text.
+        orientation=ORIENTATION_ROTATE_180,
+        # This legacy uEye camera comes up at 24MHz of a 10-128MHz range *on
+        # every open* (it does not persist), and at 24MHz a 1600x1200 frame
+        # takes ~87ms -- simultaneously an 11.5fps ceiling and the reason its
+        # ExposureTime maximum reads 87208us. Neither is a sensor limit; both
+        # are this one unset value. 80MHz is the lowest clock that reliably
+        # delivers the full 30fps target (60MHz tops out at 28.6fps),
+        # measured with zero device-side drops over 150s. Raising it shortens
+        # the maximum exposure in proportion: light traded for frame rate,
+        # not a free win. See DECISIONS.md's 2026-09-08 pixel-clock entry.
+        pixel_clock_hz=80_000_000,
+        note="No auto-exposure of its own: calibrate it in Preview before first use.",
+    ),
+    DeviceProfile(
+        id="keeler_vantage_plus_digital",
+        name="Keeler Vantage Plus Digital BIO",
+        kind="ids",
+        roles=("bio",),
+        model_tokens=("U3-327",),
+        # The instrument's optical path mirrors the image vertically, on
+        # every unit -- a property of the product, not a per-clinic variation.
+        orientation=ORIENTATION_FLIP_VERTICAL,
+        # Reports a fixed, unwritable 197MHz: nothing to set.
+        pixel_clock_hz=None,
+        note="Calibrate in Preview: its own auto-exposure runs before the instrument is in use.",
+    ),
+    DeviceProfile(
+        id="keeler_vantage_plus_legacy",
+        name="Keeler Vantage Plus BIO (older, KS722OUP)",
+        kind="net2860_winusb",
+        roles=("bio",),
+        # No IDS model string to match on; it is recognised by being present
+        # and WinUSB-bound at all. Needs no orientation correction --
+        # verified against horizontal text, see DECISIONS.md 2026-09-10.
+        orientation=ORIENTATION_NONE,
+        note="Exposure and colour are the camera's own; there is nothing to calibrate.",
+    ),
+)
+
+
+def profiles_for_role(role: str) -> tuple[DeviceProfile, ...]:
+    """Supported cameras a given instrument role can use, in listed order."""
+    return tuple(p for p in PROFILES if role in p.roles)
+
+
+def profile_for_id(profile_id: str | None) -> DeviceProfile | None:
+    """The profile a saved config.json id names, or None -- including for
+    CUSTOM_PROFILE_ID and for an id written by a newer build. Callers treat
+    None as "custom": unknown must degrade to the technician's own values,
+    never to a failed load on a kiosk."""
+    return next((p for p in PROFILES if p.id == profile_id), None)
+
+
+def profile_for_model(model_name: str | None, role: str | None = None) -> DeviceProfile | None:
+    """The profile matching a camera reporting `model_name`, for offering a
+    technician a sensible default. Restricted to `role` when given, so the
+    same model on the wrong row doesn't auto-select."""
+    normalized = (model_name or "").upper()
+    if not normalized:
+        return None
+    for profile in PROFILES:
+        if role is not None and role not in profile.roles:
+            continue
+        if any(token.upper() in normalized for token in profile.model_tokens):
+            return profile
+    return None
 
 
 def pixel_clock_hz_for_model(model_name: str | None) -> int | None:
     """Pixel clock this model should run at, or None to leave it alone."""
-    normalized = (model_name or "").upper()
-    for token, clock_hz in _PIXEL_CLOCK_HZ_BY_MODEL_TOKEN.items():
-        if token.upper() in normalized:
-            return clock_hz
-    return None
+    profile = profile_for_model(model_name)
+    return profile.pixel_clock_hz if profile is not None else None
 
 
 def orientation_for_model(model_name: str | None) -> str:
     """The orientation fix (a `camera.VALID_ORIENTATIONS` member) for a
-    camera reporting `model_name`, or ORIENTATION_NONE if no preset
+    camera reporting `model_name`, or ORIENTATION_NONE if no profile
     matches."""
-    normalized = (model_name or "").upper()
-    for token, orientation in _ORIENTATION_BY_MODEL_TOKEN.items():
-        if token.upper() in normalized:
-            return orientation
-    return ORIENTATION_NONE
+    profile = profile_for_model(model_name)
+    return profile.orientation if profile is not None else ORIENTATION_NONE
