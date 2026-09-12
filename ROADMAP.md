@@ -42,39 +42,6 @@ and early" — the one plausible exception being a technician-clicked
 
 ---
 
-## 2026-09-01 — settings.py: pick from known-compatible devices with presets, not a free dropdown + typed label
-
-Surfaced while fixing the BIO's flipped image (DECISIONS.md's two
-"Device-model rotation presets" entries). That fix keys an orientation
-correction on the IDS model name and applies it automatically — but
-`settings.py` still has the technician pick from a free-form dropdown of
-whatever is attached and hand-type a label, surfacing none of the
-model-specific knowledge the program holds.
-
-**The idea:** each instrument role offers *compatible device profiles*
-(e.g. "Keeler Vantage Plus Digital BIO") drawn from
-`SUPPORTED_HARDWARE.md` and matched against what's attached; choosing one
-pulls in its presets — orientation, default label, future quirks — instead
-of the technician supplying them piecemeal. A **Custom** path is required, not optional:
-it keeps today's raw dropdown and typed label, so an unlisted but working
-camera can still be set up, and so a new instrument never waits on a code
-change. Profiles are the guided path; Custom is the escape hatch.
-
-**Why it's a real change, not a tweak:** `device_presets.py` becomes the
-device-profile registry (match rules, default label, quirk set) that
-`settings.py` renders from, overlapping the 2026-08-18 settings.py work
-that deliberately chose the lean shape; `config.json` may want a `profile`
-key beside `serial`, so `app.py` can resolve presets at load time rather
-than only `IdsCamera._open()` by model string; and a profile could ship
-starting points for the per-role exposure/gain calibration.
-
-**Not started, not designed.** Recorded so the orientation-preset fix
-isn't mistaken for the finished shape: the `config.json` `orientation`
-override plus `orientation_for_model()` is the minimum that solved the
-immediate BIO problem, and this is the fuller direction.
-
----
-
 ## 2026-09-11 — Optional student identifier on a recording (planned, not designed)
 
 From the first round of student feedback: an optional name or nickname for

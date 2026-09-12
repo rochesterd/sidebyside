@@ -17,6 +17,7 @@ from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 
 from config import load_config, resolve_default_sessions_dir
+from device_presets import CUSTOM_PROFILE_ID
 from settings import DeviceRow, SettingsWindow
 from synthetic_camera import SyntheticCamera
 from uvc_enumeration import UvcDeviceInfo
@@ -30,7 +31,7 @@ class _FakeIdsDevice:
     model_name: str
 
 
-SLIT_LAMP_DEVICE = _FakeIdsDevice(serial="111", model_name="UI-3250CP-C-HQ")
+SLIT_LAMP_DEVICE = _FakeIdsDevice(serial="111", model_name="UI325xCP-C")  # what the camera reports
 BIO_DEVICE = _FakeIdsDevice(serial="222", model_name="U3-327xCP-C")
 THIRD_PERSON_DEVICE = UvcDeviceInfo(index=0, name="HD USB Camera", vid_pid="32E4:9310")
 
@@ -41,8 +42,13 @@ ONE_WINUSB_DEVICE = ("legacy-bio-instance", "legacy-bio-path")
 
 VALID_CONFIG = {
     "instruments": {
-        "slit_lamp": {"kind": "ids", "serial": "111", "label": "Slit Lamp"},
-        "bio": {"kind": "ids", "serial": "222", "label": "BIO"},
+        "slit_lamp": {
+            "kind": "ids",
+            "serial": "111",
+            "label": "Slit Lamp",
+            "profile": "haag_streit_bi900_slit_lamp",
+        },
+        "bio": {"kind": "ids", "serial": "222", "label": "BIO", "profile": "keeler_vantage_plus_digital"},
     },
     "third_person": {"kind": "uvc", "vid_pid": "32E4:9310", "friendly_name": "HD USB Camera"},
 }
@@ -207,14 +213,31 @@ class SettingsWindowTest(unittest.TestCase):
         self.assertTrue(window.conflict_label.isHidden())
         self.assertTrue(window.save_button.isEnabled())
 
-    def test_instrument_row_with_empty_label_is_invalid(self):
+    def test_a_matched_profile_names_the_instrument_for_you(self):
+        """The label is tied to the supported device, so selecting a known
+        camera leaves nothing to type."""
         window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
         row = window._instrument_rows["slit_lamp"]
         _select(row, "111")
 
-        self.assertFalse(row.is_valid())  # label still empty
+        self.assertEqual(row.profile_id(), "haag_streit_bi900_slit_lamp")
+        self.assertEqual(row.label_text(), "Slit Lamp")
+        self.assertTrue(row.label_edit.isReadOnly())
+        self.assertTrue(row.is_valid())
 
-        row.label_edit.setText("Slit Lamp")
+    def test_custom_requires_a_typed_name(self):
+        """The escape hatch still has to produce something students can read
+        on the picker."""
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+        row.profile_combo.setCurrentIndex(row.profile_combo.findData(CUSTOM_PROFILE_ID))
+        row.label_edit.setText("")
+
+        self.assertFalse(row.label_edit.isReadOnly())
+        self.assertFalse(row.is_valid())
+
+        row.label_edit.setText("Borrowed slit lamp")
         self.assertTrue(row.is_valid())
 
     def test_save_writes_expected_json_shape(self):
@@ -232,6 +255,67 @@ class SettingsWindowTest(unittest.TestCase):
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
+
+    def test_nickname_is_what_students_see_and_round_trips(self):
+        window = self._make_window(
+            ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]
+        )
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+        row.nickname_edit.setText("Lane 3")
+        _select(window._instrument_rows["bio"], "222")
+        _select(window._third_person_row, "32E4:9310")
+
+        window._on_save_clicked()
+
+        written = json.loads(self.config_path.read_text(encoding="utf-8"))["instruments"]["slit_lamp"]
+        self.assertEqual(written["label"], "Lane 3")          # the picker
+        self.assertEqual(written["nickname"], "Lane 3")       # what produced it
+        self.assertEqual(written["profile"], "haag_streit_bi900_slit_lamp")
+
+        reopened = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+        row = reopened._instrument_rows["slit_lamp"]
+        self.assertEqual(row.profile_id(), "haag_streit_bi900_slit_lamp")
+        self.assertEqual(row.nickname_text(), "Lane 3")
+
+    def test_a_config_written_before_profiles_reopens_as_custom(self):
+        """A typed label and no profile is exactly what Custom means, so it
+        has to survive being reopened and resaved."""
+        data = json.loads(json.dumps(VALID_CONFIG))
+        for entry in data["instruments"].values():
+            entry.pop("profile", None)
+        data["instruments"]["slit_lamp"]["label"] = "Old Typed Name"
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+
+        self.assertEqual(row.profile_id(), CUSTOM_PROFILE_ID)
+        self.assertEqual(row.label_text(), "Old Typed Name")
+        self.assertFalse(row.label_edit.isReadOnly())
+
+    def test_a_profile_id_this_build_does_not_know_lands_on_custom(self):
+        """Written by a newer build. app.py falls back the same way, so
+        Settings must not silently show it as something it isn't."""
+        data = json.loads(json.dumps(VALID_CONFIG))
+        data["instruments"]["slit_lamp"]["profile"] = "written_by_a_newer_build"
+        self.config_path.write_text(json.dumps(data), encoding="utf-8")
+
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+
+        self.assertEqual(window._instrument_rows["slit_lamp"].profile_id(), CUSTOM_PROFILE_ID)
+
+    def test_a_profile_on_the_wrong_camera_warns_without_blocking(self):
+        """A technician may know better than the table, and Preview shows
+        the result either way -- so this is a note, not a refusal."""
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+        row = window._instrument_rows["bio"]
+        _select(row, "222")
+        row.profile_combo.setCurrentIndex(
+            row.profile_combo.findData("keeler_vantage_plus_legacy")
+        )
+
+        self.assertTrue(row.is_valid())
 
     def test_save_preserves_config_the_ui_does_not_model(self):
         """recording fps, a per-instrument orientation / pixel_clock_hz
@@ -283,7 +367,7 @@ class SettingsWindowTest(unittest.TestCase):
         window._on_save_clicked()
 
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860_winusb", "label": "BIO"})
+        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860_winusb", "label": "BIO", "profile": "keeler_vantage_plus_legacy"})
         load_config(self.config_path)
 
     def _fill_valid_selections(self, window: SettingsWindow) -> None:
@@ -384,11 +468,11 @@ class SettingsWindowTest(unittest.TestCase):
         window._on_save_clicked()
 
         written = json.loads(self.config_path.read_text(encoding="utf-8"))
-        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860_winusb", "label": "BIO"})
+        self.assertEqual(written["instruments"]["bio"], {"kind": "net2860_winusb", "label": "BIO", "profile": "keeler_vantage_plus_legacy"})
 
     def test_existing_winusb_config_preselects_it_on_load(self):
         data = json.loads(json.dumps(VALID_CONFIG))
-        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO"}
+        data["instruments"]["bio"] = {"kind": "net2860_winusb", "label": "BIO", "profile": "keeler_vantage_plus_legacy"}
         self.config_path.write_text(json.dumps(data), encoding="utf-8")
 
         window = self._make_window(

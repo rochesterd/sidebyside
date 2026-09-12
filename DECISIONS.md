@@ -4503,3 +4503,49 @@ text, a hand - and look through the oculars and at Reflex's preview
 together. If they ever disagree, the camera's path has a relay the oculars'
 does not, and this entry is wrong. Nothing in the capture or the board
 photography suggests one.
+
+---
+
+## 2026-09-12 - Device profiles, with Custom as a first-class option
+
+**Built** the 2026-09-01 ROADMAP plan, which is now deleted from there.
+`settings.py` no longer asks a technician to know what a camera is: a
+`DeviceProfile` carries the supported camera's name, its orientation and
+its pixel clock, and picking a device selects the matching profile.
+
+**Device and profile are separate fields.** The first says what is plugged
+in; the second says what it is. Conflating them would mean an unlisted
+camera had nowhere to go, and it would make "this is the wrong camera for
+this role" indistinguishable from "we don't support this camera".
+
+**Custom is a profile, not a fallback path.** It is always in the list, it
+is what an unknown or newer-build profile id resolves to, and it is what
+every `config.json` written before profiles *is* -- a typed label and no
+profile id. That equivalence is why no migration code exists: the old shape
+was always the custom shape. A new instrument therefore never waits on a
+code change, which is the point.
+
+**The label is tied to the supported device; the nickname is free.** A
+profile supplies the picker name (`picker_label` -- "Slit Lamp", not
+"Haag-Streit BI 900 slit lamp", because a student reads a button, not a
+catalogue) and the field is read-only unless Custom. `nickname` is the
+technician's own text, e.g. "Lane 3", and when set it *is* what students
+see: `label` in `config.json` stays the authority for the picker, so
+`app.py` needed no change, with `profile`/`nickname` stored beside it so
+reopening Settings shows what was chosen rather than only its result.
+
+**Matching is by model token, never serial.** One profile covers every unit
+of a model; serials vary per camera. Serial *ranges*, for distinguishing
+revisions of one model, are a real future need but not a present one.
+
+**A profile on an unexpected camera warns and saves anyway.** The technician
+may know better than this table, and Preview shows the consequence either
+way. Refusal is reserved for what a student cannot see.
+
+**The third-person row has no profiles at all,** with a test saying so: any
+UVC webcam works, so a supported-model list there would imply a constraint
+that does not exist.
+
+**Verified:** 359 tests, including the round-trip through Save and reopen,
+the pre-profile config landing on Custom with its typed label intact, and
+an unknown id doing the same rather than pretending to be a known camera.

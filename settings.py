@@ -52,6 +52,7 @@ from config import (
 )
 from qt_image import bgr_to_pixmap
 from uvc_camera import UvcCamera
+from device_presets import CUSTOM_PROFILE_ID, profile_for_id, profile_for_model, profiles_for_role
 from uvc_enumeration import UvcDeviceInfo, list_uvc_devices
 
 logger = logging.getLogger(__name__)
@@ -430,7 +431,15 @@ class PreviewDialog(QDialog):
 
 
 class DeviceRow(QWidget):
-    """One role's dropdown + (optional) label field + Preview button.
+    """One role's device dropdown, profile dropdown, nickname and Preview.
+
+    Device and profile are separate fields on purpose. The device says which
+    camera is plugged in; the profile says what that camera *is*, and carries
+    the orientation and pixel clock a technician would otherwise have to
+    know. Picking a device auto-selects the profile that matches its model,
+    but either can be set independently -- an unlisted camera is configured
+    by choosing Custom, which is how a new instrument avoids waiting on a
+    code change.
 
     Generic over instrument roles (editable label, one or more candidate
     kinds -- IDS devices, or IDS devices plus the legacy BIO candidate
@@ -469,6 +478,11 @@ class DeviceRow(QWidget):
         # auto-exposure never needing one.
         self._exposure_time_us: float | None = None
         self._gain: float | None = None
+        self._pending_profile: str | None | object = _UNSET
+        # Set by set_candidates() when enumeration failed. Outranks the
+        # row's own notes: "the scan broke" is what a technician has to act
+        # on, and a profile note underneath it would just hide it.
+        self._scan_status = ""
 
         self.title_label = QLabel(title)
         self.title_label.setMinimumWidth(90)
@@ -476,10 +490,28 @@ class DeviceRow(QWidget):
         self.combo = QComboBox()
         self.combo.currentIndexChanged.connect(self._on_selection_changed)
 
+        # Instrument rows only: the third-person row stays a raw device list,
+        # since any UVC webcam works and there is nothing model-specific to
+        # know about one. See device_presets.profiles_for_role("third_person").
+        self.profile_combo = QComboBox() if has_label else None
+        if self.profile_combo is not None:
+            for profile in profiles_for_role(role_key):
+                self.profile_combo.addItem(profile.name, profile.id)
+            self.profile_combo.addItem("Custom (unlisted camera)...", CUSTOM_PROFILE_ID)
+            self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+
+        # Filled from the profile and read-only, unless the profile is
+        # Custom -- the name students see stays tied to the supported device
+        # rather than to whatever someone typed.
         self.label_edit = QLineEdit() if has_label else None
         if self.label_edit is not None:
-            self.label_edit.setPlaceholderText("Label shown on the picker")
+            self.label_edit.setPlaceholderText("Name shown on the picker")
             self.label_edit.textChanged.connect(lambda _text: self.changed.emit())
+
+        self.nickname_edit = QLineEdit() if has_label else None
+        if self.nickname_edit is not None:
+            self.nickname_edit.setPlaceholderText("Optional nickname, e.g. Lane 3")
+            self.nickname_edit.textChanged.connect(lambda _text: self.changed.emit())
 
         self.preview_button = QPushButton("Preview")
         self.preview_button.clicked.connect(self._on_preview_clicked)
@@ -491,13 +523,15 @@ class DeviceRow(QWidget):
         grid.addWidget(self.title_label, 0, 0)
         grid.addWidget(self.combo, 0, 1)
         col = 2
-        if self.label_edit is not None:
-            grid.addWidget(self.label_edit, 0, col)
-            col += 1
+        for widget in (self.profile_combo, self.label_edit, self.nickname_edit):
+            if widget is not None:
+                grid.addWidget(widget, 0, col)
+                col += 1
         grid.addWidget(self.preview_button, 0, col)
         grid.addWidget(self.status_label, 1, 1, 1, col)
         self.setLayout(grid)
 
+        self._sync_profile_fields()
         self._update_ui_state()
 
     def set_pending_selection(self, key: str | None) -> None:
@@ -533,7 +567,17 @@ class DeviceRow(QWidget):
         self.combo.setCurrentIndex(new_index)
         self.combo.blockSignals(False)
 
-        self.status_label.setText(status)
+        if self._pending_profile is not _UNSET and self.profile_combo is not None:
+            index = self.profile_combo.findData(self._pending_profile)
+            # An unknown id (a newer build's) falls to Custom, matching how
+            # app.py resolves it: the technician's own values, not a failure.
+            self.profile_combo.setCurrentIndex(index if index >= 0 else self.profile_combo.count() - 1)
+            self._pending_profile = _UNSET
+        elif target_key is None:
+            self._auto_select_profile()
+
+        self._scan_status = status
+        self._sync_profile_fields()
         self._update_ui_state()
         self.changed.emit()
 
@@ -554,6 +598,32 @@ class DeviceRow(QWidget):
         if self.label_edit is not None:
             self.label_edit.setText(text)
 
+    def profile_id(self) -> str | None:
+        """The selected profile id, CUSTOM_PROFILE_ID for custom, or None on
+        a row that has no profiles (third-person)."""
+        if self.profile_combo is None:
+            return None
+        return self.profile_combo.currentData()
+
+    def set_pending_profile(self, profile_id: str | None) -> None:
+        """Consumed by the next set_candidates(), like set_pending_selection:
+        a config.json profile is restored *after* its device is, so choosing
+        the device doesn't overwrite what was saved. An id this build doesn't
+        know lands on Custom, which is what it behaves as."""
+        self._pending_profile = profile_id
+
+    def nickname_text(self) -> str:
+        return self.nickname_edit.text().strip() if self.nickname_edit is not None else ""
+
+    def set_nickname_text(self, text: str) -> None:
+        if self.nickname_edit is not None:
+            self.nickname_edit.setText(text)
+
+    def picker_text(self) -> str:
+        """What students see: the nickname when a technician set one, and the
+        supported device's short name otherwise."""
+        return self.nickname_text() or self.label_text()
+
     def calibration(self) -> tuple[float | None, float | None]:
         return self._exposure_time_us, self._gain
 
@@ -568,6 +638,58 @@ class DeviceRow(QWidget):
             return False
         return True
 
+    def _on_profile_changed(self, _index: int) -> None:
+        self._sync_profile_fields()
+        self._update_ui_state()
+        self.changed.emit()
+
+    def _sync_profile_fields(self) -> None:
+        """The label follows the profile: a supported camera names itself,
+        and only Custom lets a technician type one."""
+        if self.profile_combo is None or self.label_edit is None:
+            return
+        profile = profile_for_id(self.profile_id())
+        is_custom = profile is None
+        self.label_edit.setReadOnly(not is_custom)
+        if profile is not None:
+            self.label_edit.setText(profile.picker_label)
+        elif self.label_edit.text() == "" and self._selected_model_name():
+            # Custom on an unlisted camera: seed with the model string, which
+            # is at least true, rather than leaving a required field blank.
+            self.label_edit.setText(self._selected_model_name())
+
+    def _selected_model_name(self) -> str:
+        candidate = self.selected_candidate()
+        return str(getattr(candidate.source, "model_name", "") or "") if candidate else ""
+
+    def _auto_select_profile(self) -> None:
+        """Pick the profile matching the selected device, when one matches.
+        A technician can override it afterwards -- this is a default, not a
+        constraint."""
+        if self.profile_combo is None:
+            return
+        candidate = self.selected_candidate()
+        if candidate is None:
+            return
+        if candidate.kind == "net2860_winusb":
+            match = next((p for p in profiles_for_role(self.role_key) if p.kind == candidate.kind), None)
+        else:
+            match = profile_for_model(self._selected_model_name(), self.role_key)
+        index = self.profile_combo.findData(match.id if match else CUSTOM_PROFILE_ID)
+        if index >= 0:
+            self.profile_combo.setCurrentIndex(index)
+
+    def _profile_mismatch_warning(self) -> str:
+        """Non-blocking: a technician may know better than this table, and
+        the result is visible in Preview either way."""
+        profile = profile_for_id(self.profile_id())
+        model = self._selected_model_name()
+        if profile is None or not profile.model_tokens or not model:
+            return ""
+        if any(token.upper() in model.upper() for token in profile.model_tokens):
+            return ""
+        return f"Note: {profile.name} usually reports {profile.model_tokens[0]}; this camera reports {model}."
+
     def _on_selection_changed(self, _index: int) -> None:
         # Calibration belongs to the camera it was measured on, not to the
         # role. Kept across a change, it saves one camera's values under
@@ -577,14 +699,30 @@ class DeviceRow(QWidget):
         # loaded from config.json survive loading and Rescan.
         self._exposure_time_us = None
         self._gain = None
+        self._auto_select_profile()
+        self._sync_profile_fields()
         self._update_ui_state()
         self.changed.emit()
+
+    def _row_note(self) -> str:
+        """What this row has to say for itself: a failed scan first, then why
+        a camera can't be saved, then anything odd about the pairing, then
+        the profile's own note."""
+        if self._scan_status:
+            return self._scan_status
+        candidate = self.selected_candidate()
+        if candidate is not None and candidate.key is None:
+            return "This device has no discoverable VID/PID and can't be saved."
+        mismatch = self._profile_mismatch_warning()
+        if mismatch:
+            return mismatch
+        profile = profile_for_id(self.profile_id())
+        return profile.note if profile is not None else ""
 
     def _update_ui_state(self) -> None:
         candidate = self.selected_candidate()
         self.preview_button.setEnabled(candidate is not None)
-        if candidate is not None and candidate.key is None:
-            self.status_label.setText("This device has no discoverable VID/PID and can't be saved.")
+        self.status_label.setText(self._row_note())
 
     def _on_preview_clicked(self) -> None:
         candidate = self.selected_candidate()
@@ -805,6 +943,10 @@ class SettingsWindow(QMainWindow):
             inst = cfg.instruments.get(key)
             if inst is not None:
                 row.set_label_text(inst.label)
+                row.set_nickname_text(inst.nickname or "")
+                # None means a config written before profiles existed, which
+                # is a custom entry -- see device_presets.CUSTOM_PROFILE_ID.
+                row.set_pending_profile(inst.profile or CUSTOM_PROFILE_ID)
                 # inst.serial is None for kind="net2860_winusb" -- that
                 # candidate's key is a sentinel (== inst.kind), not a serial.
                 pending_key = inst.serial if inst.kind == "ids" else inst.kind
@@ -938,12 +1080,22 @@ class SettingsWindow(QMainWindow):
 
     def _instrument_data(self, row: DeviceRow) -> dict:
         candidate = row.selected_candidate()
-        if candidate is not None and candidate.kind == "net2860_winusb":
-            # Empty shape -- no serial, no calibration, no orientation.
-            # See config.py's _parse_instrument.
-            return {"kind": candidate.kind, "label": row.label_text()}
+        # `label` is what students read on the picker: the nickname when a
+        # technician set one, and the supported device's short name
+        # otherwise. `profile` and `nickname` are stored beside it so
+        # reopening Settings shows what was chosen, not just its result.
+        shared = {"label": row.picker_text()}
+        if row.profile_id() is not None:
+            shared["profile"] = row.profile_id()
+        if row.nickname_text():
+            shared["nickname"] = row.nickname_text()
 
-        data = {"kind": "ids", "serial": row.selected_key(), "label": row.label_text()}
+        if candidate is not None and candidate.kind == "net2860_winusb":
+            # No serial and nothing to calibrate -- see config.py's
+            # _parse_instrument.
+            return {"kind": candidate.kind, **shared}
+
+        data = {"kind": "ids", "serial": row.selected_key(), **shared}
         exposure_time_us, gain = row.calibration()
         if exposure_time_us is not None:
             data["exposure_time_us"] = exposure_time_us

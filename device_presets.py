@@ -53,6 +53,11 @@ class DeviceProfile:
 
     id: str
     name: str
+    # What the kiosk's picker button says by default. The full `name` is for
+    # a technician choosing from a list; a student needs the short word they
+    # already use for the instrument in front of them. A nickname set in
+    # settings.py replaces it.
+    picker_label: str
     kind: str  # "ids" / "net2860_winusb" -- which BaseCamera subclass this becomes
     roles: tuple[str, ...]  # instrument roles this camera can fill
     # Matched case-insensitively as substrings of ids_peak's ModelName().
@@ -69,11 +74,15 @@ PROFILES: tuple[DeviceProfile, ...] = (
     DeviceProfile(
         id="haag_streit_bi900_slit_lamp",
         name="Haag-Streit BI 900 slit lamp",
+        picker_label="Slit Lamp",
         kind="ids",
         roles=("slit_lamp",),
-        # Confirmed on real hardware (2026-09-01): this camera reports
-        # "UI325xCP-C". "UI325" hits it and not the Keeler's "U3-327xCP-C".
-        model_tokens=("UI325",),
+        # Confirmed on real hardware (2026-09-01, again 2026-09-11): this
+        # camera reports "UI325xCP-C". "UI-325" is the same model as spelled
+        # in IDS's own documentation and SUPPORTED_HARDWARE.md ("UI-3250CP-C-HQ"),
+        # carried so a differently-spelled report still matches. Neither
+        # token can hit the Keeler's "U3-327xCP-C".
+        model_tokens=("UI325", "UI-325"),
         # The image arrives mirrored on both axes, which is a 180-degree
         # rotation, not two separate flips. Reported from the instrument
         # 2026-09-08 and verified against horizontal text.
@@ -93,6 +102,7 @@ PROFILES: tuple[DeviceProfile, ...] = (
     DeviceProfile(
         id="keeler_vantage_plus_digital",
         name="Keeler Vantage Plus Digital BIO",
+        picker_label="BIO",
         kind="ids",
         roles=("bio",),
         model_tokens=("U3-327",),
@@ -106,6 +116,7 @@ PROFILES: tuple[DeviceProfile, ...] = (
     DeviceProfile(
         id="keeler_vantage_plus_legacy",
         name="Keeler Vantage Plus BIO (older, KS722OUP)",
+        picker_label="BIO",
         kind="net2860_winusb",
         roles=("bio",),
         # No IDS model string to match on; it is recognised by being present
