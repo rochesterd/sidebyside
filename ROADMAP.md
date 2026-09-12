@@ -65,7 +65,7 @@ device-profile registry (match rules, default label, quirk set) that
 that deliberately chose the lean shape; `config.json` may want a `profile`
 key beside `serial`, so `app.py` can resolve presets at load time rather
 than only `IdsCamera._open()` by model string; and a profile could ship
-starting points for the per-role exposure/gain/white-balance calibration.
+starting points for the per-role exposure/gain calibration.
 
 **Not started, not designed.** Recorded so the orientation-preset fix
 isn't mistaken for the finished shape: the `config.json` `orientation`

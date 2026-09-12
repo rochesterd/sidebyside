@@ -13,11 +13,8 @@ import numpy as np
 from exposure_calibration import (
     exposure_budget_us,
     center_crop,
-    channel_medians,
     is_converged,
-    is_white_balanced,
     median_brightness,
-    next_balance_ratios,
     next_exposure_gain,
 )
 
@@ -161,71 +158,6 @@ class CenterCropTest(unittest.TestCase):
         cropped_median = median_brightness(center_crop(image, fraction=0.4))
         self.assertEqual(whole_frame_median, 0.0)
         self.assertEqual(cropped_median, 200.0)
-
-
-class ChannelMediansTest(unittest.TestCase):
-    def test_uniform_per_channel_values_map_to_correct_order(self):
-        image = np.zeros((10, 10, 3), dtype=np.uint8)
-        image[:, :, 0] = 10  # blue
-        image[:, :, 1] = 20  # green
-        image[:, :, 2] = 30  # red
-        b, g, r = channel_medians(image)
-        self.assertEqual((b, g, r), (10.0, 20.0, 30.0))
-
-
-class IsWhiteBalancedTest(unittest.TestCase):
-    def test_all_channels_equal_is_balanced(self):
-        self.assertTrue(is_white_balanced(128.0, 128.0, 128.0))
-
-    def test_red_outside_tolerance_is_not_balanced(self):
-        self.assertFalse(is_white_balanced(b_median=128.0, g_median=128.0, r_median=140.0, tolerance=5.0))
-
-    def test_blue_outside_tolerance_is_not_balanced(self):
-        self.assertFalse(is_white_balanced(b_median=140.0, g_median=128.0, r_median=128.0, tolerance=5.0))
-
-    def test_within_tolerance_is_balanced(self):
-        self.assertTrue(is_white_balanced(b_median=130.0, g_median=128.0, r_median=126.0, tolerance=5.0))
-
-
-class NextBalanceRatiosTest(unittest.TestCase):
-    def test_channel_darker_than_green_is_raised(self):
-        new_red, new_blue = next_balance_ratios(
-            b_median=128.0,
-            g_median=128.0,
-            r_median=64.0,  # half of green -- needs 2x correction
-            red_ratio=1.0,
-            red_ratio_range=(0.5, 4.0),
-            blue_ratio=1.0,
-            blue_ratio_range=(0.5, 4.0),
-        )
-        self.assertAlmostEqual(new_red, 2.0)
-        self.assertAlmostEqual(new_blue, 1.0)  # blue already equal to green -- untouched
-
-    def test_channel_brighter_than_green_is_lowered(self):
-        new_red, new_blue = next_balance_ratios(
-            b_median=256.0,  # double green -- needs half correction
-            g_median=128.0,
-            r_median=128.0,
-            red_ratio=1.0,
-            red_ratio_range=(0.5, 4.0),
-            blue_ratio=1.0,
-            blue_ratio_range=(0.5, 4.0),
-        )
-        self.assertAlmostEqual(new_red, 1.0)
-        self.assertAlmostEqual(new_blue, 0.5)
-
-    def test_correction_clamps_at_range_limits(self):
-        new_red, new_blue = next_balance_ratios(
-            b_median=128.0,
-            g_median=128.0,
-            r_median=1.0,  # would need an enormous correction
-            red_ratio=1.0,
-            red_ratio_range=(0.5, 4.0),
-            blue_ratio=1.0,
-            blue_ratio_range=(0.5, 4.0),
-        )
-        self.assertEqual(new_red, 4.0)  # clamped at max
-        self.assertEqual(new_blue, 1.0)
 
 
 class ExposureBudgetTest(unittest.TestCase):

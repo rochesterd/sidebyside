@@ -4436,3 +4436,38 @@ certificate mid-install, which can fail in ways a refusal cannot.
 
 **Revisit if** a student actually records into the old app. That is the
 signal worth acting on - not tidiness.
+
+---
+
+## 2026-09-11 - The manual white-balance path is deleted
+
+**Decided:** remove `needs_manual_white_balance()`, `auto_white_balance()`,
+the `BalanceRatio` accessors, `exposure_calibration`'s `channel_medians()`/
+`is_white_balanced()`/`next_balance_ratios()`, `config.json`'s
+`red_balance_ratio`/`blue_balance_ratio`, `settings.py`'s balance sliders
+and Auto White-Balance button, and every test of them. About 330 lines.
+
+**Why:** it was built for a camera shape neither device has - no
+`BalanceWhiteAuto` but a writable `BalanceRatio`. `needs_manual_white_balance()`
+answers False on both cameras, so none of it has ever executed, and the
+2026-09-08 entry had already recorded that it could not be verified here
+and never would be. Code that cannot be exercised is worse than absent: it
+reappears in every audit as "unverified", and it had shaped a config
+pairing rule and a whole Preview control block around a case that does not
+occur. The 2026-08-26 reasoning that added it assumed the slit lamp might
+lack `BalanceWhiteAuto` *and* expose `BalanceRatio`; the hardware says it
+exposes no white-balance node at all.
+
+**What stays:** `BalanceWhiteAuto` itself. The Keeler converges its own
+white balance once at open through `_converge_auto_nodes()`, which is
+unchanged. The slit lamp has nothing to converge. So no camera lost a
+capability here - only Reflex lost code it never ran.
+
+**Config compatibility:** an `ids` entry still carrying the two keys is now
+ignored rather than rejected, since `_parse_instrument()` only rejects
+unknown keys on the `net2860_winusb` branch. Nothing in the field has them:
+`settings.py` wrote them only when a camera reported the manual path.
+
+**If it ever comes back,** this entry plus git history is the design.
+Re-adding it against a camera that actually needs it will be cheaper than
+having carried it unrun in the meantime.

@@ -193,10 +193,6 @@ _DEFAULT_MIN_FREE_GB = 20
 _DEFAULT_PROTECT_DAYS = 7
 
 _GAIN_SLIDER_SCALE = 10  # QSlider is integer-only; gain is a small float (e.g. 1.0-24.0)
-# BalanceRatio's real range is unverified (no hardware to check against --
-# see ids_camera.py's note on BalanceRatioSelector/BalanceRatio); 100 is a
-# starting guess for slider granularity, same footing as the gain scale above.
-_BALANCE_RATIO_SLIDER_SCALE = 100
 
 
 class PreviewDialog(QDialog):
@@ -218,15 +214,6 @@ class PreviewDialog(QDialog):
     ExposureAuto/GainAuto -- a camera that converges on its own does so at
     open, which is the moment a student taps the picker, with the
     instrument not yet in use.
-
-    Same treatment, independently, for a camera with no BalanceWhiteAuto
-    (`camera.needs_manual_white_balance()`): red/blue balance-ratio sliders
-    and an Auto White-Balance button. Kept as a separate control block with
-    its own status label rather than merged with exposure/gain -- the slit
-    lamp plausibly lacks both ExposureAuto/GainAuto *and* BalanceWhiteAuto
-    at once, so both blocks can be visible simultaneously, and a shared
-    status label would have one calibration's message clobber the other's.
-    See DECISIONS.md's 2026-08-26 entry.
     """
 
     def __init__(
@@ -236,8 +223,6 @@ class PreviewDialog(QDialog):
         parent=None,
         initial_exposure_time_us: float | None = None,
         initial_gain: float | None = None,
-        initial_red_balance_ratio: float | None = None,
-        initial_blue_balance_ratio: float | None = None,
         target_fps: float | None = None,
     ):
         super().__init__(parent)
@@ -253,11 +238,8 @@ class PreviewDialog(QDialog):
         # 2026-09-01 entry.
         self.finished.connect(self._shutdown)
         self.calibration_supported = False
-        self.white_balance_supported = False
         self.final_exposure_time_us = initial_exposure_time_us
         self.final_gain = initial_gain
-        self.final_red_balance_ratio = initial_red_balance_ratio
-        self.final_blue_balance_ratio = initial_blue_balance_ratio
 
         self.video_label = QLabel()
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -271,10 +253,6 @@ class PreviewDialog(QDialog):
         self.calibration_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.calibration_status_label.setWordWrap(True)
 
-        self.white_balance_status_label = QLabel()
-        self.white_balance_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.white_balance_status_label.setWordWrap(True)
-
         layout = QVBoxLayout()
         layout.addWidget(self.video_label)
         layout.addWidget(self.status_label)
@@ -282,9 +260,6 @@ class PreviewDialog(QDialog):
         try:
             self._camera.start()
             self.calibration_supported = bool(getattr(camera, "supports_manual_calibration", lambda: False)())
-            self.white_balance_supported = bool(
-                getattr(camera, "needs_manual_white_balance", lambda: False)()
-            )
         except Exception as exc:
             self.status_label.setText(f"Failed to start: {exc}")
 
@@ -296,10 +271,6 @@ class PreviewDialog(QDialog):
             if self.calibration_supported:
                 self._build_exposure_gain_controls(layout, initial_exposure_time_us, initial_gain)
             layout.addWidget(self.calibration_status_label)
-
-            if self.white_balance_supported:
-                self._build_white_balance_controls(layout, initial_red_balance_ratio, initial_blue_balance_ratio)
-            layout.addWidget(self.white_balance_status_label)
         except Exception:
             self._shutdown()
             raise
@@ -365,43 +336,6 @@ class PreviewDialog(QDialog):
         self.final_gain = self._camera.get_gain()
         self._refresh_exposure_gain_labels()
 
-    def _build_white_balance_controls(
-        self, layout: QVBoxLayout, initial_red: float | None, initial_blue: float | None
-    ) -> None:
-        red_min, red_max = self._camera.red_balance_ratio_range()
-        blue_min, blue_max = self._camera.blue_balance_ratio_range()
-
-        if initial_red is not None:
-            self._camera.set_red_balance_ratio(min(red_max, max(red_min, initial_red)))
-        if initial_blue is not None:
-            self._camera.set_blue_balance_ratio(min(blue_max, max(blue_min, initial_blue)))
-
-        self.red_balance_slider, self.red_balance_value_label = self._add_slider_row(
-            layout,
-            "Red",
-            int(red_min * _BALANCE_RATIO_SLIDER_SCALE),
-            int(red_max * _BALANCE_RATIO_SLIDER_SCALE),
-            int(self._camera.get_red_balance_ratio() * _BALANCE_RATIO_SLIDER_SCALE),
-        )
-        self.red_balance_slider.valueChanged.connect(self._on_red_balance_changed)
-
-        self.blue_balance_slider, self.blue_balance_value_label = self._add_slider_row(
-            layout,
-            "Blue",
-            int(blue_min * _BALANCE_RATIO_SLIDER_SCALE),
-            int(blue_max * _BALANCE_RATIO_SLIDER_SCALE),
-            int(self._camera.get_blue_balance_ratio() * _BALANCE_RATIO_SLIDER_SCALE),
-        )
-        self.blue_balance_slider.valueChanged.connect(self._on_blue_balance_changed)
-
-        self.white_balance_button = QPushButton("Auto White-Balance")
-        self.white_balance_button.clicked.connect(self._on_white_balance_clicked)
-        layout.addWidget(self.white_balance_button)
-
-        self.final_red_balance_ratio = self._camera.get_red_balance_ratio()
-        self.final_blue_balance_ratio = self._camera.get_blue_balance_ratio()
-        self._refresh_white_balance_labels()
-
     def _on_exposure_changed(self, value: int) -> None:
         self._camera.set_exposure_time_us(float(value))
         self.final_exposure_time_us = float(value)
@@ -412,18 +346,6 @@ class PreviewDialog(QDialog):
         self._camera.set_gain(gain)
         self.final_gain = gain
         self._refresh_exposure_gain_labels()
-
-    def _on_red_balance_changed(self, value: int) -> None:
-        red = value / _BALANCE_RATIO_SLIDER_SCALE
-        self._camera.set_red_balance_ratio(red)
-        self.final_red_balance_ratio = red
-        self._refresh_white_balance_labels()
-
-    def _on_blue_balance_changed(self, value: int) -> None:
-        blue = value / _BALANCE_RATIO_SLIDER_SCALE
-        self._camera.set_blue_balance_ratio(blue)
-        self.final_blue_balance_ratio = blue
-        self._refresh_white_balance_labels()
 
     def _on_calibrate_clicked(self) -> None:
         self.calibrate_button.setEnabled(False)
@@ -480,41 +402,9 @@ class PreviewDialog(QDialog):
             )
         return text
 
-    def _on_white_balance_clicked(self) -> None:
-        self.white_balance_button.setEnabled(False)
-        self.white_balance_status_label.setText("Calibrating…")
-        QApplication.processEvents()
-        try:
-            converged = self._camera.auto_white_balance()
-        except Exception as exc:
-            QMessageBox.warning(self, "White balance calibration failed", str(exc))
-            converged = None
-        self.white_balance_button.setEnabled(True)
-
-        self.red_balance_slider.blockSignals(True)
-        self.blue_balance_slider.blockSignals(True)
-        self.red_balance_slider.setValue(int(self._camera.get_red_balance_ratio() * _BALANCE_RATIO_SLIDER_SCALE))
-        self.blue_balance_slider.setValue(int(self._camera.get_blue_balance_ratio() * _BALANCE_RATIO_SLIDER_SCALE))
-        self.red_balance_slider.blockSignals(False)
-        self.blue_balance_slider.blockSignals(False)
-        self.final_red_balance_ratio = self._camera.get_red_balance_ratio()
-        self.final_blue_balance_ratio = self._camera.get_blue_balance_ratio()
-        self._refresh_white_balance_labels()
-
-        if converged is True:
-            self.white_balance_status_label.setText("Calibrated.")
-        elif converged is False:
-            self.white_balance_status_label.setText(
-                "Couldn't reach a neutral balance automatically -- adjust the sliders by eye."
-            )
-
     def _refresh_exposure_gain_labels(self) -> None:
         self.exposure_value_label.setText(f"{int(self._camera.get_exposure_time_us())} µs")
         self.gain_value_label.setText(f"{self._camera.get_gain():.1f}x")
-
-    def _refresh_white_balance_labels(self) -> None:
-        self.red_balance_value_label.setText(f"{self._camera.get_red_balance_ratio():.2f}x")
-        self.blue_balance_value_label.setText(f"{self._camera.get_blue_balance_ratio():.2f}x")
 
     def _update(self) -> None:
         frame = self._camera.get_latest()
@@ -579,10 +469,6 @@ class DeviceRow(QWidget):
         # auto-exposure never needing one.
         self._exposure_time_us: float | None = None
         self._gain: float | None = None
-        # Same idea, independently, for white balance -- see
-        # config.py's red_balance_ratio/blue_balance_ratio pairing rule.
-        self._red_balance_ratio: float | None = None
-        self._blue_balance_ratio: float | None = None
 
         self.title_label = QLabel(title)
         self.title_label.setMinimumWidth(90)
@@ -675,13 +561,6 @@ class DeviceRow(QWidget):
         self._exposure_time_us = exposure_time_us
         self._gain = gain
 
-    def white_balance(self) -> tuple[float | None, float | None]:
-        return self._red_balance_ratio, self._blue_balance_ratio
-
-    def set_white_balance(self, red_balance_ratio: float | None, blue_balance_ratio: float | None) -> None:
-        self._red_balance_ratio = red_balance_ratio
-        self._blue_balance_ratio = blue_balance_ratio
-
     def is_valid(self) -> bool:
         if self.selected_key() is None:
             return False
@@ -698,8 +577,6 @@ class DeviceRow(QWidget):
         # loaded from config.json survive loading and Rescan.
         self._exposure_time_us = None
         self._gain = None
-        self._red_balance_ratio = None
-        self._blue_balance_ratio = None
         self._update_ui_state()
         self.changed.emit()
 
@@ -724,17 +601,12 @@ class DeviceRow(QWidget):
             parent=self,
             initial_exposure_time_us=self._exposure_time_us if self.supports_calibration else None,
             initial_gain=self._gain if self.supports_calibration else None,
-            initial_red_balance_ratio=self._red_balance_ratio if self.supports_calibration else None,
-            initial_blue_balance_ratio=self._blue_balance_ratio if self.supports_calibration else None,
             target_fps=self.target_fps,
         )
         dialog.exec()
         if self.supports_calibration and dialog.calibration_supported:
             self._exposure_time_us = dialog.final_exposure_time_us
             self._gain = dialog.final_gain
-        if self.supports_calibration and dialog.white_balance_supported:
-            self._red_balance_ratio = dialog.final_red_balance_ratio
-            self._blue_balance_ratio = dialog.final_blue_balance_ratio
         # Released only after its results are read. Qt parent-child
         # ownership would otherwise keep every Preview's window and its
         # pixmap alive for as long as Settings is open -- same reasoning as
@@ -938,7 +810,6 @@ class SettingsWindow(QMainWindow):
                 pending_key = inst.serial if inst.kind == "ids" else inst.kind
                 row.set_pending_selection(pending_key)
                 row.set_calibration(inst.exposure_time_us, inst.gain)
-                row.set_white_balance(inst.red_balance_ratio, inst.blue_balance_ratio)
         self._third_person_row.set_pending_selection(cfg.third_person.vid_pid)
         if cfg.sessions_dir is not None:
             self.sessions_dir_edit.setText(str(cfg.sessions_dir))
@@ -969,8 +840,8 @@ class SettingsWindow(QMainWindow):
                 candidates = ids_candidates
             row.set_candidates(candidates, status=ids_status)
 
-        uvc_devices = self._list_uvc_devices_fn()
-        self._third_person_row.set_candidates(_uvc_candidates(uvc_devices))
+        uvc_devices, uvc_status = self._safe_list_uvc_devices()
+        self._third_person_row.set_candidates(_uvc_candidates(uvc_devices), status=uvc_status)
 
         self._update_save_enabled()
 
@@ -980,6 +851,20 @@ class SettingsWindow(QMainWindow):
         except Exception as exc:
             logger.warning("could not enumerate IDS devices: %s", exc)
             return [], f"Could not enumerate IDS devices: {exc}"
+
+    def _safe_list_uvc_devices(self) -> tuple[list[UvcDeviceInfo], str]:
+        """Wrapped exactly like the IDS scan above, and for the same reason:
+        __init__ calls rescan(), so an enumeration that raises stops Settings
+        opening at all. This one reaches DirectShow through pygrabber, where
+        a single misbehaving USB device is enough -- and a technician then
+        has no way in to fix the configuration. Report it in the row's status
+        line and keep the window usable. See DECISIONS.md's 2026-09-09 entry.
+        """
+        try:
+            return self._list_uvc_devices_fn(), ""
+        except Exception as exc:
+            logger.warning("could not enumerate webcams: %s", exc)
+            return [], f"Could not enumerate webcams: {exc}"
 
     def _on_browse_sessions_dir(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "Choose recordings folder", self.sessions_dir_edit.text())
@@ -1064,11 +949,6 @@ class SettingsWindow(QMainWindow):
             data["exposure_time_us"] = exposure_time_us
         if gain is not None:
             data["gain"] = gain
-        red_balance_ratio, blue_balance_ratio = row.white_balance()
-        if red_balance_ratio is not None:
-            data["red_balance_ratio"] = red_balance_ratio
-        if blue_balance_ratio is not None:
-            data["blue_balance_ratio"] = blue_balance_ratio
         return data
 
     def _existing_config_dict(self) -> dict:

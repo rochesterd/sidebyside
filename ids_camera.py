@@ -55,11 +55,11 @@ ExposureTime/Gain a technician can write, not only one with no
 ExposureAuto/GainAuto -- see supports_manual_calibration() for why the
 Keeler's converge-at-open turned out to be the wrong thing to rely on.
 
-White balance (needs_manual_white_balance()/auto_white_balance()/the manual
-get_/set_red_balance_ratio()/get_/set_blue_balance_ratio() pair) and the
-acquisition frame-rate cap (_apply_frame_rate_cap()) follow the same
+The acquisition frame-rate cap (_apply_frame_rate_cap()) follows the same
 in-app-not-external-tool philosophy, added per DECISIONS.md's 2026-08-26
-entry. `_converge_auto_nodes()` generalizes what used to be a single
+entry. White balance is deliberately not ours: the Keeler converges its own
+once at open and the slit lamp exposes no white-balance node at all, so
+there is nothing here to set -- see DECISIONS.md's 2026-09-11 entry. `_converge_auto_nodes()` generalizes what used to be a single
 exposure/gain-specific convergence loop (`_converge_auto_exposure()`) to
 also cover `BalanceWhiteAuto`, since all three follow the identical
 Once-then-poll-until-Off-then-lock shape.
@@ -72,14 +72,6 @@ Minimum()/Maximum() accessors, `_apply_frame_rate_cap()`,
 and `_apply_auto_exposure_limit()`. Both cameras now deliver the
 configured 30fps with no dropped frames; see DECISIONS.md's 2026-09-08
 entries for what that took.
-
-Still unverified, and unreachable on the present hardware: the manual
-white-balance path (`auto_white_balance()` and the BalanceRatioSelector/
-BalanceRatio accessors). `needs_manual_white_balance()` returns False on
-both cameras -- the Keeler has working BalanceWhiteAuto and the slit lamp
-exposes no white-balance nodes at all -- so nothing here can exercise it.
-It needs a camera with no BalanceWhiteAuto *but* with BalanceRatio, which
-neither of these is. Flagged again at its call site below.
 """
 
 from __future__ import annotations
@@ -96,17 +88,12 @@ from camera import BaseCamera
 from device_presets import orientation_for_model, pixel_clock_hz_for_model
 from exposure_calibration import (
     DEFAULT_MAX_ITERATIONS,
-    DEFAULT_WB_MAX_ITERATIONS,
-    DEFAULT_WB_TOLERANCE,
     METERING_HIGHLIGHT,
     center_crop,
-    channel_medians,
     exposure_budget_us,
     is_converged,
-    is_white_balanced,
     metering_brightness,
     metering_target,
-    next_balance_ratios,
     next_exposure_gain,
 )
 
@@ -196,8 +183,6 @@ class IdsCamera(BaseCamera):
         queue_size: int = 2,
         exposure_time_us: float | None = None,
         gain: float | None = None,
-        red_balance_ratio: float | None = None,
-        blue_balance_ratio: float | None = None,
         target_fps: float | None = None,
         orientation: str | None = None,
         pixel_clock_hz: int | None = None,
@@ -217,18 +202,14 @@ class IdsCamera(BaseCamera):
         # which is per-install. See _apply_pixel_clock().
         self._pixel_clock_hz = pixel_clock_hz
         # Per-instrument calibrated values from config.json (InstrumentConfig's
-        # optional exposure_time_us/gain/red_balance_ratio/blue_balance_ratio
-        # fields) -- see DECISIONS.md's 2026-08-25 calibration entry
-        # and its 2026-08-26 follow-up. None means "let _converge_auto_nodes()
+        # optional exposure_time_us/gain fields) -- see DECISIONS.md's
+        # 2026-08-25 calibration entry. None means "let _converge_auto_nodes()
         # handle this axis," not "leave whatever the device's NVRAM happens to
-        # have," so a camera with no ExposureAuto/GainAuto/BalanceWhiteAuto at
-        # all (the slit lamp) and no config values yet just keeps today's
-        # pre-calibration behavior. red_balance_ratio/blue_balance_ratio are
-        # config.py-validated as a pair -- either both set or neither.
+        # have," so a camera with no ExposureAuto/GainAuto at all (the slit
+        # lamp) and no config values yet just keeps today's pre-calibration
+        # behavior.
         self._exposure_time_us = exposure_time_us
         self._gain = gain
-        self._red_balance_ratio = red_balance_ratio
-        self._blue_balance_ratio = blue_balance_ratio
         # Caps this camera's own acquisition rate (distinct from
         # recording.fps, which paces the encoder) -- see
         # _apply_frame_rate_cap()'s docstring. None means untouched free-run,
@@ -328,12 +309,8 @@ class IdsCamera(BaseCamera):
                 self.set_gain(min(gain_max, max(gain_min, self._gain)))
             else:
                 auto_converge_nodes.append("GainAuto")
-            if self._red_balance_ratio is not None:
-                self._ensure_manual_white_balance()
-                self.set_red_balance_ratio(self._red_balance_ratio)
-                self.set_blue_balance_ratio(self._blue_balance_ratio)
-            else:
-                auto_converge_nodes.append("BalanceWhiteAuto")
+            # Always the camera's own: nothing here sets white balance.
+            auto_converge_nodes.append("BalanceWhiteAuto")
             # Whichever axes config didn't supply a calibrated value for
             # still get today's one-time auto-converge, all in one pass (a
             # no-op for any axis with no *Auto node at all -- see
@@ -486,30 +463,6 @@ class IdsCamera(BaseCamera):
         node = self._node_map.TryFindNode(node_name)
         return node is not None and node.IsAvailable() and node.IsWriteable()
 
-    def needs_manual_white_balance(self) -> bool:
-        """True when this camera has no BalanceWhiteAuto *and* does expose
-        the manual BalanceRatioSelector/BalanceRatio nodes to fall back on
-        -- the case settings.py's PreviewDialog shows red/blue balance-ratio
-        sliders and the Auto White-Balance button for. Must be called after
-        start().
-
-        Two cameras report False, for opposite reasons:
-        - a camera with working BalanceWhiteAuto (the Keeler) converges on
-          its own every session, folded into _converge_auto_nodes(), with
-          nothing for a technician to calibrate;
-        - a camera whose transport layer exposes neither the auto node nor
-          the manual BalanceRatio nodes (the slit lamp via the uEye
-          Transport Layer's basic feature set -- see this module's
-          docstring) has no white balance to control at all. Reporting True
-          there just makes _build_white_balance_controls() crash on the
-          missing BalanceRatioSelector node.
-        """
-        auto_node = self._node_map.TryFindNode("BalanceWhiteAuto")
-        if auto_node is not None and auto_node.IsAvailable():
-            return False
-        manual_node = self._node_map.TryFindNode("BalanceRatioSelector")
-        return manual_node is not None and manual_node.IsAvailable()
-
     def _ensure_manual_exposure(self) -> None:
         node = self._node_map.TryFindNode("ExposureAuto")
         if node is not None and node.IsAvailable() and node.IsWriteable():
@@ -517,11 +470,6 @@ class IdsCamera(BaseCamera):
 
     def _ensure_manual_gain(self) -> None:
         node = self._node_map.TryFindNode("GainAuto")
-        if node is not None and node.IsAvailable() and node.IsWriteable():
-            node.SetCurrentEntry("Off")
-
-    def _ensure_manual_white_balance(self) -> None:
-        node = self._node_map.TryFindNode("BalanceWhiteAuto")
         if node is not None and node.IsAvailable() and node.IsWriteable():
             node.SetCurrentEntry("Off")
 
@@ -554,85 +502,6 @@ class IdsCamera(BaseCamera):
     def gain_range(self) -> tuple[float, float]:
         node = self._node_map.FindNode("Gain")
         return float(node.Minimum()), float(node.Maximum())
-
-    # NOTE: BalanceRatioSelector/BalanceRatio below is the standard GenICam
-    # SFNC selector+value pattern for per-channel white balance gain (a
-    # single BalanceRatio node whose meaning depends on which channel
-    # BalanceRatioSelector currently names) but, like ExposureTime/Gain's
-    # Minimum()/Maximum() above, is *not* confirmed against real hardware --
-    # and cannot be here: needs_manual_white_balance() is False on both
-    # cameras, so nothing reaches this path. It needs a camera with no
-    # BalanceWhiteAuto but with BalanceRatio, which neither of these is.
-
-    def _select_balance_ratio(self, channel: str) -> None:
-        self._node_map.FindNode("BalanceRatioSelector").SetCurrentEntry(channel)
-
-    def get_red_balance_ratio(self) -> float:
-        self._select_balance_ratio("Red")
-        return float(self._node_map.FindNode("BalanceRatio").Value())
-
-    def set_red_balance_ratio(self, value: float) -> None:
-        self._select_balance_ratio("Red")
-        self._node_map.FindNode("BalanceRatio").SetValue(value)
-
-    def red_balance_ratio_range(self) -> tuple[float, float]:
-        self._select_balance_ratio("Red")
-        node = self._node_map.FindNode("BalanceRatio")
-        return float(node.Minimum()), float(node.Maximum())
-
-    def get_blue_balance_ratio(self) -> float:
-        self._select_balance_ratio("Blue")
-        return float(self._node_map.FindNode("BalanceRatio").Value())
-
-    def set_blue_balance_ratio(self, value: float) -> None:
-        self._select_balance_ratio("Blue")
-        self._node_map.FindNode("BalanceRatio").SetValue(value)
-
-    def blue_balance_ratio_range(self) -> tuple[float, float]:
-        self._select_balance_ratio("Blue")
-        node = self._node_map.FindNode("BalanceRatio")
-        return float(node.Minimum()), float(node.Maximum())
-
-    def auto_white_balance(
-        self,
-        tolerance: float = DEFAULT_WB_TOLERANCE,
-        max_iterations: int = DEFAULT_WB_MAX_ITERATIONS,
-    ) -> bool:
-        """One-shot software white balance for a camera with no
-        BalanceWhiteAuto (see needs_manual_white_balance()) -- run once when
-        a technician holds a neutral gray/white target in the fixed optical
-        path and clicks settings.py's Auto White-Balance button, not a
-        continuous loop during real recording. See exposure_calibration.py
-        for the actual per-channel-median/correction-step math.
-
-        Returns True once within `tolerance` of balanced; False if
-        `max_iterations` ran out first -- not raised, since settings.py's
-        sliders remain a valid manual fallback either way. Only raises
-        IdsCameraCalibrationError if a live frame never arrives at all.
-        """
-        self._ensure_manual_white_balance()
-        red_range = self.red_balance_ratio_range()
-        blue_range = self.blue_balance_ratio_range()
-
-        for _ in range(max_iterations):
-            image = center_crop(self._wait_for_fresh_frame())
-            b_median, g_median, r_median = channel_medians(image)
-            if is_white_balanced(b_median, g_median, r_median, tolerance):
-                return True
-
-            new_red, new_blue = next_balance_ratios(
-                b_median,
-                g_median,
-                r_median,
-                self.get_red_balance_ratio(),
-                red_range,
-                self.get_blue_balance_ratio(),
-                blue_range,
-            )
-            self.set_red_balance_ratio(new_red)
-            self.set_blue_balance_ratio(new_blue)
-
-        return False
 
     def _apply_pixel_clock(self) -> None:
         """Set the sensor pixel clock, which is what actually determines

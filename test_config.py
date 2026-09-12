@@ -132,8 +132,6 @@ class ConfigTest(unittest.TestCase):
             ("serial", "222"),
             ("exposure_time_us", 1000.0),
             ("gain", 2.0),
-            ("red_balance_ratio", 1.5),
-            ("blue_balance_ratio", 1.5),
             ("orientation", "flip_vertical"),
             ("pixel_clock_hz", 60_000_000),
         ]:
@@ -276,49 +274,6 @@ class ConfigTest(unittest.TestCase):
     def test_wrong_typed_exposure_time_us_raises(self):
         data = json.loads(json.dumps(VALID))
         data["instruments"]["slit_lamp"]["exposure_time_us"] = "fast"
-        self._write(data)
-
-        with self.assertRaises(ConfigError):
-            load_config(self.path)
-
-    def test_missing_red_blue_balance_ratio_default_to_none(self):
-        self._write(VALID)
-        cfg = load_config(self.path)
-
-        self.assertIsNone(cfg.instruments["slit_lamp"].red_balance_ratio)
-        self.assertIsNone(cfg.instruments["slit_lamp"].blue_balance_ratio)
-
-    def test_red_blue_balance_ratio_are_parsed_when_both_present(self):
-        data = json.loads(json.dumps(VALID))
-        data["instruments"]["slit_lamp"]["red_balance_ratio"] = 1.8
-        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
-        self._write(data)
-
-        cfg = load_config(self.path)
-
-        self.assertEqual(cfg.instruments["slit_lamp"].red_balance_ratio, 1.8)
-        self.assertEqual(cfg.instruments["slit_lamp"].blue_balance_ratio, 2.1)
-
-    def test_only_red_balance_ratio_present_raises(self):
-        data = json.loads(json.dumps(VALID))
-        data["instruments"]["slit_lamp"]["red_balance_ratio"] = 1.8
-        self._write(data)
-
-        with self.assertRaises(ConfigError):
-            load_config(self.path)
-
-    def test_only_blue_balance_ratio_present_raises(self):
-        data = json.loads(json.dumps(VALID))
-        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
-        self._write(data)
-
-        with self.assertRaises(ConfigError):
-            load_config(self.path)
-
-    def test_negative_red_balance_ratio_raises(self):
-        data = json.loads(json.dumps(VALID))
-        data["instruments"]["slit_lamp"]["red_balance_ratio"] = -1.0
-        data["instruments"]["slit_lamp"]["blue_balance_ratio"] = 2.1
         self._write(data)
 
         with self.assertRaises(ConfigError):

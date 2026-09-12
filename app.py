@@ -597,8 +597,6 @@ def _make_camera(
         serial=inst.serial,
         exposure_time_us=inst.exposure_time_us,
         gain=inst.gain,
-        red_balance_ratio=inst.red_balance_ratio,
-        blue_balance_ratio=inst.blue_balance_ratio,
         target_fps=target_fps,
         # None (the common case) lets IdsCamera pick the device-model preset
         # -- e.g. the Keeler BIO camera's image comes in vertically flipped.
