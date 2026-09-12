@@ -254,6 +254,37 @@ class SettingsWindowTest(unittest.TestCase):
         expected = {**VALID_CONFIG, "sessions_dir": str(resolve_default_sessions_dir())}
         self.assertEqual(written, expected)
 
+    def test_a_row_with_no_device_claims_nothing(self):
+        """A row holding no camera has no business naming an instrument, so
+        both fields stay inert until one is chosen."""
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+
+        self.assertIsNone(row.selected_key())
+        self.assertFalse(row.profile_combo.isEnabled())
+        self.assertFalse(row.label_edit.isEnabled())
+        self.assertIn("Choose the camera", row.status_label.text())
+
+    def test_choosing_a_device_enables_the_other_two_fields(self):
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "111")
+
+        self.assertTrue(row.profile_combo.isEnabled())
+        self.assertTrue(row.label_edit.isEnabled())
+        self.assertIn("No auto-exposure", row.status_label.text())
+
+    def test_an_unlisted_camera_falls_to_custom_and_asks_for_a_name(self):
+        unlisted = _FakeIdsDevice(serial="999", model_name="Unlisted-Cam-1")
+        window = self._make_window(ids_devices=[unlisted])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "999")
+
+        self.assertEqual(row.profile_id(), CUSTOM_PROFILE_ID)
+        self.assertEqual(row.label_text(), "")
+        self.assertFalse(row.is_valid())
+        self.assertIn("Type a name", row.status_label.text())
+
     def test_the_typed_name_is_what_students_see_and_round_trips(self):
         """The profile offers a name; the technician's edit wins and is what
         lands in label, which is the only name app.py reads."""

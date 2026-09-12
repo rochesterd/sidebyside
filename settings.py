@@ -13,6 +13,7 @@ kiosk app to pick up changes (an explicit accepted scope line, not a gap).
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import sys
@@ -53,6 +54,7 @@ from config import (
 from qt_image import bgr_to_pixmap
 from uvc_camera import UvcCamera
 from device_presets import CUSTOM_PROFILE_ID, profile_for_id, profile_for_model, profiles_for_role
+from synthetic_camera import SyntheticCamera
 from uvc_enumeration import UvcDeviceInfo, list_uvc_devices
 
 logger = logging.getLogger(__name__)
@@ -706,17 +708,32 @@ class DeviceRow(QWidget):
         if self._scan_status:
             return self._scan_status
         candidate = self.selected_candidate()
-        if candidate is not None and candidate.key is None:
+        if candidate is None:
+            # Nothing is plugged in yet as far as this row knows, so it has
+            # no business claiming to be a particular instrument.
+            return "Choose the camera that's plugged in."
+        if candidate.key is None:
             return "This device has no discoverable VID/PID and can't be saved."
         mismatch = self._profile_mismatch_warning()
         if mismatch:
             return mismatch
         profile = profile_for_id(self.profile_id())
-        return profile.note if profile is not None else ""
+        if profile is not None:
+            return profile.note
+        if self.label_edit is not None and not self.label_text():
+            # Custom: the one field nobody else can fill in for them.
+            return "Type a name students will recognise."
+        return ""
 
     def _update_ui_state(self) -> None:
         candidate = self.selected_candidate()
         self.preview_button.setEnabled(candidate is not None)
+        # What a camera *is*, and what to call it, only mean something once
+        # there is a camera: until then both fields are inert rather than
+        # showing a confident answer about a row that holds nothing.
+        for widget in (self.profile_combo, self.label_edit):
+            if widget is not None:
+                widget.setEnabled(candidate is not None)
         self.status_label.setText(self._row_note())
 
     def _on_preview_clicked(self) -> None:
@@ -1161,11 +1178,91 @@ class SettingsWindow(QMainWindow):
         self.warning_label.hide()
 
 
+@dataclass
+class _SyntheticIdsDevice:
+    """Shaped like ids_camera.IdsDeviceInfo, which is all _ids_candidates()
+    reads."""
+
+    serial: str
+    model_name: str
+
+
+class _SyntheticCalibratableCamera(SyntheticCamera):
+    """A synthetic camera that also answers the questions PreviewDialog asks
+    a real IDS one, so --synthetic exercises the sliders and Auto-Calibrate
+    rather than the plain-preview branch."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._exposure_time_us = 8000.0
+        self._gain = 1.0
+
+    def supports_manual_calibration(self) -> bool:
+        return True
+
+    def get_exposure_time_us(self) -> float:
+        return self._exposure_time_us
+
+    def set_exposure_time_us(self, value: float) -> None:
+        self._exposure_time_us = value
+
+    def exposure_time_range_us(self) -> tuple[float, float]:
+        return 20.0, 33_321.0
+
+    def get_gain(self) -> float:
+        return self._gain
+
+    def set_gain(self, value: float) -> None:
+        self._gain = value
+
+    def gain_range(self) -> tuple[float, float]:
+        return 1.0, 4.0
+
+    def auto_calibrate(self, target_fps: float | None = None) -> bool:
+        self._exposure_time_us, self._gain = 30_000.0, 1.4
+        return True
+
+
+def _synthetic_ids_devices() -> list[_SyntheticIdsDevice]:
+    """Two cameras whose model strings match real profiles, plus one that
+    matches none -- so the Custom path is reachable without unplugging
+    anything."""
+    return [
+        _SyntheticIdsDevice(serial="4103484089", model_name="UI325xCP-C"),
+        _SyntheticIdsDevice(serial="4110050487", model_name="U3-327xCP-C"),
+        _SyntheticIdsDevice(serial="0000000001", model_name="Unlisted-Cam-1"),
+    ]
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="fake cameras, for working on this UI with no hardware attached",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    app = QApplication(sys.argv)
+    app = QApplication(sys.argv[:1])
     app.setWindowIcon(QIcon(str(icon_path(ICON_SETTINGS))))
-    window = SettingsWindow()
+    if args.synthetic:
+        # Same seams the tests use -- so what you click here is the real
+        # window, not a stand-in for it.
+        logger.info("synthetic mode: no camera is real, and Save writes a real config.json")
+        window = SettingsWindow(
+            list_ids_devices_fn=_synthetic_ids_devices,
+            list_uvc_devices_fn=lambda: [
+                UvcDeviceInfo(index=0, name="Synthetic webcam", vid_pid="32E4:9310")
+            ],
+            list_net2860_winusb_fn=lambda: [("synthetic-legacy-bio", "synthetic-path")],
+            instrument_preview_camera_factory=lambda c: _SyntheticCalibratableCamera(
+                640, 480, fps=30, name=str(c.display_name)
+            ),
+            uvc_preview_camera_factory=lambda c: SyntheticCamera(640, 480, fps=30, name="third-person"),
+        )
+    else:
+        window = SettingsWindow()
     window.show()
     return app.exec()
 
