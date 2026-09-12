@@ -55,42 +55,71 @@ must stay optional and must never gate Start.
 
 ---
 
-## 2026-09-11 — Use the legacy BIO's picture registers (planned, not built)
+## 2026-09-12 — Use what each camera's stack actually offers (planned, not built)
 
-DECISIONS.md's "The legacy BIO does have host-side picture controls" entry
-found the EM2860 bridge's `R20`-`R25` (contrast, brightness, saturation,
-blue/red balance, sharpness) host-settable, replayed today as Keeler's
-captured constants. Exposure and colour stay the sensor's, so these are the
-only image adjustment this camera can ever have.
+Replaces the separate "legacy BIO picture registers" and "shadow detail on
+the slit lamp" entries: they were the same question asked of two devices.
+`IMAGING.md` lists what each stack exposes; this closes the distance between
+that and what Reflex writes. Order is by cost, and three of the four
+candidates cost nothing at all.
 
-- **Confirm on hardware, one register at a time** against a static scene;
-  the kernel header names them, nothing here has watched them move.
-  `R21_YOFFSET` first — a signed luma offset is the slit lamp's black-level
-  knob by another name.
-- **Then decide who owns the values** (CLAUDE.md's table): a measured
-  per-model preset, `config.json` only if rooms differ; Settings offering
-  this camera nothing is right until something is measured.
-- **Settle first whether to touch them at all.** Keeler chose them with the
-  instrument in front of them; the case is shadow detail, not tidiness.
-- **While it is attached, re-derive the START/STOP split.** Replaying the
-  captured sequence whole once stopped the bridge; those four writes are
-  picture registers and cannot do that, so something else did. The split
-  stays either way -- this is about knowing why.
+**Rules for the whole program.** Every step is a measurement before it is a
+change, and each lands separately so a regression has one suspect. Anything
+that turns out to be a per-model fact becomes a `DeviceProfile` field, not a
+technician knob — CLAUDE.md's ownership table — and `config.json` gains an
+override only where the answer is genuinely per-room. Nothing here may gate
+Start: every one of these is visible in the live preview, and the
+technician's test recording is the backstop.
 
----
+### Phase 0 — probe, because five of these are guesses
 
-## 2026-09-11 — Shadow detail on the slit lamp (planned, not built)
+Run `tools/probe_camera_features.py` against both IDS cameras. It has never
+executed, so expect to fix it first. It answers region of interest and
+binning (a bigger bandwidth lever than any format change, and possibly
+enough to make higher bit depth free), `DeviceLinkThroughputLimit`,
+hardware `ReverseX`/`ReverseY` (which would make the per-frame rotation
+Reflex does today free), and whether `Gamma` survives `TLParamsLocked`.
+Fold the answers into `IMAGING.md`; that file's "Not yet known" section is
+the definition of done.
 
-Everything the beam doesn't hit records at 1-2 of 255 (measured
-2026-09-11): highlight metering exposes for the beam, and 8-bit leaves the
-rest nothing to hold. Cheapest first, each a measurement before it is a
-change, and whatever wins is a measured preset, never a technician knob.
+### Phase 1 — the free writes, one at a time
 
-- **Black level alone.** The camera's own default subtracts 90 and clamps —
-  30% of the frame reads exactly 0, at 120 none of it does — and Reflex
-  never writes this node. Measure what a corrected value costs in the beam.
-- **10/12-bit plus a tone curve, if that isn't enough.** Both cameras offer
-  BayerRG10/12 and `ids_peak_ipl` has `GammaCorrector` (with
-  `SetDigitalBlack`), so shadows could be lifted before the 8-bit encode
-  rather than lost at it — against ~2x USB bandwidth and per-frame CPU
-  (IMAGING.md), both needing re-measurement.
+Each is a value the hardware already has and Reflex has never written.
+Measure the frame before and after (median, clipped fraction, p99.9) and
+keep the numbers in the DECISIONS entry.
+
+- **Slit lamp black level.** The only one actively destroying data: at the
+  camera's default of 90, 30% of every frame is pinned to exactly 0. Find
+  the value that clips nothing without lifting the beam's black surround
+  into grey, then make it a profile field applied in `_open()` — after the
+  pixel clock, before `TLParamsLocked`.
+- **Digital BIO gamma, then its lookup table.** The camera can apply the
+  tone curve that would rescue its shadows, on board, for no bandwidth and
+  no host CPU. Gamma first because it is one number; the LUT only if one
+  exponent proves too blunt.
+- **Legacy BIO picture registers.** Confirm what each of `R20`-`R25` does
+  before changing any: we inherit five values from a vendor capture and
+  have checked none. Then own them in a profile rather than replaying
+  constants. While the camera is attached, also re-derive the START/STOP
+  split — those four writes are picture registers and cannot stop a bridge,
+  so something else did.
+- **Hands camera exposure.** Today the two-second warmup's result is frozen,
+  so every session starts from whatever the room looked like. Have
+  `settings.py` record the converged value at calibration time and
+  `uvc_camera` apply it at every start — a per-room value, so `config.json`
+  is its right home.
+
+### Phase 2 — only if Phase 1 is not enough
+
+Higher bit depth plus a tone curve, and only for a camera that cannot curve
+for itself, which today means the slit lamp alone. `ids_peak_ipl` supplies
+`GammaCorrector` (with `SetDigitalBlack`), so the pieces are vendor code
+rather than hand-rolled maths. Costs roughly 2x the USB bandwidth and
+per-frame CPU, both of which need measuring on the clinic machine, not this
+laptop. If Phase 1 recovers the shadows, write that down and stop here.
+
+**Stop conditions worth stating up front:** a measurement that shows no
+improvement ends that step, and the DECISIONS entry records the numbers
+that killed it. Inheriting the vendor's value is a legitimate outcome for
+the legacy BIO. "We could set it" was never the argument; "the picture is
+better and we can show it" is.
