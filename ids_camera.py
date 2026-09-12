@@ -1,13 +1,27 @@
 """IDS peak GenICam camera implementation of BaseCamera.
 
 One class covers both real cameras (Haag-Streit slit lamp UI-3250CP-C-HQ,
-via the uEye Transport Layer, and Keeler U3-327xCP-C, native USB3 Vision):
-once the uEye Transport Layer is installed (see SETUP.md Section 3), IDS
-peak exposes both as ordinary GenICam devices on the same DeviceManager
-list. Nothing in the acquisition path below is model-specific — only the
-serial number passed to the constructor differs between the two physical
-cameras. See CLAUDE.md's Architecture section: nothing outside this module
-may import ids_peak/ids_peak_ipl.
+via the uEye Transport Layer, and Keeler U3-327xCP-C, native USB3 Vision).
+
+The stack, simply: a GenICam camera publishes its own feature list (a "node
+map"), IDS peak finds cameras and moves buffers, and a *transport layer*
+per camera family puts each camera on that one DeviceManager list -- and
+decides which features reach us at all. Both are therefore ordinary GenICam
+devices here, differing only by the serial passed in (SETUP.md Section 3
+installs the uEye layer) -- but not by feature set: the uEye layer
+publishes no ExposureAuto/GainAuto/BalanceWhiteAuto, which is why every
+optional node below goes through TryFindNode() and why the slit lamp
+depends on auto_calibrate() rather than anything on the camera.
+
+What this module uses, in order: Library.Initialize(); DeviceManager to
+find the serial; OpenDevice(Control) to claim it; the RemoteDevice node map
+for every setting; one DataStream fed with buffers we allocate and queue;
+then WaitForFinishedBuffer() -> Buffer (FrameID plus pixels), which
+ids_peak_ipl converts from Bayer to BGR8. _open()'s comments say why its
+order is what it is; the order is load-bearing.
+
+See CLAUDE.md's Architecture section: nothing outside this module may
+import ids_peak/ids_peak_ipl.
 
 Cameras are native Bayer sensors; frames are converted to BGR8 here so
 every consumer downstream of BaseCamera (compositor, recorder, preview)
@@ -185,6 +199,7 @@ class IdsCamera(BaseCamera):
         target_fps: float | None = None,
         orientation: str | None = None,
         pixel_clock_hz: int | None = None,
+        converge_auto: bool = True,
     ):
         super().__init__(queue_size=queue_size, label=serial, orientation=orientation)
         self._serial = serial
@@ -218,6 +233,10 @@ class IdsCamera(BaseCamera):
         # e.g. settings.py's Preview cameras, which deliberately never pass
         # this.
         self._target_fps = target_fps
+        # False skips _converge_auto_nodes() for the axes config left unset
+        # -- settings.py's Preview, which calibrates them itself and must
+        # open even when convergence would time out against a dark scene.
+        self._converge_auto = converge_auto
         # Every one of these must be kept as an instance attribute, not a
         # local in _open(). They wrap child GenTL handles (NodeMap,
         # DataStream) whose validity is tied to their parent's Python
@@ -230,6 +249,7 @@ class IdsCamera(BaseCamera):
         self._remote_device = None
         self._node_map = None
         self._data_stream = None
+        self._acquisition_started = False
         self._width = 0
         self._height = 0
 
@@ -291,7 +311,19 @@ class IdsCamera(BaseCamera):
                 auto_converge_nodes.append("ExposureAuto")
             if self._gain is not None:
                 self._ensure_manual_gain()
-                self.set_gain(self._gain)
+                # Clamped too, for a different reason: a gain outside this
+                # camera's range was calibrated on another camera (the BIO's
+                # 25.4x once reached the slit lamp, whose max is 4.0x).
+                # Refusing to open strands a student behind a disabled
+                # Start; a visibly wrong picture does not.
+                gain_min, gain_max = self.gain_range()
+                if not gain_min <= self._gain <= gain_max:
+                    logger.warning(
+                        "%s: config gain %.2fx is outside this camera's %.2f-%.2fx range; clamped. "
+                        "Recalibrate in Settings.",
+                        self._serial, self._gain, gain_min, gain_max,
+                    )
+                self.set_gain(min(gain_max, max(gain_min, self._gain)))
             else:
                 auto_converge_nodes.append("GainAuto")
             if self._red_balance_ratio is not None:
@@ -306,13 +338,15 @@ class IdsCamera(BaseCamera):
             # _converge_auto_nodes()'s docstring).
             self._node_map.FindNode("TLParamsLocked").SetValue(1)
             data_stream.StartAcquisition()
+            self._acquisition_started = True
             self._node_map.FindNode("AcquisitionStart").Execute()
             self._node_map.FindNode("AcquisitionStart").WaitUntilDone()
 
             # Bound the *vendor's* auto-exposure by the same frame-rate
             # budget our own calibration obeys, before letting it converge.
             self._apply_auto_exposure_limit()
-            self._converge_auto_nodes(auto_converge_nodes)
+            if self._converge_auto:
+                self._converge_auto_nodes(auto_converge_nodes)
 
             # After exposure/gain are settled, never before. This node's
             # own Maximum() is derived from the current ExposureTime, so
@@ -332,7 +366,13 @@ class IdsCamera(BaseCamera):
             # fail Control access as "busy" against our own leaked handle,
             # forever. _close() already tolerates being called from any
             # partial-init state (every step it touches is None-guarded).
-            self._close()
+            #
+            # A cleanup failure is logged, never raised: raising it would
+            # replace the exception that explains why the open failed.
+            try:
+                self._close()
+            except Exception:
+                logger.exception("%s: cleanup after a failed open also failed", self._serial)
             raise
 
     def _payload_size(self, data_stream: ids_peak.DataStream) -> int:
@@ -772,17 +812,26 @@ class IdsCamera(BaseCamera):
     def _close(self) -> None:
         try:
             if self._data_stream is not None:
-                self._node_map.FindNode("AcquisitionStop").Execute()
-                self._node_map.FindNode("AcquisitionStop").WaitUntilDone()
-                self._data_stream.StopAcquisition()
-                self._data_stream.Flush(ids_peak.DataStreamFlushMode_DiscardAll)
-                for buffer in list(self._data_stream.AnnouncedBuffers()):
-                    self._data_stream.RevokeBuffer(buffer)
+                # An open that failed before StartAcquisition() gets here
+                # with a stream that never started. StopAcquisition() on it
+                # raises GC_ERR_RESOURCE_IN_USE ("Stream is not started!"),
+                # and on the uEye Transport Layer so does Flush() (GC_ERR_IO,
+                # is_LockSeqBuf). Dropping the handles below releases it:
+                # the kiosk's 2s retry reopened cleanly after every such
+                # failure on the slit lamp (2026-09-11).
+                if self._acquisition_started:
+                    self._node_map.FindNode("AcquisitionStop").Execute()
+                    self._node_map.FindNode("AcquisitionStop").WaitUntilDone()
+                    self._data_stream.StopAcquisition()
+                    self._data_stream.Flush(ids_peak.DataStreamFlushMode_DiscardAll)
+                    for buffer in list(self._data_stream.AnnouncedBuffers()):
+                        self._data_stream.RevokeBuffer(buffer)
         finally:
             self._device = None
             self._remote_device = None
             self._node_map = None
             self._data_stream = None
+            self._acquisition_started = False
             ids_peak.Library.Close()
 
     def _grab(self) -> tuple[np.ndarray, float, int] | None:

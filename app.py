@@ -318,7 +318,7 @@ class KioskWindow(QMainWindow):
             self.controller.select_instrument(key)
         except Exception as exc:
             if key not in self._camera_start_errors:
-                logger.warning("%s failed to start: %s", key, exc)
+                logger.warning("%s failed to start: %s", key, exc, exc_info=True)
             self._camera_start_errors[key] = str(exc)
         else:
             if key in self._camera_start_errors:

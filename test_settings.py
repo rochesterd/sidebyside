@@ -439,6 +439,42 @@ class SettingsWindowTest(unittest.TestCase):
 
         self.assertEqual(row.calibration(), (None, None))
 
+    def test_changing_a_rows_camera_discards_calibration_made_on_the_old_one(self):
+        # The field failure: the slit lamp row once pointed at the BIO,
+        # Auto-Calibrate reached the BIO's 25.4x gain, the dropdown was
+        # corrected, and 25.4x was saved against the slit lamp (4.0x max).
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+        _select(row, "222")
+
+        with patch("settings.PreviewDialog") as mock_dialog_cls:
+            mock_dialog = mock_dialog_cls.return_value
+            mock_dialog.calibration_supported = True
+            mock_dialog.final_exposure_time_us = 30000.0
+            mock_dialog.final_gain = 25.41
+            mock_dialog.white_balance_supported = True
+            mock_dialog.final_red_balance_ratio = 1.8
+            mock_dialog.final_blue_balance_ratio = 2.1
+            row._on_preview_clicked()
+        self.assertEqual(row.calibration(), (30000.0, 25.41))
+
+        _select(row, "111")
+
+        self.assertEqual(row.calibration(), (None, None))
+        self.assertEqual(row.white_balance(), (None, None))
+
+    def test_calibration_loaded_from_config_survives_loading_and_rescan(self):
+        config = json.loads(json.dumps(VALID_CONFIG))
+        config["instruments"]["slit_lamp"].update(exposure_time_us=6700.0, gain=1.0)
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        window = self._make_window(ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE])
+        row = window._instrument_rows["slit_lamp"]
+
+        window.rescan()
+
+        self.assertEqual(row.selected_key(), "111")
+        self.assertEqual(row.calibration(), (6700.0, 1.0))
+
     def test_white_balance_round_trips_through_device_row_into_saved_config(self):
         window = self._make_window(
             ids_devices=[SLIT_LAMP_DEVICE, BIO_DEVICE], uvc_devices=[THIRD_PERSON_DEVICE]

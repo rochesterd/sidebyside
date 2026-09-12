@@ -4300,3 +4300,46 @@ entry (acted on in the 2026-09-10 uninstall-scope entry).
   the deliverable. Explicitly out of scope at the time: latency-offset
   measurement (field reserved), instructor tools, multi-session compare,
   audio.
+
+---
+
+## 2026-09-11 — A calibration belongs to a camera, not a role
+
+**Found:** on the second clinic PC the slit lamp never opened. The banner
+said `DSStopAcquisition … Stream is not started!`, which was cleanup
+failing: `_open()` failed at `set_gain()`, and `_close()` then stopped a
+stream that had never started, replacing the real exception. With cleanup
+fixed, the real one was `Gain 25.409727 must be <= 4.000000`. 25.41x is
+the Keeler BIO's maximum gain, saved under the slit lamp's serial.
+
+**Cause:** `settings.py`'s `DeviceRow` held calibration per *role* and kept
+it when the row's dropdown changed. A slit lamp row once pointed at the
+BIO, calibrated in a dark room up to its gain ceiling, then corrected,
+saves the BIO's values for the slit lamp. The same config left the BIO
+row uncalibrated.
+
+**Decided:**
+
+- Changing a row's camera discards that row's exposure/gain and white
+  balance. Values loaded from `config.json` are unaffected: they arrive
+  through `set_candidates()`, which blocks signals.
+- `_open()` clamps a config gain to the camera's range, with a warning, as
+  it already clamped exposure. An out-of-range gain is a wrong picture,
+  which the live preview shows; refusing to open strands a student behind
+  a disabled Start (2026-09-10's gate reasoning).
+- `_close()` stops, flushes and revokes only a stream that started. On the
+  uEye Transport Layer `Flush()` of a never-started stream also fails
+  (`GC_ERR_IO`); dropping the handles was enough, since the kiosk's 2s
+  retry reopened cleanly after every such failure.
+- An exception raised by cleanup after a failed open is logged, never
+  raised, and `app.py` logs a start failure with its traceback. The
+  original error was otherwise lost on the PC that had it.
+- Settings' Preview opens IDS cameras with `converge_auto=False`. The
+  Keeler, uncalibrated (the other half of the same config), timed out
+  converging in a dark room, and a failed open is a Preview with no
+  Auto-Calibrate — no way out from the only tool meant to fix it.
+
+**Not changed:** the kiosk still converges an uncalibrated axis and fails
+the open if that times out. That is a missing calibration, a technician's
+problem, and `CALIBRATION.md` covers it.
+

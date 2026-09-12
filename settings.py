@@ -90,7 +90,10 @@ def _default_list_ids_devices() -> list:
 def _default_make_ids_camera(candidate: RowCandidate) -> BaseCamera:
     from ids_camera import IdsCamera
 
-    return IdsCamera(serial=candidate.preview_target)
+    # No auto-convergence: Preview exists to calibrate, and converging a
+    # dark, uncalibrated camera times out and fails the open -- leaving the
+    # technician no way to reach Auto-Calibrate at all.
+    return IdsCamera(serial=candidate.preview_target, converge_auto=False)
 
 
 def _default_make_uvc_camera(candidate: RowCandidate) -> BaseCamera:
@@ -687,6 +690,16 @@ class DeviceRow(QWidget):
         return True
 
     def _on_selection_changed(self, _index: int) -> None:
+        # Calibration belongs to the camera it was measured on, not to the
+        # role. Kept across a change, it saves one camera's values under
+        # another's serial -- found as the BIO's 25.4x gain reaching the
+        # slit lamp (4.0x max), which then refused to open. Only a user's
+        # change lands here: set_candidates() blocks signals, so values
+        # loaded from config.json survive loading and Rescan.
+        self._exposure_time_us = None
+        self._gain = None
+        self._red_balance_ratio = None
+        self._blue_balance_ratio = None
         self._update_ui_state()
         self.changed.emit()
 
