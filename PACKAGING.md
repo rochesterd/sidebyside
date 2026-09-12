@@ -236,16 +236,18 @@ Produces `packaging\installer_output\reflex-setup.exe` — this is the
 one file a technician actually needs. Gitignored, like the rest of
 `packaging/`'s generated output (`packaging/build/`, `packaging/dist/`).
 
-**A machine that still has the old `sidebyside` install** needs it
-uninstalled first (Settings → Apps → sidebyside). This installer does not
-upgrade it: the rename changed the `AppId`, the install and data folders,
-and the driver package's name. The old uninstaller removes its own driver
-package and signing certificate, and keeps
-`%ProgramData%\sidebyside\config.json` — copy that into
-`%ProgramData%\Reflex\` (pointing `sessions_dir` at the new folder if it
-names the old one), or redo `CALIBRATION.md`. A laptop with the old
-`sidebyside Viewer` should have it uninstalled too; left in place it is
-just a second, stale viewer. See DECISIONS.md's 2026-09-11 entry.
+**A machine that still has the old `sidebyside` install** keeps it: this
+installer neither upgrades nor detects it, because the rename changed the
+`AppId`, the install and data folders, and the driver package's name.
+**Delete the old Desktop shortcut** so a student can only start Reflex —
+the old kiosk still works, and records into its own folder, which nothing
+in Reflex lists. Uninstalling sidebyside (Settings → Apps) is cleaner and
+still fine; its uninstaller removes its own driver package and signing
+certificate. Either way redo `CALIBRATION.md` rather than copying
+`%ProgramData%\sidebyside\config.json` over — it names the old
+`sessions_dir` and carries an unproven calibration. The same shortcut rule
+applies to a laptop's old `sidebyside Viewer`. See DECISIONS.md's
+2026-09-11 coexistence entry.
 
 **Before handing this to anyone**, actually run it on a real (or
 disposable/VM) Windows machine and confirm: both shortcuts appear and

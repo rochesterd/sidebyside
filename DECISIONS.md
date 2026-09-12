@@ -4398,3 +4398,41 @@ switch a bridge off, so the recorded reason for the split ("replaying it
 whole switches the bridge straight back off") does not survive knowing
 what they are. The split is kept because it is what was verified working
 on hardware; the explanation needs re-deriving, not the sequence.
+
+---
+
+## 2026-09-11 - Reflex and sidebyside coexist; no installer guard
+
+**Decided:** Reflex neither detects nor refuses a machine that still has
+the old `sidebyside` install. Both stay installed, and the ROADMAP plan to
+guard against it is dropped rather than built.
+
+**Why the question existed:** the old installer left `AppId` unset, so Inno
+used its name; Reflex's is pinned to `reflex`. Windows therefore treats
+them as unrelated programs, and installing Reflex over sidebyside leaves
+two kiosks with two Desktop shortcuts. The planned guard was an
+`InitializeSetup` in `reflex.iss` refusing to run while the old
+`Uninstall\sidebyside_is1` registry key existed.
+
+**Why not:** a refusing installer stops a technician on a machine that
+otherwise works, and the old app is not harmful in itself - it is a
+complete, working recorder pointed at its own folder. Trading a guaranteed
+install-time failure for a possible run-time confusion is the wrong trade
+at this scale, with one or two machines involved.
+
+**The accepted risk, stated plainly:** on such a machine a student can
+launch the old kiosk. It records into sidebyside's own `sessions_dir`,
+which nothing in Reflex lists, so the recording is not lost but is
+somewhere nobody looks. Nothing detects this, by choice.
+
+**The mitigation is procedural, not code:** whoever installs Reflex removes
+the old app's Desktop shortcut, so the only thing a student can start is
+Reflex. PACKAGING.md's step 5 says so. Uninstalling sidebyside outright is
+still fine, and cleaner, but is no longer a precondition.
+
+**Why auto-uninstalling was never the alternative:** removing the old
+install means removing a kernel driver package and a trusted signing
+certificate mid-install, which can fail in ways a refusal cannot.
+
+**Revisit if** a student actually records into the old app. That is the
+signal worth acting on - not tidiness.

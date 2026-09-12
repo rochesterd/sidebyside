@@ -87,32 +87,6 @@ must stay optional and must never gate Start.
 
 ---
 
-## 2026-09-11 — Migrate machines off `sidebyside` (planned, not built)
-
-The old clinic installer left `AppId` unset, so Inno used its name;
-Reflex's is `reflex`, so installing Reflex over `sidebyside` leaves both
-installed, with two kiosk shortcuts a student can pick from. The same goes
-for `sidebyside-viewer` on laptops. Nothing detects it today.
-
-- **Installer guards.** `reflex.iss` gets an `InitializeSetup` that
-  refuses, naming the fix, while `HKLM\…\Uninstall\sidebyside_is1`
-  exists; `reflex-viewer.iss` does the same for `sidebyside-viewer_is1`
-  (HKCU — it was per-user). Refuse rather than auto-uninstall: removing a
-  driver and a trusted certificate mid-install has failure modes a refusal
-  can't have. `SuppressibleMsgBox`, so silent installs abort too.
-- **Redo `CALIBRATION.md` rather than carry `config.json` over** — that
-  needs hand-editing `sessions_dir` and keeps an unproven calibration.
-  CALIBRATION.md gets a short "if this computer had sidebyside" section;
-  PACKAGING.md step 5 points at it.
-- **Verify in Windows Sandbox** with the old installers in
-  `packaging/installer_output/`: first `reg query` the key after
-  installing `sidebyside-setup.exe`; then refusal, a clean install after
-  uninstalling (no `sidebyside_net2860` driver or certificate left), and
-  no message on a fresh machine.
-- Remove the guards and that section once no `sidebyside` machine remains.
-
----
-
 ## 2026-09-11 — Use the legacy BIO's picture registers (planned, not built)
 
 DECISIONS.md's "The legacy BIO does have host-side picture controls" entry
