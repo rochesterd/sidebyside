@@ -63,11 +63,10 @@ The instrument cameras are machine vision cameras, not webcams — no RTSP,
 ONVIF or DirectShow; raw frames through the IDS peak SDK on a host PC. The
 third-person webcam goes through `cv2.VideoCapture` (`uvc_camera.py`).
 
-**Bandwidth:** only one instrument camera streams at a time, so the load is
-one instrument plus the webcam — measured clean at 30fps (`SUPPORTED_HARDWARE.md`).
-USB3 Vision drops frames silently rather than erroring: trust measured
-throughput over datasheets, and re-measure if a second concurrent camera
-is ever added.
+**Bandwidth:** one instrument plus the webcam, measured clean at 30fps;
+per-format costs and ceilings are in `IMAGING.md`. USB3 Vision drops frames
+silently rather than erroring: trust measured throughput over datasheets,
+and re-measure if a second concurrent camera is ever added.
 
 ## Camera configuration: who decides what
 
@@ -300,6 +299,7 @@ deliverable handed to a student — data, never something to regenerate.
 | `SETUP.md`, `PACKAGING.md` | contributors | ≤190 / ≤340 lines | Steps and warnings; no dated status paragraphs. |
 | `CALIBRATION.md` | technician | ≤185 lines | A self-contained procedure — its reader has no repo. |
 | `SUPPORTED_HARDWARE.md` | other institutions | ≤90 lines, ≤6 KB | One row per tested device, and the measured bandwidth. |
+| `IMAGING.md` | contributors | ≤120 lines | What each camera's stack exposes and what each option costs. Facts as measured; no plans, no rationale. |
 
 - Over budget means cut before adding. One fact, one home; everything else
   points at it.

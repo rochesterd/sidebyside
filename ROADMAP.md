@@ -146,5 +146,5 @@ change, and whatever wins is a measured preset, never a technician knob.
 - **10/12-bit plus a tone curve, if that isn't enough.** Both cameras offer
   BayerRG10/12 and `ids_peak_ipl` has `GammaCorrector` (with
   `SetDigitalBlack`), so shadows could be lifted before the 8-bit encode
-  rather than lost at it — against ~2x USB bandwidth (58 -> ~115 MB/s) and
-  per-frame CPU, re-measured: USB3 Vision drops frames silently.
+  rather than lost at it — against ~2x USB bandwidth and per-frame CPU
+  (IMAGING.md), both needing re-measurement.

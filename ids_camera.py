@@ -21,7 +21,9 @@ ids_peak_ipl converts from Bayer to BGR8. _open()'s comments say why its
 order is what it is; the order is load-bearing.
 
 See CLAUDE.md's Architecture section: nothing outside this module may
-import ids_peak/ids_peak_ipl.
+import ids_peak/ids_peak_ipl. What each camera's stack publishes, and what
+each pixel format would cost, is IMAGING.md; tools/probe_camera_features.py
+re-answers it against attached hardware.
 
 Cameras are native Bayer sensors; frames are converted to BGR8 here so
 every consumer downstream of BaseCamera (compositor, recorder, preview)
