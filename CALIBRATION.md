@@ -38,14 +38,30 @@ camera: **Slit Lamp**, **BIO**, **Third-Person**.
 If a row's dropdown is empty or missing a camera, plug it in and press
 **Rescan**.
 
-### 2. Pick the camera for each row, and name it
+### 2. Fill in each row: device, profile, name
 
-Choose the right device in each dropdown, and type a label for the two
-instrument rows. **That label is what students see on the button** in the
-recorder, so use the name they'd use — "Slit Lamp", "BIO".
+An instrument row has three fields. You choose the first two and type the
+third.
 
-Not sure which physical camera a dropdown entry is? Press **Preview** and
-look.
+| Field | What to do |
+|---|---|
+| **Device** | Pick the camera that's plugged in. Not sure which physical camera an entry is? Press **Preview** and look. |
+| **Profile** | Which instrument this is. Picking the device usually fills this in for you — check that it's right. |
+| **Name** | What students see on the button in the recorder. It fills in from the profile ("Slit Lamp", "BIO"); change it if your students call it something else. |
+
+The third-person row has no profile — any webcam works — so it's just the
+device.
+
+**Read the line under the row.** It tells you what that instrument needs,
+for example that the slit lamp has no automatic exposure of its own. If it
+says the profile usually reports a different camera model, you've most
+likely got the device or the profile wrong — check both, then carry on if
+you're sure; it won't stop you saving.
+
+**If your camera isn't in the profile list,** choose **Custom (unlisted
+camera)** and type a name yourself. Everything else works the same; the app
+just has nothing pre-set for that model, so check the picture is the right
+way up in Preview.
 
 ### 3. Set the instrument up for real — before you calibrate
 
